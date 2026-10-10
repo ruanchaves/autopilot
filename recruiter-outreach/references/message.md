@@ -19,7 +19,9 @@ Work down `tasks` in order. For each lead, decide the channel, then run `recruit
 3. **Connection requests used up:** InMail (`inmail`), if the compose window shows credits. The user has Premium; spending the credits is allowed. Record the credits shown as `inmail_credits`. An InMail has a subject line.
 4. **No connection requests and no credits:** stop.
 
-If a profile offers only "Follow", or messaging is closed, record it as `skipped` and move on.
+If a profile offers only "Follow" (Connect hidden under More, or absent), send an InMail instead when the compose window shows credits, even while connection requests remain; that spends a credit on a lead that can't be reached otherwise, which is what the credits are for. Only when messaging is closed too, record it as `skipped` and move on.
+
+**Don't stop early.** The day's budget is meant to be spent: every connection request and every InMail credit. You stop only when the pile is empty or `check` says both the connection cap and the InMail credits are gone. A skip costs nothing, so skipping never brings you closer to done. When the pile runs out with budget left, finish the result with `"pile_empty": true` and the orchestrator will discover more leads and call you again; never pad the pile with leads you weren't given.
 
 ## Writing the message
 
@@ -54,10 +56,10 @@ Before sending each message, read it once as the recruiter would: does it say wh
 
 ## Result
 
-Write `result` as JSON, then reply with one line: `outreach: <n> sent (<connect>/<inmail>/<message>), <m> skipped, <k> connection requests left today`.
+Write `result` as JSON, then reply with one line: `outreach: <n> sent (<connect>/<inmail>/<message>), <m> skipped, <k> connection requests left today, <c> InMail credits left, pile empty: yes|no`. `inmail_credits` is the number the InMail compose window last showed (open one compose window to read it even if you sent no InMail; cancel without sending).
 
 ```json
-{"kind": "outreach", "purpose": "recruiter", "inmail_credits": 7, "detail": "<one line>",
+{"kind": "outreach", "purpose": "recruiter", "inmail_credits": 7, "pile_empty": false, "detail": "<one line>",
  "contacts": [{"name": "...", "headline": "...", "company": "...", "profile_url": "https://www.linkedin.com/in/...",
                "channel": "connect|inmail|message", "subject": "", "message": "<exact text sent>",
                "status": "sent|failed|skipped", "detail": "<why skipped or failed>"}]}

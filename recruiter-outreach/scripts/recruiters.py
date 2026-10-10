@@ -11,6 +11,7 @@ Separate from job-autopilot: nothing here depends on an application.
     recruiters.py record        --result FILE               # outreach result: contacts, counters, credits
     recruiters.py mark          --profile URL --status replied|skipped|contacted [--note TEXT]
     recruiters.py import-contacts --file FILE               # seed contacts from job-autopilot's contacts.json
+A run is done only when `status` says done: connection requests and InMails for the day are all used.
     recruiters.py dashboard                                 # dashboard.json for the role explorer's Outreach view
     recruiters.py status
 
@@ -143,21 +144,63 @@ def rescore(lead: dict) -> dict:
 
 # --------------------------------------------------------------- discovery
 
+MAX_PAGES = 6  # how deep one search phrasing is worth reading before it is spent
+
+
+def need(home: str, st: dict) -> tuple[int, dict]:
+    """How many more leads today's remaining quotas can take: connection requests left plus InMails
+    left (bounded by the credits LinkedIn last showed, when known)."""
+    p = pacing(home)
+    q = quotas(p, st)
+    inmail_left = q["inmail"]["left"]
+    if p.get("inmail_credits") is not None:
+        inmail_left = min(inmail_left, int(p["inmail_credits"]))
+    return q["connect"]["left"] + inmail_left, q
+
+
+def contactable(leads: dict, st: dict) -> list:
+    return sorted((v for v in leads.values() if v["status"] == "new" and v["score"] >= st["min_score"]),
+                  key=lambda v: -v["score"])
+
+
 def cmd_discover_plan(args) -> int:
     st = settings(args.home)
     leads = load(args.home, "leads.json", {})
     runs = load(args.home, "discovery-runs.json", {})
+    depth = load(args.home, "discovery-depth.json", {})
     cutoff = (NOW - timedelta(days=7)).isoformat()
     people = [q for q in st["people_queries"] if (runs.get("people:" + q) or "") < cutoff]
     posts = [q for q in st["post_queries"] if (runs.get("posts:" + q) or "") < cutoff]
     stale = (NOW - timedelta(days=st["stale_days"])).isoformat()
     reprobe = [{"profile_url": v["profile_url"], "name": v.get("name"), "probed_at": v.get("probed_at")}
                for v in leads.values() if (v.get("probed_at") or "") < stale and v.get("status") == "new"][:10]
+    needed, q = need(args.home, st)
+    have = len(contactable(leads, st))
+    # phrasings already run this week whose deeper result pages haven't been read yet
+    deeper = [{"kind": k.split(":", 1)[0], "query": k.split(":", 1)[1], "start_page": depth.get(k, 2) + 1}
+              for k, at in runs.items() if at >= cutoff and depth.get(k, 2) < MAX_PAGES]
+    # employers and agencies of good leads: their colleagues recruit for the same roles
+    snowball = []
+    for v in sorted(leads.values(), key=lambda v: -v["score"]):
+        c = (v.get("company") or "").strip()
+        if v["score"] >= st["min_score"] and c and c.lower() != "unknown" and not is_banned(c, st) and c not in snowball:
+            snowball.append(c)
+    cand = userconfig.snapshot()
+    seeds = {"role_terms": [st["target_role"]] + list(cand.get("core_areas") or []),
+             "region_terms": [cand.get("country"), cand.get("region")] + list(cand.get("region_aliases") or []),
+             "recruiter_nouns": ["recruiter", "technical recruiter", "talent partner", "talent acquisition",
+                                 "sourcer", "headhunter", "hiring", "we're hiring"],
+             "languages": [x for x in ["English", cand.get("native_language")] if x],
+             "pay_terms": ["USD", "contractor", "B2B", f"${st['pay_target_usd_month'] // 1000}k"],
+             "hashtags": ["#hiring", f"#{(cand.get('region') or '').lower()}", "#remotework", "#" + squash(st["target_role"])]}
+    max_leads = args.max_leads or max(30, needed * 2)
     out = work_dir(args.home)
-    return emit({"people_queries": people, "post_queries": posts, "max_leads": args.max_leads,
-                 "known_profiles": sorted(leads), "reprobe": reprobe,
+    return emit({"people_queries": people, "post_queries": posts, "exhausted": not people and not posts,
+                 "needed": needed, "contactable_now": have, "quotas": q, "max_leads": max_leads,
+                 "queries_tried": sorted(runs), "deeper": deeper[:12], "snowball_companies": snowball[:15],
+                 "seeds": seeds, "known_profiles": sorted(leads), "reprobe": reprobe,
                  "target_role": st["target_role"], "pay_target_usd_month": st["pay_target_usd_month"],
-                 "banned_companies": st["banned_companies"], "candidate": userconfig.snapshot(),
+                 "banned_companies": st["banned_companies"], "candidate": cand,
                  "result": enrich.host_path(out / f"discover_result_{NOW.strftime('%H%M')}.json")})
 
 
@@ -166,10 +209,15 @@ def cmd_ingest(args) -> int:
     st = settings(args.home)
     leads = load(args.home, "leads.json", {})
     runs = load(args.home, "discovery-runs.json", {})
+    depth = load(args.home, "discovery-depth.json", {})
+    pages = res.get("pages_read") or {}
     for q in res.get("people_queries_run") or []:
         runs["people:" + q] = NOW.isoformat()
     for q in res.get("post_queries_run") or []:
         runs["posts:" + q] = NOW.isoformat()
+    for k in list(runs):
+        if (pages.get(k) or 0) > depth.get(k, 0):
+            depth[k] = int(pages[k])
     added = updated = banned = 0
     for L in res.get("leads") or []:
         key = norm_profile(L.get("profile_url", ""))
@@ -195,8 +243,11 @@ def cmd_ingest(args) -> int:
         updated += cur is not None
     save(args.home, "leads.json", leads)
     save(args.home, "discovery-runs.json", runs)
-    ranked = sorted((v for v in leads.values() if v["status"] == "new"), key=lambda v: -v["score"])
+    save(args.home, "discovery-depth.json", depth)
+    ranked = contactable(leads, st)
+    needed, _ = need(args.home, st)
     return emit({"added": added, "updated": updated, "skipped_banned": banned, "leads_total": len(leads),
+                 "contactable_now": len(ranked), "needed": needed,
                  "top": [f'{v["score"]} {v["name"]} - {v["headline"][:60]}' for v in ranked[:10]]})
 
 
@@ -248,12 +299,13 @@ def cmd_plan(args) -> int:
     # best first; 1st-degree connections cost no quota, so they break ties upward
     pile.sort(key=lambda v: (-v["score"], v.get("degree") != "1st", v.get("found_at", "")))
     save(args.home, "leads.json", leads)
-    budget = q["connect"]["left"] + q["inmail"]["left"] + q["message"]["left"]
+    needed, _ = need(args.home, st)
+    budget = needed + q["message"]["left"]
     tasks = [{k: v.get(k) for k in ("profile_url", "name", "headline", "company", "location", "degree", "language",
                                      "score", "parts", "signals", "evidence", "recent_roles", "vibe")}
              for v in pile[: min(args.n, budget)]]
     out = work_dir(args.home)
-    return emit({"quotas": q, "pile": len(pile), "tasks": tasks,
+    return emit({"quotas": q, "needed": needed, "pile": len(pile), "short_by": max(0, needed - len(pile)), "tasks": tasks,
                  "order": "connection requests first; when they're used up, InMail while credits last; 1st-degree leads get a plain message",
                  "banned_companies": st["banned_companies"], "target_role": st["target_role"],
                  "candidate": userconfig.snapshot(),
@@ -381,17 +433,19 @@ def cmd_status(args) -> int:
     st = settings(args.home)
     leads = load(args.home, "leads.json", {})
     p = pacing(args.home)
-    new = [v for v in leads.values() if v["status"] == "new" and v["score"] >= st["min_score"]]
+    new = contactable(leads, st)
+    needed, q = need(args.home, st)
     return emit({"leads": len(leads), "by_status": dict(Counter(v["status"] for v in leads.values())),
-                 "contactable_now": len(new), "quotas": quotas(p, st), "contacts": len(contacted(args.home)),
-                 "top": [f'{v["score"]} {v["name"]} - {v["headline"][:50]}' for v in sorted(new, key=lambda v: -v["score"])[:8]]})
+                 "contactable_now": len(new), "needed": needed, "done": needed == 0,
+                 "quotas": q, "inmail_credits": p.get("inmail_credits"), "contacts": len(contacted(args.home)),
+                 "top": [f'{v["score"]} {v["name"]} - {v["headline"][:50]}' for v in new[:8]]})
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--home", default=os.environ.get("JOBSWEEP_HOME") or userconfig.home())
     sub = ap.add_subparsers(dest="cmd", required=True)
-    p = sub.add_parser("discover-plan"); p.add_argument("--max-leads", type=int, default=30); p.set_defaults(fn=cmd_discover_plan)
+    p = sub.add_parser("discover-plan"); p.add_argument("--max-leads", type=int, default=0); p.set_defaults(fn=cmd_discover_plan)
     p = sub.add_parser("ingest"); p.add_argument("--result", required=True); p.set_defaults(fn=cmd_ingest)
     sub.add_parser("score").set_defaults(fn=cmd_score)
     p = sub.add_parser("plan"); p.add_argument("--n", type=int, default=30); p.set_defaults(fn=cmd_plan)
