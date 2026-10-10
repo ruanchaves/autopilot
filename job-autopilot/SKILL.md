@@ -8,7 +8,7 @@ description: Job hunting on autopilot, up to the Submit button. Runs the full /j
 This skill runs job-source-sweep, ranks everything it finds, and prepares applications from the best role down. **It never submits an application.** Each form is filled completely and left open in Chrome in front of the Submit button; the user reviews the answers on the dashboard, submits, and marks it submitted. Failed attempts are recorded and shown, never hidden. Recruiter outreach is not part of this skill (see `recruiter-outreach`).
 
 **Paths**
-- **Skill:** `C:\Users\<you>\.claude\skills\job-autopilot` (`<ap>`)
+- **Skill:** `D:\dev\autopilot\job-autopilot` (`<ap>`)
 - **Script:** `<ap>/scripts/autopilot.py`. It reuses job-source-sweep's modules, so it needs the sibling `job-source-sweep` skill folder. `<ap>/scripts/cover_letter.py` renders a cover letter to PDF.
 - **Data:** `<home>/autopilot/`, where `<home>` is job-source-sweep's home (`~/jobsweep`).
 

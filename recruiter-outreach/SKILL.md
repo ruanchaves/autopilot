@@ -8,7 +8,7 @@ description: A standalone LinkedIn recruiter pipeline, separate from job applica
 A pipeline of its own: discover recruiters, score them, contact the best ones within the daily limits. Nothing here is tied to an application. The user authorised sending connection requests and InMails when they set this up; discovery never sends anything.
 
 **Paths**
-- **Skill:** `C:\Users\<you>\.claude\skills\recruiter-outreach` (`<rc>`)
+- **Skill:** `D:\dev\autopilot\recruiter-outreach` (`<rc>`)
 - **Script:** `<rc>/scripts/recruiters.py`. It reuses job-source-sweep's helpers, so it needs the sibling `job-source-sweep` folder.
 - **Data:** `<home>/recruiters/`, where `<home>` is job-source-sweep's home (`~/jobsweep`).
 - **Candidate snapshot:** `<home>/fit-rubric.md` and the resume in the sweep config (`D:/dev/resumes/jane-doe-ai-engineer-cv.yaml`).
