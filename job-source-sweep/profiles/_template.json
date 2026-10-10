@@ -13,7 +13,7 @@
     "exclude": "Case-insensitive regexes; any match drops the title. Start from the noise list below and add seniority/management terms only if they are unwanted.",
     "location_exclude": "Optional regexes against the location field, e.g. '\\\\bUS only\\\\b'.",
     "skip_sources": "HTTP source ids to skip (e.g. cryptocurrencyjobs for non-crypto roles).",
-    "brazil_check_term": "Word used by the opt-in Brazil check: '<term> brazil <company> site:linkedin.com'. Default 'engineer'; use e.g. 'designer' for design roles.",
+    "country_check_term": "Word used by the opt-in country check: '<company> <term> <country> site:linkedin.com' (country from config.yaml). Default 'engineer'; use e.g. 'designer' for design roles.",
     "skip_hosts": "Google shard sites to skip (e.g. agentic-engineering-jobs.com for non-AI roles).",
     "skip_tasks": "Optional browser tasks to skip for this role: linkedin_jobs, linkedin_posts, rocketship, google, or a shard id. Personal skips belong in <home>/config.json instead; both lists are merged.",
     "_where": "Save new profiles to <home>/profiles/ (default ~/jobsweep/profiles), not the skill folder, so the shared skill stays clean.",

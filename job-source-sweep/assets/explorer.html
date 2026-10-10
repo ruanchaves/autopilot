@@ -454,8 +454,8 @@
     <span class="label">Views</span>
     <button class="view" id="v-all" data-view="all">All roles</button>
     <button class="view" id="v-best" data-view="best">Best leads</button>
-    <button class="view" id="v-open" data-view="open">Open to Brazil</button>
-    <button class="view" id="v-latam" data-view="latam">Tagged Brazil or LATAM</button>
+    <button class="view" id="v-open" data-view="open">Open to <span data-country></span></button>
+    <button class="view" id="v-latam" data-view="latam">Tagged <span data-country></span> or <span data-region></span></button>
     <button class="view" id="v-todo" data-view="todo">Not classified yet</button>
   </div>
 
@@ -510,13 +510,13 @@
     <ul>
       <li><strong>Accept / Reject</strong> decisions are saved with this page and kept across daily updates. Each one stores a copy of the role, so accepted and rejected roles stay listed after later sweeps stop finding them. Click the highlighted button again to undo.</li>
       <li><strong>Autopilot · Applications</strong> lists every form the autopilot filled and left open in Chrome. It never submits. Review the typed answers (estimates are flagged), submit the form yourself, then click <em>I submitted it</em>; the next run registers it in applika. <em>Discard</em> closes a form you won't send.</li>
-      <li><strong>Autopilot · Outreach</strong> is the recruiter pipeline, separate from applications: recruiters found on LinkedIn, scored on whether they hire in LATAM or worldwide, are active, and post roles and pay like your target, with the exact message sent to each.</li>
-      <li><strong>Brazil eligibility</strong> is read from the job description text. "Open" means it names Brazil, LATAM or worldwide eligibility; "Restricted" means it states a visa, citizenship or residency requirement (e.g. "must live in the US"); "Nothing stated" means neither. Roles without JD text are "Not classified".</li>
+      <li><strong>Autopilot · Outreach</strong> is the recruiter pipeline, separate from applications: recruiters found on LinkedIn, scored on whether they hire in <span data-region></span> or worldwide, are active, and post roles and pay like your target, with the exact message sent to each.</li>
+      <li><strong><span data-country></span> eligibility</strong> is read from the job description text. "Open" means it names <span data-country></span>, <span data-region></span> or worldwide eligibility; "Restricted" means it states a visa, citizenship or residency requirement (e.g. "must live in the US"); "Nothing stated" means neither. Roles without JD text are "Not classified".</li>
       <li><strong>Resume fit</strong> rates the JD against <code id="resume-name"></code>. Only roles classified "Open" or "Nothing stated" are rated.</li>
-      <li><strong>Brazil hiring check</strong> is one Google search per company, <code id="bz-query"></code>, first page only, run for the green and yellow roles with nothing stated (results are cached per company, so other roles from a checked company show them too). A match shows the company employs people there; it doesn't prove the role is open to Brazil. "No match" means only that the first page had none.</li>
+      <li><strong><span data-country></span> hiring check</strong> is one Google search per company, <code id="bz-query"></code>, first page only, run for the green and yellow roles with nothing stated (results are cached per company, so other roles from a checked company show them too). A match shows the company employs people there; it doesn't prove the role is open to <span data-country></span>. "No match" means only that the first page had none.</li>
       <li><strong>Sweep batch</strong> is the day a sweep ran. A role found again by a later sweep belongs to every batch that found it, so picking one batch shows everything that sweep turned up. The preset views keep the batch you picked; "Clear filters" resets it.</li>
       <li><strong>Region</strong> comes from the JD classification when there is one, otherwise from the posted location tag. <strong>Seniority</strong> is read from the title. <strong>Posted</strong> age is measured from when this page was built (<span id="built"></span>).</li>
-      <li><strong>Best match first</strong> sorts by eligibility (open, nothing stated, not classified, restricted), then resume fit, then the Brazil check, then newest.</li>
+      <li><strong>Best match first</strong> sorts by eligibility (open, nothing stated, not classified, restricted), then resume fit, then the <span data-country></span> check, then newest.</li>
     </ul>
   </footer>
 </div>
@@ -525,11 +525,14 @@
 <script>
 const ROLES = __DATA__;
 const META = __META__;
+const COUNTRY = META.country || "Brazil", REGION = META.region || "LATAM";  // from config.yaml candidate.country / region
+document.querySelectorAll("[data-country]").forEach(e => { e.textContent = COUNTRY; });
+document.querySelectorAll("[data-region]").forEach(e => { e.textContent = REGION; });
 
-const ELIG = { open: ["Open to Brazil/LATAM/worldwide", "good"], none: ["Nothing stated", "weak"],
+const ELIG = { open: [`Open to ${COUNTRY}/${REGION}/worldwide`, "good"], none: ["Nothing stated", "weak"],
                restricted: ["Visa/citizenship/residency restriction", "bad"], unclassified: ["Not classified", "none"] };
 const FIT = { green: ["Green", "good"], yellow: ["Yellow", "weak"], red: ["Red", "bad"], unrated: ["Not rated", "none"] };
-const BZ = { good: ["Engineer located in Brazil", "good"], weak: ["Engineer found elsewhere", "weak"],
+const BZ = { good: [`Engineer located in ${COUNTRY}`, "good"], weak: ["Engineer found elsewhere", "weak"],
              bad: ["No match on page 1", "bad"], blocked: ["Not checked (CAPTCHA)", "none"], none: ["Not checked", "none"] };
 const JD = { fetched: "Fetched", signup: "Sign-up wall", failed: "Failed", not_fetched: "Not fetched" };
 const POSTED = { "24h": "Last 24 h", "48h": "24–48 h", "7d": "2–7 days", older: "Over 7 days", unknown: "Date unknown" };
@@ -643,10 +646,10 @@ const batchLabel = d => `${MONTHS[+d.slice(5, 7) - 1]} ${+d.slice(8, 10)}${d ===
 
 const GROUPS = [
   { key: "batch", title: "Sweep batch", get: r => r.batches || [], opts: BATCHES, label: batchLabel },
-  { key: "elig", title: "Brazil eligibility", get: r => [r.elig], opts: ["open", "none", "restricted", "unclassified"], label: v => ELIG[v][0] },
+  { key: "elig", title: `${COUNTRY} eligibility`, get: r => [r.elig], opts: ["open", "none", "restricted", "unclassified"], label: v => ELIG[v][0] },
   { key: "fit", title: "Resume fit", get: r => [r.fit], opts: ["green", "yellow", "red", "unrated"], label: v => FIT[v][0] },
-  { key: "bz", title: "Brazil hiring check", get: r => [r.bz === "blocked" ? "none" : r.bz], opts: ["good", "weak", "bad", "none"], label: v => BZ[v][0] },
-  { key: "region", title: "Region", get: r => [r.region], opts: ["Brazil", "LATAM", "Worldwide", "US", "Canada", "Europe", "India", "Other", "Unclear"], label: v => v },
+  { key: "bz", title: `${COUNTRY} hiring check`, get: r => [r.bz === "blocked" ? "none" : r.bz], opts: ["good", "weak", "bad", "none"], label: v => BZ[v][0] },
+  { key: "region", title: "Region", get: r => [r.region], opts: [...new Set([COUNTRY, REGION, "Brazil", "LATAM", "Worldwide", "US", "Canada", "Europe", "India", "Other", "Unclear"])], label: v => v },
   { key: "seniority", title: "Seniority", get: r => [r.seniority], opts: ["Junior/Entry", "Mid", "Senior", "Staff", "Principal/Lead", "Not stated"], label: v => v },
   { key: "source", title: "Source", get: r => r.sources || [], opts: ["LinkedIn Jobs", "Remote Rocketship", "Company job pages (ATS) via Google", "Job boards via Google", "Remote-job feeds", "VC portfolio boards"], label: v => v },
   { key: "found", title: "Found by profile", get: r => r.found || [], opts: PROFILES, label: v => FOUND[v] || v },
@@ -657,15 +660,15 @@ const VIEWS = {
   all: {},
   best: { elig: ["open", "none"], fit: ["green", "yellow"] },
   open: { elig: ["open"] },
-  latam: { region: ["Brazil", "LATAM"] },
+  latam: { region: [COUNTRY, REGION] },
   todo: { elig: ["unclassified"] },
 };
 
 const COLUMNS = [
   { key: "loc", label: "Location", on: true },
-  { key: "elig", label: "Brazil eligibility", on: true },
+  { key: "elig", label: `${COUNTRY} eligibility`, on: true },
   { key: "fit", label: "Resume fit", on: true },
-  { key: "bz", label: "Brazil hiring check", on: true },
+  { key: "bz", label: `${COUNTRY} hiring check`, on: true },
   { key: "src", label: "Source · JD", on: false },
 ];
 
@@ -762,7 +765,7 @@ function cells(r) {
                 r.seniority && r.seniority !== "Not stated" ? r.seniority : "", r.comp || "",
                 d ? `${d.status} ${d.at.slice(0, 10)}` : "", r.stale ? "not in today's sweep" : ""]
     .filter(Boolean).map(m => `<span>${esc(m)}</span>`).join("");
-  const regionHl = ["Brazil", "LATAM", "Worldwide"].includes(r.region) ? " hl" : "";
+  const regionHl = [COUNTRY, REGION, "Worldwide"].includes(r.region) ? " hl" : "";
   const out = [];
   out.push(`<td class="c-role" data-label="Role"><div class="cell role">
       <a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.title)}</a>
@@ -770,7 +773,7 @@ function cells(r) {
       ${state.cols.loc ? "" : `<span class="meta"><span>${esc(r.location || "Location not stated")} · ${esc(r.region)}</span></span>`}
       <div class="meta">${meta}</div></div></td>`);
   if (state.cols.loc) out.push(`<td data-label="Location"><div class="cell"><span>${esc(r.location || "Not stated")}</span><span class="tag${regionHl}">${esc(r.region)}</span></div></td>`);
-  if (state.cols.elig) out.push(`<td data-label="Brazil eligibility"><div class="cell"><span class="pill ${elc}">${esc(el)}</span>${r.eligEvidence ? `<p class="note"><q>${esc(trunc(r.eligEvidence, 140))}</q></p>` : ""}</div></td>`);
+  if (state.cols.elig) out.push(`<td data-label="${COUNTRY} eligibility"><div class="cell"><span class="pill ${elc}">${esc(el)}</span>${r.eligEvidence ? `<p class="note"><q>${esc(trunc(r.eligEvidence, 140))}</q></p>` : ""}</div></td>`);
   if (state.cols.fit) out.push(`<td data-label="Resume fit"><div class="cell"><span class="pill ${ftc}">${esc(ft)}</span>${r.fit !== "unrated" && r.fit ? `<p class="note">${esc(trunc(r.fitReason, 150))}</p>${r.fitGaps && !/^none significant/i.test(r.fitGaps) ? `<p class="gapline"><span>Gaps</span>${esc(trunc(r.fitGaps, 140))}</p>` : ""}` : ""}</div></td>`);
   if (state.cols.bz) {
     let note = "";
@@ -778,7 +781,7 @@ function cells(r) {
       const parts = r.bzEvidence.split(" | ");
       note = `<p class="note"><q>${esc(trunc(parts[0], 80))}</q>${parts.length > 2 ? "<br>" + esc(trunc(parts.slice(2).join(" | "), 80)) : ""}</p>`;
     }
-    out.push(`<td data-label="Brazil hiring check"><div class="cell bzc"><span class="pill ${bzc}">${esc(bz)}</span>${note}${r.bzUrl ? `<a href="${esc(r.bzUrl)}" target="_blank" rel="noopener">Google search ↗</a>` : ""}</div></td>`);
+    out.push(`<td data-label="${COUNTRY} hiring check"><div class="cell bzc"><span class="pill ${bzc}">${esc(bz)}</span>${note}${r.bzUrl ? `<a href="${esc(r.bzUrl)}" target="_blank" rel="noopener">Google search ↗</a>` : ""}</div></td>`);
   }
   if (state.cols.src) out.push(`<td data-label="Source · JD"><div class="cell">${(r.sources || []).map(s => `<span class="tag">${esc(s)}</span>`).join("")}<span class="meta"><span>JD: ${esc(JD[r.jd] || "")}</span></span></div></td>`);
   const st = d ? d.status : "";
@@ -796,9 +799,9 @@ function render() {
 
   const heads = [["c-role", "Role"]];
   if (state.cols.loc) heads.push(["", "Location"]);
-  if (state.cols.elig) heads.push(["", "Brazil eligibility"]);
+  if (state.cols.elig) heads.push(["", `${COUNTRY} eligibility`]);
   if (state.cols.fit) heads.push(["", "Resume fit"]);
-  if (state.cols.bz) heads.push(["", "Brazil hiring check"]);
+  if (state.cols.bz) heads.push(["", `${COUNTRY} hiring check`]);
   if (state.cols.src) heads.push(["", "Source · JD"]);
   heads.push(["c-act", "Decision"]);
   document.getElementById("head").innerHTML = heads.map(([c, t]) => `<th scope="col" class="${c}">${t}</th>`).join("");
@@ -1037,10 +1040,10 @@ function renderApps() {
 
 const CHANNEL = { connect: "Connection request + note", inmail: "InMail", message: "LinkedIn message" };
 const LEAD_ST = { new: ["To contact", "weak"], contacted: ["Contacted", "good"], replied: ["Replied", "good"], skipped: ["Skipped", "none"] };
-const SCOPE = { latam: "Hires in LATAM", worldwide: "Hires worldwide", nearshore: "Nearshore agency", remote_unclear: "Remote, region unstated",
+const SCOPE = { latam: `Hires in ${REGION}`, worldwide: "Hires worldwide", nearshore: "Nearshore agency", remote_unclear: "Remote, region unstated",
                 local_only: "Local only", unknown: "Scope unknown" };
 const PAYSIG = { at_or_above: "pay ≥ target", near: "pay near target", below: "pay below target", unknown: "no pay posted" };
-const LEAD_PARTS = [["scope", "LATAM / worldwide", 35], ["active", "Active", 20], ["role", "Role posts", 25], ["pay", "Pay posts", 20]];
+const LEAD_PARTS = [["scope", `${REGION} / worldwide`, 35], ["active", "Active", 20], ["role", "Role posts", 25], ["pay", "Pay posts", 20]];
 function renderOutreach() {
   const leads = RC ? RC.leads || [] : [], minScore = RC ? RC.min_score || 0 : 0;
   const all = leads.filter(c => matchQ(c.name, (c.company || "") + " " + (c.headline || "")));
@@ -1054,7 +1057,7 @@ function renderOutreach() {
   const q = (RC && RC.quotas) || {}, f = k => q[k] ? `${q[k].used}/${q[k].cap}` : "–";
   document.getElementById("auto-count").innerHTML = `<b>${rows.length}</b> recruiter leads`;
   document.getElementById("auto-note").textContent = RC
-    ? `Recruiter outreach, a pipeline of its own (as of ${RC.built}). Each lead is scored on four questions: explicitly hiring in LATAM or worldwide, active on LinkedIn, posting roles like yours, posting pay like your target. ` +
+    ? `Recruiter outreach, a pipeline of its own (as of ${RC.built}). Each lead is scored on four questions: explicitly hiring in ${REGION} or worldwide, active on LinkedIn, posting roles like yours, posting pay like your target. ` +
       `Today (UTC): connection requests ${f("connect")}, InMails ${f("inmail")}, messages ${f("message")}` +
       (q.inmail_credits_hint != null ? `; InMail credits last seen: ${q.inmail_credits_hint}` : "") +
       ". Every message below is the exact text sent. Current employers are never contacted, and nobody is contacted twice."
@@ -1160,10 +1163,10 @@ const batchText = BATCHES.length > 1 ? `${BATCHES.length} sweep batches (${BATCH
 document.getElementById("eyebrow").textContent = `Job source sweep · ${META.date} · ${profileNames}`;
 document.getElementById("lede").textContent =
   `${ROLES.length} unique roles from ${batchText}, profiles ${profileNames}. ` +
-  `${c("open")} say they're open to Brazil, LATAM or worldwide, ${c("none")} state nothing about eligibility, ` +
+  `${c("open")} say they're open to ${COUNTRY}, ${REGION} or worldwide, ${c("none")} state nothing about eligibility, ` +
   `${c("restricted")} carry a visa, citizenship or residency restriction, and ${c("unclassified")} have no JD text classified yet.`;
 document.getElementById("resume-name").textContent = META.resume || "the configured resume (none set, so no role is rated)";
-document.getElementById("bz-query").textContent = `<company> ${META.term} brazil site:linkedin.com`;
+document.getElementById("bz-query").textContent = `<company> ${META.term} ${COUNTRY.toLowerCase()} site:linkedin.com`;
 document.getElementById("built").textContent = META.built;
 render();
 </script>

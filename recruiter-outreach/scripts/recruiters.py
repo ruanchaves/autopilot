@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Recruiter outreach: a ranked database of LinkedIn recruiters who place AI engineers from LATAM
-or worldwide, consumed by connection requests (20 a day) and InMails (while credits last).
+"""Recruiter outreach: a ranked database of LinkedIn recruiters who place people in the target role from
+the candidate region or worldwide, consumed by connection requests (20 a day) and InMails (while credits last).
 Separate from job-autopilot: nothing here depends on an application.
 
     recruiters.py discover-plan [--max-leads 30]          # queries + result file for the discovery subagent
@@ -14,8 +14,8 @@ Separate from job-autopilot: nothing here depends on an application.
     recruiters.py dashboard                                 # dashboard.json for the role explorer's Outreach view
     recruiters.py status
 
-Everything lives in <home>/recruiters/ (<home> is job-source-sweep's, default ~/jobsweep):
-    settings.json   quotas, queries, scoring thresholds, banned companies
+Settings come from config.yaml at the repo root (recruiter_outreach, role, pay, banned_companies).
+Everything else lives in <home>/recruiters/:
     leads.json      every recruiter found: profile, signals, evidence, score, status
     contacts.json   everyone ever contacted (seeded from autopilot), with the exact message sent
     pacing.json     today's counters, last-send times, InMail credits last seen
@@ -38,6 +38,7 @@ SWEEP = Path(__file__).resolve().parents[2] / "job-source-sweep" / "scripts"
 sys.path.insert(0, str(SWEEP))
 import jobsweep as js  # noqa: E402
 import enrich  # noqa: E402
+import userconfig  # noqa: E402  (config.yaml at the repo root)
 
 NOW = datetime.now(timezone.utc)
 TODAY = NOW.strftime("%Y-%m-%d")
@@ -71,46 +72,26 @@ def emit(obj) -> int:
 
 
 DEFAULT_SETTINGS = {
-    "target_role": "AI Engineer",
-    "pay_target_usd_month": 10000,
-    # the user's current employers/clients: their recruiters are never contacted
-    "banned_companies": ["ExampleEmployer", "Example Labs", "example-client.io", "Example Client Co"],
-    # daily caps (UTC day). Connection requests are the user's hard limit; InMails are bounded by
-    # the credits LinkedIn shows, and this cap is only a second guard.
-    "connect_per_day": 20,
-    "inmail_per_day": 15,
+    "connect_per_day": 20,     # the user's hard limit on connection requests per UTC day
+    "inmail_per_day": 15,      # a second guard; the real bound is the credits LinkedIn shows
     "message_per_day": 20,
     "gap_seconds": {"connect": 90, "inmail": 120, "message": 60},
-    # leads below this score are not contacted
-    "min_score": 45,
-    # a lead's signals are re-probed after this many days
-    "stale_days": 60,
-    # LinkedIn people-search phrasings (the discovery subagent picks the ones not run recently)
-    "people_queries": [
-        "technical recruiter AI engineer LATAM",
-        "AI ML recruiter Latin America remote",
-        "talent partner machine learning engineers worldwide remote",
-        "recruiter hiring LLM engineers remote anywhere",
-        "nearshore recruiter senior AI engineer Brazil",
-        "talent acquisition GenAI engineers remote LATAM",
-        "recruiter contract AI engineer USD remote",
-        "recrutador tech IA remoto internacional",
-    ],
-    # LinkedIn post-search phrasings: hiring posts whose authors are recruiters
-    "post_queries": [
-        "hiring AI engineer LATAM remote",
-        "hiring senior AI engineer remote worldwide",
-        "LLM engineer remote Latin America hiring",
-        "machine learning engineer remote anywhere hiring contractor",
-        "AI engineer remote Brazil USD",
-        "GenAI engineer nearshore hiring",
-    ],
+    "min_score": 45,           # leads below this are not contacted
+    "stale_days": 60,          # a lead's signals are re-probed after this many days
+    "people_queries": [],      # from config.yaml recruiter_outreach.people_queries
+    "post_queries": [],
+    # filled in from config.yaml by settings(): target_role, pay_target_usd_month, banned_companies
 }
 
 
 def settings(home: str) -> dict:
+    """DEFAULT_SETTINGS under config.yaml's recruiter_outreach section, plus the shared role, pay
+    and banned-company values."""
+    cfg = userconfig.load()
     s = dict(DEFAULT_SETTINGS)
-    s.update(load(home, "settings.json", {}))
+    s.update(cfg.get("recruiter_outreach") or {})
+    s.update(target_role=(cfg.get("role") or {}).get("title", ""), pay_target_usd_month=userconfig.pay().get("target_usd_month", 0),
+             banned_companies=userconfig.banned_companies())
     return s
 
 
@@ -176,7 +157,7 @@ def cmd_discover_plan(args) -> int:
     return emit({"people_queries": people, "post_queries": posts, "max_leads": args.max_leads,
                  "known_profiles": sorted(leads), "reprobe": reprobe,
                  "target_role": st["target_role"], "pay_target_usd_month": st["pay_target_usd_month"],
-                 "banned_companies": st["banned_companies"],
+                 "banned_companies": st["banned_companies"], "candidate": userconfig.snapshot(),
                  "result": enrich.host_path(out / f"discover_result_{NOW.strftime('%H%M')}.json")})
 
 
@@ -275,6 +256,7 @@ def cmd_plan(args) -> int:
     return emit({"quotas": q, "pile": len(pile), "tasks": tasks,
                  "order": "connection requests first; when they're used up, InMail while credits last; 1st-degree leads get a plain message",
                  "banned_companies": st["banned_companies"], "target_role": st["target_role"],
+                 "candidate": userconfig.snapshot(),
                  "contacts_file": enrich.host_path(rc_dir(args.home) / "contacts.json"),
                  "result": enrich.host_path(out / f"outreach_result_{NOW.strftime('%H%M')}.json")})
 
@@ -407,7 +389,7 @@ def cmd_status(args) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--home", default=os.environ.get("JOBSWEEP_HOME", "~/jobsweep"))
+    ap.add_argument("--home", default=os.environ.get("JOBSWEEP_HOME") or userconfig.home())
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("discover-plan"); p.add_argument("--max-leads", type=int, default=30); p.set_defaults(fn=cmd_discover_plan)
     p = sub.add_parser("ingest"); p.add_argument("--result", required=True); p.set_defaults(fn=cmd_ingest)

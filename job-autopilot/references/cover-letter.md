@@ -10,9 +10,9 @@ These rules were drawn from hiring managers' and recruiters' own advice (Ask a M
 - **Greeting:** the hiring manager's or recruiter's name if the posting gives one; otherwise "Hi <Company> team," or "Hello,". Never "Dear Sir or Madam" or "To whom it may concern".
 - **Paragraph 1 (one or two sentences):** which role, and one concrete thing about this company or this job that connects to the applicant's work. A product they ship, a problem the JD names, a stack choice, something from their engineering blog. If nothing specific is known, name the role and go straight to the story.
 - **Paragraph 2 (two to four sentences):** one story from the resume that answers this JD's main requirement. Situation, what the applicant decided or built, a measured result. Add one sentence the resume doesn't say: a trade-off, a judgement call, what was deliberately not built.
-- **Paragraph 3 (one or two sentences):** the logistics line and a plain close. The logistics line is factual, not apologetic: "Based in São Paulo (UTC-3); I've worked full US-Eastern hours for North American clients for the last few years." Then: "Happy to walk through the architecture on a call." or "Looking forward to hearing from you." Sign with the applicant's first name.
+- **Paragraph 3 (one or two sentences):** the logistics line and a plain close. The logistics line is factual, not apologetic, and comes from `candidate.location_pitch` (city, time zone, the hours and clients the applicant already works with). Then: "Happy to walk through the architecture on a call." or "Looking forward to hearing from you." Sign with the applicant's first name.
 
-Before writing, pull from the JD: the top two requirements, the named tools, the domain, and anything the company says about itself. Then pick the resume story that matches the top requirement. The applicant's strongest stories are the LLM and RAG work at a 30M-customer bank, the fintech work, document automation, LangGraph agents, and open-source NLP research; choose the one this JD cares about, not the most impressive one.
+Before writing, pull from the JD: the top two requirements, the named tools, the domain, and anything the company says about itself. Then pick the resume story that matches the top requirement. The applicant's strongest stories are listed in `candidate.stories` (the resume has the details); choose the one this JD cares about, not the most impressive one.
 
 ## Voice
 
@@ -21,7 +21,7 @@ Before writing, pull from the JD: the top two requirements, the named tools, the
 - Say "I built", "I chose", "I shipped". Not "I was responsible for".
 - Numbers where the resume has them. "cut review time by 40%" beats "significantly improved efficiency".
 - One idea per sentence. Commas and full stops, not semicolons or dashes.
-- Portuguese when the posting is in Portuguese and the company is Brazilian; otherwise English.
+- The applicant's native language (`candidate.native_language`) when the posting is written in it and the company is local; otherwise English.
 
 ## Never
 
@@ -55,6 +55,6 @@ Read the finished letter once as the hiring manager would, and answer three ques
 >
 > I'm in São Paulo (UTC-3) and have worked US-Eastern hours for North American clients since 2022. Happy to walk through the pipeline on a call.
 >
-> Jane
+> <first name>
 
-The details in this example (the photocopied contracts, the reranker, the residency rule) are invented to show the shape. Take the applicant's facts only from the resume and the tailored summary. Write a different letter every time: the story, the specific hook and the trade-off sentence change with the JD.
+Every detail in this example (the bank, the photocopied contracts, the reranker, the residency rule, the city) is invented to show the shape. Take the applicant's facts only from the resume and the tailored summary. Write a different letter every time: the story, the specific hook and the trade-off sentence change with the JD.

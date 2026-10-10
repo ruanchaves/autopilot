@@ -40,6 +40,8 @@ from html.entities import name2codepoint
 from pathlib import Path
 
 SKILL = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import userconfig  # noqa: E402  (config.yaml at the repo root)
 CATALOGUE = SKILL / "sources.json"
 PROFILES = SKILL / "profiles"
 NOW = datetime.now(timezone.utc)
@@ -75,8 +77,8 @@ CONFIG_DEFAULTS = {
     "remote_only": True,
     "max_new_roles": 0,
     "report_rows": 15,
-    "brazil_check": "on_request",
-    "brazil_limit": 20,
+    "country_check": "on_request",
+    "country_check_limit": 20,
     "skip_sources": [],
     "skip_hosts": [],
     "skip_tasks": [],
@@ -95,10 +97,21 @@ def config_path(home: str) -> Path:
     return fix_path(home) / "config.json"
 
 
+STATE_KEYS = ("explorer_url",)  # the only keys <home>/config.json still holds; everything else is config.yaml
+
+
 def load_config(home: str) -> dict:
+    """config.yaml's sweep/role/resume sections, with CONFIG_DEFAULTS underneath and the per-home
+    state file (explorer_url) on top."""
+    cfg = userconfig.load()
+    merged = {**CONFIG_DEFAULTS, **(cfg.get("sweep") or {}), "python": cfg.get("python", ""),
+              "profile": (cfg.get("role") or {}).get("profile") or CONFIG_DEFAULTS["profile"],
+              "resume": (cfg.get("resume") or {}).get("base", ""), "role_title": (cfg.get("role") or {}).get("title", ""),
+              "country": userconfig.country(), "region": userconfig.region()}
     path = config_path(home)
     saved = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-    return {**CONFIG_DEFAULTS, **saved}
+    merged.update({k: v for k, v in saved.items() if k in STATE_KEYS})
+    return merged
 
 
 def profile_dirs(home: str) -> list[Path]:
@@ -807,7 +820,7 @@ def cmd_merge(args) -> int:
 
     # Brazil verdicts: fold this run's verdicts.jsonl into the shared cache,
     # then stamp every row whose company has a cached verdict.
-    term = profile.get("brazil_check_term", "engineer")
+    term = profile.get("country_check_term", "engineer")
     cache, verify_gaps = ingest_verdicts(args.home, out_dir)
     for r in rows:
         v = cache.get(verdict_key(term, r.get("company", "")))
@@ -833,7 +846,7 @@ def cmd_merge(args) -> int:
              f"{len(rows)} unique postings, {sum(r['new'] for r in rows)} new; {dropped} dropped by date/title.", ""]
     if gaps:
         lines += ["## Coverage gaps", ""] + [f"- {g.get('source') or g.get('task')}: {g.get('error') or g.get('reason') or 'incomplete'}" for g in gaps] + [""]
-    lines += ["| New | Posted | Brazil | Title | Company | Location | Sources |", "|---|---|---|---|---|---|---|"]
+    lines += [f"| New | Posted | {userconfig.country()} | Title | Company | Location | Sources |", "|---|---|---|---|---|---|---|"]
     for r in rows:
         flag = r.get("brazil")
         brazil = f"[{'🟢' if flag == 'green' else '🔴'}]({r['brazil_evidence']})" if flag else ""
@@ -854,13 +867,15 @@ def cmd_merge(args) -> int:
     return 0
 
 
-# --------------------------------------------------------- Brazil verification
+# -------------------------------------------------------- country verification
 #
-# Ported from D:/dev/jobsearch/scripts/verify_prompt.md: ONE Google query per
-# company, `<company> <term> brazil site:linkedin.com`, first page only. Green =
+# ONE Google query per company, `<company> <term> <country> site:linkedin.com` (the country is
+# config.yaml candidate.country), first page only. Green =
 # a LinkedIn /in/ profile on that page shows a <term> connected to the company.
 # Red = the page was read completely and has none. Anything else is not a verdict.
-# Verdicts are cached per (term, company) across runs and profiles.
+# Verdicts are cached per (term, company) across runs and profiles, and carry the country they were
+# searched for; a verdict for another country is ignored. (Row/verdict keys keep the historical
+# "brazil_*" names so existing caches stay valid.)
 
 _SUFFIXES = re.compile(r"\b(inc|incorporated|llc|ltd|limited|gmbh|ag|sa|s\.a|sas|srl|bv|b\.v|plc|corp|"
                        r"corporation|co|company|ltda|oy|ab|as|pty|pvt|technologies|labs?)\b\.?", re.I)
@@ -876,14 +891,15 @@ def verdict_key(term: str, company: str) -> str:
     return f"{term.lower()}|{key}" if key else ""
 
 
-def brazil_search_url(term: str, company: str) -> str:
+def country_search_url(term: str, company: str) -> str:
     return "https://www.google.com/search?q=" + urllib.parse.quote_plus(
-        f"{company} {term} brazil site:linkedin.com")
+        f"{company} {term} {userconfig.country().lower()} site:linkedin.com")
 
 
 def ingest_verdicts(home: str, out_dir: Path) -> tuple[dict, list]:
     path = fix_path(home) / "verdicts.json"
     cache = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    country = userconfig.country()
     gaps, source = [], out_dir / "verdicts.jsonl"
     if source.exists():
         for line in source.read_text(encoding="utf-8").splitlines():
@@ -897,12 +913,14 @@ def ingest_verdicts(home: str, out_dir: Path) -> tuple[dict, list]:
                               "checked": v.get("checked") or NOW.strftime("%Y-%m-%d"),
                               "search_url": v.get("search_url", ""), "detail": v.get("detail", ""),
                               "evidence": v.get("evidence", [])[:3],
-                              "brazil_located": v.get("brazil_located")}
+                              "brazil_located": v.get("brazil_located"), "country": country}
             elif key not in cache:
-                gaps.append({"task": f"Brazil check: {v.get('company')}",
+                gaps.append({"task": f"{country} check: {v.get('company')}",
                              "reason": v.get("status") or "no verdict", "complete": False})
         path.write_text(json.dumps(cache, indent=1, ensure_ascii=False), encoding="utf-8")
-    return cache, gaps
+    # verdicts searched for another country (config.yaml changed) are not reused
+    usable = {k: v for k, v in cache.items() if (v.get("country") or "Brazil") == country}
+    return usable, gaps
 
 
 def cmd_verify_queue(args) -> int:
@@ -912,7 +930,7 @@ def cmd_verify_queue(args) -> int:
     if not results.exists():
         sys.exit("run merge first")
     rows = json.loads(results.read_text(encoding="utf-8"))
-    term = profile.get("brazil_check_term", "engineer")
+    term = profile.get("country_check_term", "engineer")
     cache, _ = ingest_verdicts(args.home, out_dir)
     cutoff = (NOW - timedelta(days=args.ttl)).strftime("%Y-%m-%d")
     done_this_run = set()
@@ -941,7 +959,7 @@ def cmd_verify_queue(args) -> int:
         if key in done_this_run:
             continue
         entry = wanted.setdefault(key, {"company": r["company"], "key": key, "term": term,
-                                        "postings": 0, "search_url": brazil_search_url(term, r["company"])})
+                                        "postings": 0, "search_url": country_search_url(term, r["company"])})
         entry["postings"] += 1
     queue = sorted(wanted.values(), key=lambda e: -e["postings"])
     plan = {"verdicts_file": str(out_dir / "verdicts.jsonl"), "term": term,
@@ -970,26 +988,23 @@ def cmd_test_match(args) -> int:
 
 
 def cmd_config(args) -> int:
-    """Show the saved preferences plus every choice setup can offer, or save new ones."""
+    """Show the effective config (config.yaml + state) plus every choice setup can offer. --set only
+    stores state keys (explorer_url); preferences are edited in config.yaml."""
     path = config_path(args.home)
     if args.set is not None:
         updates = json.loads(args.set)
-        unknown = set(updates) - set(CONFIG_DEFAULTS)
+        unknown = set(updates) - set(STATE_KEYS)
         if unknown:
-            sys.exit(f"unknown config keys: {', '.join(sorted(unknown))}")
-        if updates.get("mode", "standard") not in ("quick", "standard", "full"):
-            sys.exit("mode must be quick, standard or full")
-        if updates.get("brazil_check", "on_request") not in ("never", "on_request", "always"):
-            sys.exit("brazil_check must be never, on_request or always")
-        if updates.get("explorer", "full") not in ("full", "table", "off"):
-            sys.exit("explorer must be full, table or off")
+            sys.exit(f"{', '.join(sorted(unknown))}: edit the sweep section of {userconfig.CONFIG_PATH} instead "
+                     f"(config --set only stores {', '.join(STATE_KEYS)})")
         saved = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({**saved, **updates}, indent=2), encoding="utf-8")
     cat = load_catalogue()
     names = sorted({p.stem for d in profile_dirs(args.home) for p in d.glob("*.json") if not p.stem.startswith("_")})
     print(json.dumps({
-        "exists": path.exists(), "path": str(path), "config": load_config(args.home),
+        "exists": userconfig.CONFIG_PATH.exists(), "config_yaml": str(userconfig.CONFIG_PATH), "state_path": str(path),
+        "config": load_config(args.home),
         "user_profiles_dir": str(profile_dirs(args.home)[0]), "profiles": names,
         "options": {
             "sources": {s["id"]: s["label"] for s in cat["http"]},
@@ -1004,16 +1019,16 @@ def cmd_config(args) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd", required=True)
-    p = sub.add_parser("config", help="show or update <home>/config.json")
-    p.add_argument("--home", default=os.environ.get("JOBSWEEP_HOME", "~/jobsweep"))
-    p.add_argument("--set", help="JSON object of keys to save, e.g. '{\"days\": 3}'")
+    p = sub.add_parser("config", help="show the effective config (config.yaml + <home>/config.json state)")
+    p.add_argument("--home", default=os.environ.get("JOBSWEEP_HOME") or userconfig.home())
+    p.add_argument("--set", help="JSON object of state keys to save, e.g. '{\"explorer_url\": \"...\"}'")
     p.set_defaults(fn=cmd_config)
     for name, fn in (("plan", cmd_plan), ("http", cmd_http), ("merge", cmd_merge),
                      ("test-match", cmd_test_match), ("verify-queue", cmd_verify_queue)):
         p = sub.add_parser(name)
         p.add_argument("--profile", required=True, help="profile name in profiles/ or a path")
         p.add_argument("--days", type=float, default=2, help="age tolerance in days (default 2)")
-        p.add_argument("--home", default=os.environ.get("JOBSWEEP_HOME", "~/jobsweep"))
+        p.add_argument("--home", default=os.environ.get("JOBSWEEP_HOME") or userconfig.home())
         if name in ("http", "test-match"):
             p.add_argument("sources", nargs="*", help="limit to these source ids")
         if name == "http":

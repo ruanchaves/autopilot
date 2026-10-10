@@ -23,8 +23,8 @@ and only confirmed applications are registered in applika.
     autopilot.py dashboard                                        # dashboard.json for the role explorer
     autopilot.py status
 
-Everything lives in <home>/autopilot/:
-    settings.json      channels, time cap, retry limits, cover-letter policy
+Settings come from config.yaml at the repo root (sections autopilot, pay, tracker, banned_companies,
+candidate). Everything else lives in <home>/autopilot/:
     answer-bank.json   applicant profile, answered/estimated/pending form questions, confirmed/denied skills
     scores.json        score parts per role key (the total is computed on read, so a changed
                        eligibility class re-ranks a role without re-scoring it)
@@ -56,6 +56,7 @@ SWEEP = Path(__file__).resolve().parents[2] / "job-source-sweep" / "scripts"
 sys.path.insert(0, str(SWEEP))
 import jobsweep as js  # noqa: E402
 import enrich  # noqa: E402
+import userconfig  # noqa: E402  (config.yaml at the repo root)
 
 NOW = datetime.now(timezone.utc)
 TODAY = NOW.strftime("%Y-%m-%d")
@@ -98,18 +99,10 @@ DEFAULT_SETTINGS = {
     # cover letters: "required" = draft one only when the form requires it or the posting asks for
     # one; "always" = draft one wherever a form accepts it; "never"
     "cover_letter": "required",
-    # the user's current employers/clients: never applied to, never contacted
-    "banned_companies": ["ExampleEmployer", "Example Labs", "example-client.io", "Example Client Co"],
-    # pay, in USD per month: rank by it, and skip roles whose *posted* pay tops out below the floor
-    "pay_target_usd_month": 10000,
-    "pay_skip_below_usd_month": 8000,
-    # a company that rejected the user (an applika application finalized as Denied) is not applied
-    # to again for this many days, counted from the rejection date
-    "rejection_cooldown_days": 180,
-    # feedback names that say nothing about the candidate, so they don't start a cooldown
-    "rejection_neutral_feedback": ["Role closed", "Position filled"],
-    # aggregators filed as the "company" in applika; a rejection there says nothing about the real employer
-    "rejection_ignore_companies": ["Jobgether"],
+    # filled in from config.yaml by settings(): banned_companies (current employers/clients, never
+    # applied to), pay_target_usd_month / pay_skip_below_usd_month (pay section), and the tracker
+    # section (applika_enabled, rejection_cooldown_days, rejection_neutral_feedback,
+    # rejection_ignore_companies)
 }
 
 
@@ -127,8 +120,16 @@ def is_banned(company: str, st: dict) -> bool:
 
 
 def settings(home: str) -> dict:
+    """DEFAULT_SETTINGS under config.yaml's autopilot, pay, tracker and banned_companies sections."""
+    cfg = userconfig.load()
     s = dict(DEFAULT_SETTINGS)
-    s.update(load(home, "settings.json", {}))
+    s.update(cfg.get("autopilot") or {})
+    p, t = cfg.get("pay") or {}, cfg.get("tracker") or {}
+    s.update(banned_companies=userconfig.banned_companies(),
+             pay_target_usd_month=p.get("target_usd_month", 10000), pay_skip_below_usd_month=p.get("skip_below_usd_month", 0),
+             applika_enabled=t.get("enabled", True), rejection_cooldown_days=t.get("rejection_cooldown_days", 0),
+             rejection_neutral_feedback=t.get("rejection_neutral_feedback") or [],
+             rejection_ignore_companies=t.get("rejection_ignore_companies") or [])
     return s
 
 
@@ -158,6 +159,7 @@ def bank(home: str) -> dict:
         b.setdefault(k, v)
     for k, v in empty_bank()["skills"].items():
         b["skills"].setdefault(k, v)
+    b["profile"] = userconfig.profile()  # always from config.yaml; the file's copy is only a mirror
     return b
 
 
@@ -284,7 +286,7 @@ def cmd_score_queue(args) -> int:
     b = bank(args.home)
     ctx = {"rubric": enrich.host_path(home / "fit-rubric.md"),
            "confirmed_skills": b["skills"]["confirmed"], "denied_skills": b["skills"]["denied"],
-           "languages": b["profile"].get("languages", ""),
+           "languages": b["profile"].get("languages", ""), "candidate": userconfig.snapshot(),
            "banned_companies": settings(args.home)["banned_companies"],
            "pay_target_usd_month": settings(args.home)["pay_target_usd_month"]}
     enrich.write_json(out / "score_context.json", ctx)
@@ -592,6 +594,9 @@ def cmd_tailor_queue(args) -> int:
     ledger = load(args.home, "ledger.json", {})
     b = bank(args.home)
     out = work_dir(args.home)
+    rc = userconfig.load().get("resume") or {}
+    tailored_root = js.fix_path(rc["tailored_dir"]) if rc.get("tailored_dir") else base.parent / "tailored"
+    prefix = rc.get("file_prefix") or base.stem
     others = sorted({str(Path(x["tailored"]["yaml_wsl"]).parent) for x in ledger.values()
                      if (x.get("tailored") or {}).get("yaml_wsl")})
     jobs = []
@@ -605,7 +610,7 @@ def cmd_tailor_queue(args) -> int:
         started = e.get("tailor_started", "")
         if started and started > (NOW - timedelta(hours=1)).isoformat():
             continue
-        folder = base.parent / "tailored" / f"{slug(r['company'], 25)}-{slug(r['title'], 40)}"
+        folder = tailored_root / f"{slug(r['company'], 25)}-{slug(r['title'], 40)}"
         marker = folder / ".role_id"
         if folder.exists() and (not marker.exists() or marker.read_text().strip() != r["id"]):
             folder = folder.with_name(folder.name + "-" + r["id"][:6])
@@ -615,7 +620,7 @@ def cmd_tailor_queue(args) -> int:
         jobs.append({"id": r["id"], "title": r["title"], "company": r["company"], "url": r["url"],
                      "jd_file": enrich.host_path(home / "jds" / jd["file"]) if jd.get("status") == "ok" else "",
                      "base_resume": enrich.host_path(base), "folder": enrich.host_path(folder),
-                     "file_name": f"jane-doe-{folder.name}.yaml" if "ruan" in base.name else f"{base.stem}-{folder.name}.yaml",
+                     "file_name": f"{prefix}-{folder.name}.yaml",
                      "result": enrich.host_path(out / f"tailor_result_{r['id']}.json")})
         e["tailor_started"] = NOW.isoformat()
     save(args.home, "ledger.json", ledger)
@@ -750,6 +755,7 @@ def cmd_next(args) -> int:
                    for x in existing or [] if js.company_key(x.get("company_name", "")) == js.company_key(r["company"])]
         rj = rejection_for(recent_rejections(existing, st), r["company"])
         return emit({"banned_companies": st["banned_companies"], "cover_letter_policy": st["cover_letter"],
+                     "candidate": userconfig.profile(),
                      "role": {**r, "tailored_pdf": t["pdf"], "tailored_summary": t.get("summary", ""),
                               "tailored_folder": str(Path(t["pdf"]).parent.parent) if t.get("pdf") else "",
                               "jd_file": t.get("jd_file", ""),
@@ -1025,6 +1031,8 @@ def applika_bin() -> str:
 
 
 def run_applika(argv: list[str], timeout: int = 120) -> subprocess.CompletedProcess:
+    if not userconfig.load().get("tracker", {}).get("enabled", True):
+        return subprocess.CompletedProcess(argv, 0, stdout="[]", stderr="")  # tracker disabled: nothing registered
     return subprocess.run([applika_bin(), *argv], capture_output=True, text=True, timeout=timeout)
 
 
@@ -1034,6 +1042,8 @@ def cmd_applika_sync(args) -> int:
     ledger = load(args.home, "ledger.json", {})
     scores = load(args.home, "scores.json", {})
     todo = [e for e in ledger.values() if e.get("status") == "applied" and not e.get("applika")]
+    if not settings(args.home)["applika_enabled"]:
+        return emit({"registered": 0, "note": "tracker disabled in config.yaml", "unregistered": len(todo)})
     if not todo:
         return emit({"registered": 0, "note": "nothing new to register"})
     existing, err = applika_list(args.home, refresh=True)
@@ -1175,7 +1185,7 @@ def cmd_status(args) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--home", default=os.environ.get("JOBSWEEP_HOME", "~/jobsweep"))
+    ap.add_argument("--home", default=os.environ.get("JOBSWEEP_HOME") or userconfig.home())
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("score-queue"); p.add_argument("--batches", type=int, default=14)
     p.add_argument("--batch-size", type=int, default=20); p.add_argument("--decisions"); p.set_defaults(fn=cmd_score_queue)

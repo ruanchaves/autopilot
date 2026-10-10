@@ -1,7 +1,7 @@
 """Enrichment and the role explorer - the stage that runs after `merge`.
 
     jobsweep.py jds          [--profiles a,b]                 # fetch JD text for today's roles
-    jobsweep.py enrich-queue --stage eligibility|fit|brazil   # batch files for the subagents
+    jobsweep.py enrich-queue --stage eligibility|fit|country  # batch files for the subagents
     jobsweep.py explorer     [--profiles a,b] [--batches N]   # roles.json/.csv + explorer.html
 
 All three work on the union of today's runs (every <home>/runs/<date>-<profile>/results.json,
@@ -10,8 +10,8 @@ last --batches sweep dates and tags each role with the batches (run dates) that 
 learned about a role is cached in <home> so it carries across days and profiles:
 
     <home>/jds/index.json + *.txt    JD text, keyed by normalised URL
-    <home>/classifications.json      Brazil-eligibility class and resume fit per URL
-    <home>/verdicts.json             Brazil hiring check per company (shared with verify-queue)
+    <home>/classifications.json      eligibility class (for the candidate's country/region) and resume fit per URL
+    <home>/verdicts.json             country hiring check per company (shared with verify-queue)
     <home>/fit-rubric.md             candidate snapshot + rubric, tied to the resume's hash
 """
 
@@ -32,6 +32,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 import jobsweep as js
+import userconfig
 
 MIN_CHARS = 400
 HOST_INTERVAL = 2.0
@@ -460,11 +461,14 @@ def cmd_enrich_queue(args) -> int:
             entries.append({"id": r["id"], "key": r["key"], "file": host_path(home / "jds" / jd["file"]),
                             "title": r["title"], "company": r["company"]})
         write_json(home / "classifications.json", cache, indent=0)
-        result.update(pending=len(entries), batches=write_batches(out, stage, entries, args.batch_size))
+        c = userconfig.candidate()
+        result.update(pending=len(entries), batches=write_batches(out, stage, entries, args.batch_size),
+                      context={"country": c.get("country", ""), "region": c.get("region", ""),
+                               "region_aliases": c.get("region_aliases") or []})
         if stage == "fit":
             result["rubric"] = host_path(home / "fit-rubric.md")
-    else:  # brazil
-        term = js.load_profile(config["profile"], args.home).get("brazil_check_term", "engineer")
+    else:  # country check
+        term = js.load_profile(config["profile"], args.home).get("country_check_term", "engineer")
         verdicts = read_json(home / "verdicts.json", {})
         cutoff = (js.NOW - timedelta(days=args.ttl)).strftime("%Y-%m-%d")
         done_now = {v.get("key") for v in (read_jsonl(out / "verdicts.jsonl") if (out / "verdicts.jsonl").exists() else [])
@@ -480,11 +484,11 @@ def cmd_enrich_queue(args) -> int:
             if not key or key in done_now or verdicts.get(key, {}).get("checked", "") >= cutoff:
                 continue
             e = wanted.setdefault(key, {"company": r["company"], "key": key, "term": term, "roles": [],
-                                        "search_url": js.brazil_search_url(term, r["company"]), "rank": 9})
+                                        "search_url": js.country_search_url(term, r["company"]), "rank": 9})
             e["roles"].append(r["id"])
             e["rank"] = min(e["rank"], rank.get(fit, 9))
         queue = sorted(wanted.values(), key=lambda e: (e["rank"], -len(e["roles"])))
-        limit = args.limit or int(config.get("brazil_limit") or 20)
+        limit = args.limit or int(config.get("country_check_limit") or 20)
         plan = {"verdicts_file": host_path(out / "verdicts.jsonl"), "term": term, "queue": queue[:limit],
                 "remaining_after_cap": max(0, len(queue) - limit)}
         write_json(out / "verify-queue.json", plan)
@@ -509,11 +513,19 @@ REGIONS = [
 ]
 
 
+def regions() -> list[tuple[str, str]]:
+    """REGIONS with the candidate's own country (config.yaml) in front when it isn't already listed."""
+    c = userconfig.country()
+    if c and c not in {label for label, _ in REGIONS}:
+        return [(c, re.escape(c.lower()))] + REGIONS
+    return REGIONS
+
+
 def region_of(*texts: str) -> str:
     t = re.sub(r"(?i)\bremote\b", "", " ".join(x for x in texts if x)).strip(" ,-()")
     if not t or t.lower() == "unclear":
         return "Unclear"
-    return next((name for name, pat in REGIONS if re.search(pat, t, re.I)), "Other")
+    return next((name for name, pat in regions() if re.search(pat, t, re.I)), "Other")
 
 
 def seniority(title: str) -> str:
@@ -570,7 +582,7 @@ def cmd_explorer(args) -> int:
     verdicts, verify_gaps = js.ingest_verdicts(args.home, out)
     index = read_json(home / "jds" / "index.json", {})
     config = js.load_config(args.home)
-    term = js.load_profile(config["profile"], args.home).get("brazil_check_term", "engineer")
+    term = js.load_profile(config["profile"], args.home).get("country_check_term", "engineer")
     rsha = resume_sha(home)
     # job-autopilot (optional) writes scores and application statuses for this page;
     # recruiter-outreach (optional) writes the ranked recruiter leads for its Outreach view
@@ -627,6 +639,7 @@ def cmd_explorer(args) -> int:
             "profiles": sorted({p for r in records for p in r["found"]}),
             "batches": sorted({b for r in records for b in r["batches"]}, reverse=True),
             "resume": Path(config.get("resume") or "").name, "term": term,
+            "country": userconfig.country(), "region": userconfig.region(), "role": config.get("role_title", ""),
             "autopilot": {k: auto.get(k) for k in ("built", "apps", "questions", "estimates", "skills", "ready", "max_ready")} if auto else None,
             "recruiters": {k: recruiters.get(k) for k in ("built", "leads", "quotas", "min_score")} if recruiters else None}
     template = (js.SKILL / "assets" / "explorer.html").read_text(encoding="utf-8")
@@ -644,7 +657,7 @@ def cmd_explorer(args) -> int:
 
 
 def add_commands(sub) -> None:
-    home_default = os.environ.get("JOBSWEEP_HOME", "~/jobsweep")
+    home_default = os.environ.get("JOBSWEEP_HOME") or userconfig.home()
 
     def common(p):
         p.add_argument("--home", default=home_default)
@@ -657,14 +670,14 @@ def add_commands(sub) -> None:
     p.add_argument("--workers", type=int, default=6)
     p.set_defaults(fn=cmd_jds)
 
-    p = sub.add_parser("enrich-queue", help="batch files for the eligibility / fit / brazil subagents")
+    p = sub.add_parser("enrich-queue", help="batch files for the eligibility / fit / country-check subagents")
     common(p)
-    p.add_argument("--stage", required=True, choices=["eligibility", "fit", "brazil"])
+    p.add_argument("--stage", required=True, choices=["eligibility", "fit", "country", "brazil"])  # brazil = old name
     p.add_argument("--batch-size", type=int, default=25)
     p.add_argument("--fits", type=lambda s: s.split(","), default=["green", "yellow"],
-                   help="brazil stage: which resume-fit ratings to check (default green,yellow)")
-    p.add_argument("--limit", type=int, default=0, help="brazil stage: max companies (default config brazil_limit)")
-    p.add_argument("--ttl", type=int, default=30, help="brazil stage: re-check verdicts older than N days")
+                   help="country stage: which resume-fit ratings to check (default green,yellow)")
+    p.add_argument("--limit", type=int, default=0, help="country stage: max companies (default sweep.country_check_limit)")
+    p.add_argument("--ttl", type=int, default=30, help="country stage: re-check verdicts older than N days")
     p.set_defaults(fn=cmd_enrich_queue)
 
     p = sub.add_parser("explorer", help="join everything into roles.json/.csv and render explorer.html")

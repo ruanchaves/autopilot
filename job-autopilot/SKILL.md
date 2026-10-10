@@ -1,6 +1,6 @@
 ---
 name: job-autopilot
-description: Job hunting on autopilot, up to the Submit button. Runs the full /job-source-sweep, gives every role a 0-100 global fit score and ranks them, decides liberally which roles are worth applying to (skipping only clear mismatches, explicit location/citizenship exclusions, non-remote and CLT roles), then works down the ranking - tailoring the resume for each role with /tailor-resume (automatic mode, JD-specific summary), filling the application completely through the company ATS form, LinkedIn Easy Apply or an email draft, drafting and attaching a short cover letter when the form requires one, and STOPPING before Submit with the tab left open for the user. It never submits. It answers every form question from the resume and context, marking estimates for the user to confirm, keeps every answer so a question is asked only once, and asks the user only the few things it can't estimate (IDs, authorisation, documents). The user reviews each filled form on the role explorer's Autopilot tab, submits it, and marks it Submitted; only then is it registered in applika via WSL. It paces work per site, records every outcome, and never applies to the user's current employers (ExampleEmployer, Example Labs, example-client.io, Example Client Co). It does no LinkedIn outreach; that is the separate /recruiter-outreach skill. Use when the user wants to sweep and prepare applications automatically, continue or resume the apply loop, retry failed applications, confirm which filled applications they submitted, or see which applications are ready, submitted or failed.
+description: Job hunting on autopilot, up to the Submit button. Runs the full /job-source-sweep, gives every role a 0-100 global fit score and ranks them, decides liberally which roles are worth applying to (skipping only clear mismatches, explicit location/citizenship exclusions, non-remote roles and excluded contract types), then works down the ranking - tailoring the resume for each role with /tailor-resume (automatic mode, JD-specific summary), filling the application completely through the company ATS form, LinkedIn Easy Apply or an email draft, drafting and attaching a short cover letter when the form requires one, and STOPPING before Submit with the tab left open for the user. It never submits. It answers every form question from the resume and context, marking estimates for the user to confirm, keeps every answer so a question is asked only once, and asks the user only the few things it can't estimate (IDs, authorisation, documents). The user reviews each filled form on the role explorer's Autopilot tab, submits it, and marks it Submitted; only then is it registered in applika via WSL. It paces work per site, records every outcome, and never applies to the user's current employers (banned_companies in the repo's config.yaml, where every personal setting lives). It does no LinkedIn outreach; that is the separate /recruiter-outreach skill. Use when the user wants to sweep and prepare applications automatically, continue or resume the apply loop, retry failed applications, confirm which filled applications they submitted, or see which applications are ready, submitted or failed.
 ---
 
 # Job autopilot
@@ -8,31 +8,35 @@ description: Job hunting on autopilot, up to the Submit button. Runs the full /j
 This skill runs job-source-sweep, ranks everything it finds, and prepares applications from the best role down. **It never submits an application.** Each form is filled completely and left open in Chrome in front of the Submit button; the user reviews the answers on the dashboard, submits, and marks it submitted. Failed attempts are recorded and shown, never hidden. Recruiter outreach is not part of this skill (see `recruiter-outreach`).
 
 **Paths**
-- **Skill:** `D:\dev\autopilot\job-autopilot` (`<ap>`)
+- **Skill:** `<repo>/job-autopilot` (`<ap>`), where `<repo>` is the autopilot repo (here `D:\dev\autopilot`)
 - **Script:** `<ap>/scripts/autopilot.py`. It reuses job-source-sweep's modules, so it needs the sibling `job-source-sweep` skill folder. `<ap>/scripts/cover_letter.py` renders a cover letter to PDF.
-- **Data:** `<home>/autopilot/`, where `<home>` is job-source-sweep's home (`~/jobsweep`).
+- **Data:** `<home>/autopilot/`, where `<home>` is `home` in `config.yaml`.
 
-**Running the script.** Run it the same way as `jobsweep`: `wsl.exe -e python3 /mnt/d/dev/autopilot/job-autopilot/scripts/autopilot.py --home /mnt/c/Users/<you>/jobsweep <cmd>`. From Git Bash, first `export MSYS_NO_PATHCONV=1`. Below, `autopilot <cmd>` is short for that.
+**Running the script.** Run it the same way as `jobsweep`, with the runner from `config.yaml`: for `python: wsl`, `wsl.exe -e python3 /mnt/<repo>/job-autopilot/scripts/autopilot.py <cmd>` (from Git Bash, first `export MSYS_NO_PATHCONV=1`). `--home` defaults to `home` in `config.yaml`. Below, `autopilot <cmd>` is short for that.
 
-**Settings** live in `<home>/autopilot/settings.json`:
+**Settings** come from `<repo>/config.yaml` (the one file with everything personal). The sections this skill reads:
 
-| Key | Default | Meaning |
-|---|---|---|
-| `channels` | `ats`, `linkedin_easy_apply`, `email` | Channels the skill may prepare. Public "comment Interested" posts are never used. |
-| `max_minutes` | 120 | Wall-clock cap for the apply loop. |
-| `max_ready` | 15 | Filled forms (open tabs) waiting for the user. The loop stops at this many. |
-| `cover_letter` | `required` | `required`: write one when the form requires it or the posting asks for one. `always`: wherever a form accepts one. `never`. |
-| `max_load_retries` | 3 | Type-3 failures before a role is given up. |
-| `tailor_ahead` | 6 | Tailored CVs kept ready ahead of the apply loop. |
-| `per_company_per_run` | 2 | Most forms prepared for one company in a run. |
-| `banned_companies` | ExampleEmployer, Example Labs, example-client.io, Example Client Co | The user's current employers and clients. **Never** applied to, under any spelling. |
-| `pay_target_usd_month` | 10000 | The user's target. Posted pay at or above it raises a role's rank. |
-| `pay_skip_below_usd_month` | 8000 | Roles whose *posted* pay tops out below this are skipped. Roles with no posted pay are never skipped for pay. |
-| `rejection_cooldown_days` | 180 | A company that rejected the user is not applied to again for this long. A rejection is an applika application finalized as **Denied**; an explicit rejection counts from its feedback date, a ghosting from the application date. 0 disables it. |
-| `rejection_neutral_feedback` | Role closed, Position filled | Denied finalizations with these feedbacks say nothing about the user, so they start no cooldown. |
-| `rejection_ignore_companies` | Jobgether | Aggregators filed as the "company" in applika. A rejection there doesn't block the real employers behind their listings. |
+| Section / key | Meaning |
+|---|---|
+| `candidate` | The applicant's facts: contact details, country, region, time zone, languages, years, level, pitch, stories, employment types, `excluded_contract_types`. Handed to the scoring and apply subagents as `candidate`; the answer bank's `profile` mirrors it. |
+| `resume.base`, `resume.tailored_dir`, `resume.file_prefix` | The base resume and where tailored copies go. |
+| `pay.target_usd_month` | The user's target. Posted pay at or above it raises a role's rank. |
+| `pay.skip_below_usd_month` | Roles whose *posted* pay tops out below this are skipped. Roles with no posted pay are never skipped for pay. |
+| `pay.ask_usd_month`, `pay.free_text_answer` | What the apply subagent writes when a form demands a number, or allows free text. |
+| `banned_companies` | The user's current employers and clients. **Never** applied to, under any spelling. |
+| `tracker.enabled` | Whether applika is used. `false` skips every applika call. |
+| `tracker.rejection_cooldown_days` | A company that rejected the user is not applied to again for this long. A rejection is an applika application finalized as **Denied**; an explicit rejection counts from its feedback date, a ghosting from the application date. 0 disables it. |
+| `tracker.rejection_neutral_feedback` | Denied finalizations with these feedbacks say nothing about the user, so they start no cooldown. |
+| `tracker.rejection_ignore_companies` | Aggregators filed as the "company" in applika. A rejection there doesn't block the real employers behind their listings. |
+| `autopilot.channels` | Channels the skill may prepare. Public "comment Interested" posts are never used. |
+| `autopilot.max_minutes` | Wall-clock cap for the fill loop. |
+| `autopilot.max_ready` | Filled forms (open tabs) waiting for the user. The loop stops at this many. |
+| `autopilot.cover_letter` | `required`: write one when the form requires it or the posting asks for one. `always`: wherever a form accepts one. `never`. |
+| `autopilot.max_load_retries` | Type-3 failures before a role is given up. |
+| `autopilot.tailor_ahead` | Tailored CVs kept ready ahead of the fill loop. |
+| `autopilot.per_company_per_run` | Most forms prepared for one company in a run. |
 
-Change them when the user asks.
+Change them by editing `config.yaml` when the user asks.
 
 ## 1. Preflight
 
@@ -64,13 +68,13 @@ How the total is built:
 - **Pay:** +10 when the whole posted range is at or above the target, +6 when its top is, −10 when its top is below. No posted pay adds nothing.
 - **Freshness:** +5 for postings up to 3 days old, +2 up to a week. Early applications get far more responses.
 
-The goal is interviews at USD 10,000+/month, so pay and freshness move roles up the queue.
+The goal is interviews at or above `pay.target_usd_month`, so pay and freshness move roles up the queue.
 
 **Which roles get prepared** is the scoring subagent's judgment, and it is deliberately liberal. It skips only:
 - clear, obvious mismatches
 - JDs that explicitly exclude candidates by location, residency or citizenship ("US remote" alone doesn't count)
 - roles that are explicitly hybrid or on-site
-- roles that are explicitly CLT (Brazilian employee contract). Never apply to these. A role that only mentions PJ, contractor or no contract type is not CLT.
+- roles that explicitly require a contract type in `candidate.excluded_contract_types` (for a candidate in Brazil, a CLT employee contract). Never apply to these. A role that names no contract type, or offers a contractor form, doesn't count.
 
 The script also skips banned companies, companies that rejected the user within `rejection_cooldown_days`, and roles whose posted pay tops out below `pay_skip_below_usd_month`. These show up as "not applying" or "skipped" on the dashboard, with the JD's own words or the rejection. Everything else is queued. The queue also leaves out roles the user rejected, roles already applied to or discarded, filled forms waiting for the user, and roles waiting on the user's answers.
 
@@ -82,7 +86,7 @@ The script also skips banned companies, companies that rejected the user within 
 
 Keep about `tailor_ahead` tailored CVs ready:
 1. Run `autopilot tailor-queue --n <k>`.
-2. For each job, launch a parallel subagent (`general-purpose`, `model: "sonnet"`) with this prompt: "Read `C:\Users\<you>\.claude\skills\tailor-resume\SKILL.md` and follow its **Automatic mode** section. Job: `<job JSON>`. confirmed_skills: `<list>`. denied_skills: `<list>`. previous_tailored: `<list>`."
+2. For each job, launch a parallel subagent (`general-purpose`, `model: "sonnet"`) with this prompt: "Read `~/.claude/skills/tailor-resume/SKILL.md` and follow its **Automatic mode** section. Job: `<job JSON>`. confirmed_skills: `<list>`. denied_skills: `<list>`. previous_tailored: `<list>`."
 3. When each finishes, run `autopilot record --result <job.result>`.
 
 Top up tailoring in the background while the apply loop runs.
@@ -94,7 +98,8 @@ Repeat until you stop:
 1. Run `autopilot next`.
    - **`role`:** launch one **sequential** Chrome subagent (`general-purpose`, `model: "sonnet"`; there's only one Chrome) with the prompt: "Read `<ap>/references/apply.md` and follow it. You fill the form completely and never submit." followed by:
      - the role JSON (it includes `tailored_pdf`, `tailored_folder`, `jd_file`, `previous_attempt`)
-     - `answer_bank`: `C:\Users\<you>\jobsweep\autopilot\answer-bank.json`
+     - `candidate` from the `next` output (the applicant's facts from `config.yaml`)
+     - `answer_bank`: `<home>/autopilot/answer-bank.json`
      - `allowed_channels` and `cover_letter_policy`, from the settings and the `next` output
      - the exact `autopilot` command prefix, and `cover_letter_py`: the same prefix with `cover_letter.py` in place of `autopilot.py`
      - `result_file`: `<home>/autopilot/work/<date>/apply_result_<id>.json`
@@ -144,7 +149,7 @@ Keep the report short:
 ## Data it keeps
 
 All of this is in `<home>/autopilot/`:
-- `answer-bank.json`: the profile, answered questions (the user's own, and estimated ones awaiting confirmation), pending questions, and confirmed, denied and pending skills. Dashboard answers are merged in at preflight, and a question answered once is reused on every later form with the same meaning.
+- `answer-bank.json`: the profile (a mirror of `candidate` in `config.yaml`), answered questions (the user's own, and estimated ones awaiting confirmation), pending questions, and confirmed, denied and pending skills. Dashboard answers are merged in at preflight, and a question answered once is reused on every later form with the same meaning.
 - `ledger.json`: every role's status, attempts, tailored CV, every answer typed into its form, free-text answers, cover letter, tab title and applika id.
 - `scores.json`, `queue.json`, `pacing.json`, and `work/<date>/` with the batches and result files.
 

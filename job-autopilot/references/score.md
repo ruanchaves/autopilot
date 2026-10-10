@@ -8,6 +8,7 @@ You rate each role in a batch against the candidate so that roles can be ranked 
    - `rubric`: the path of `fit-rubric.md`, the candidate snapshot. Read it once.
    - `confirmed_skills`: skills the candidate has confirmed beyond the resume. Count them as present.
    - `denied_skills`: skills the candidate said they lack. Count them as missing.
+   - `candidate`: the candidate snapshot from config.yaml: `years_experience`, `level`, `core_areas`, `domains`, `stack`, `country`, `region`, `region_aliases`, `excluded_contract_types`. The rows below refer to it.
    - `banned_companies`: the candidate's current employers and clients. Never apply to them (see below).
 2. Read the batch file: a JSON list of `{id, key, title, company, location, file, eligibility, eligibility_evidence}`. `file` is the JD text, and is empty when no JD could be fetched.
 
@@ -17,10 +18,10 @@ Read the JD once (or, when `file` is empty, use only the title, company and loca
 
 | Part | Range | What earns points |
 |---|---|---|
-| `core` | 0–35 | How central the candidate's core is to the job: LLM applications, RAG and retrieval, agents, evaluation, NLP, applied ML. 30–35: the job *is* this work. 18–29: a large share of it. 6–17: AI is a side part of a mainly backend, data, infra or product job. 0–5: unrelated. |
+| `core` | 0–35 | How central the candidate's core is to the job (`candidate.core_areas`). 30–35: the job *is* this work. 18–29: a large share of it. 6–17: AI is a side part of a mainly backend, data, infra or product job. 0–5: unrelated. |
 | `requirements` | 0–25 | The share of the must-have requirements covered by the resume plus `confirmed_skills`. 25 means all of them; subtract in proportion for each uncovered must-have. Missing nice-to-haves cost at most 3 in total. |
-| `seniority` | 0–15 | The candidate is a senior IC with about 7 years, mentoring but no people management. Senior or mid-senior: 13–15. Mid: 9–12. Staff: 6–9. Principal, head, or 10+ years required: 2–6. Junior, entry or intern: 0–3. Unstated: 11. |
-| `domain` | 0–10 | Overlap with the candidate's domains (fintech and banking, document automation, enterprise software, open-source NLP) and stack (Python, FastAPI, GCP/Vertex, Azure, LangChain/LangGraph). |
+| `seniority` | 0–15 | The candidate's level and years are `candidate.level` and `candidate.years_experience`; the bands below assume a senior IC and shift accordingly for another level. Senior or mid-senior: 13–15. Mid: 9–12. Staff: 6–9. Principal, head, or 10+ years required: 2–6. Junior, entry or intern: 0–3. Unstated: 11. |
+| `domain` | 0–10 | Overlap with the candidate's domains (`candidate.domains`) and stack (`candidate.stack`). |
 
 Also record:
 
@@ -41,13 +42,14 @@ Also record:
 Decide `apply` with your own judgment, and be **liberal**. A long-shot application costs little, so apply unless the role clearly falls into one of these three cases:
 
 1. **Clear, obvious mismatch.** The job is plainly not something this candidate does, for example a sales role, a nurse, a hardware or embedded engineer, a pure frontend designer, or an annotation or data-labelling gig. A stretch, an adjacent field or a seniority gap is *not* a mismatch.
-2. **Explicit exclusion by location, residency or citizenship.** The JD must actually say that people like this candidate, based in Brazil, won't be considered. Examples: "non-US residents will not be considered", "you must be a US citizen", "must reside in the EU", "we can't hire outside Canada", "security clearance required". A location tag or a phrase like "US remote", "remote (US)" or "Remote - Europe" is **not** enough.
+2. **Explicit exclusion by location, residency or citizenship.** The JD must actually say that people like this candidate, based in `candidate.country`, won't be considered. Examples: "non-US residents will not be considered", "you must be a US citizen", "must reside in the EU", "we can't hire outside Canada", "security clearance required". A location tag or a phrase like "US remote", "remote (US)" or "Remote - Europe" is **not** enough.
 3. **Explicitly not fully remote.** The JD says the role is hybrid, on-site or in-office, or requires regular office days. "Remote with occasional travel" still counts as remote.
+4. **A contract type the candidate won't take.** The JD explicitly requires one of `candidate.excluded_contract_types` (for example a local employee contract). A JD that names no contract type, or offers a contractor form, does not count.
 
 Separately, **never apply to a banned company**: the employer, or the client a recruiter is hiring for, is one of `banned_companies`. That includes spelling variants, subsidiaries and "via" postings. Use `skip_reason: "banned"` for these.
 
 When in doubt, apply. Set `apply: false` only for one of the three cases above, or a banned company, with:
-- `skip_reason`: `mismatch`, `location_explicit`, `not_remote` or `banned`
+- `skip_reason`: `mismatch`, `location_explicit`, `not_remote`, `contract_type` or `banned`
 - `skip_evidence`: the JD's exact words, at most 140 characters
 
 With `title_only` confidence you rarely have enough to skip, so skip only an obvious mismatch.
