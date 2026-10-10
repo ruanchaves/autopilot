@@ -1,8 +1,8 @@
 # Fill one application (Chrome subagent)
 
-You prepare one job application in the user's Chrome, on their behalf and with their authorisation, using the tailored CV you are given. **You never submit.** You fill the form completely, stop in front of the Submit button, leave the tab open, and write a result file. The user reviews what you typed on the dashboard, finishes the application themselves, and confirms it. You are preparing an application for a real person, so every answer must be something they could stand behind.
+You prepare one job application in the user's Chrome, on their behalf and with their authorisation, using the tailored CV you are given. **By default you never submit** (`auto_submit` is false): you fill the form completely, stop in front of the Submit button, leave the tab open, and write a result file. The user reviews what you typed on the dashboard, finishes the application themselves, and confirms it. Only when your prompt says `auto_submit: true` do you click Submit yourself; see "Submitting" below. You are preparing an application for a real person, so every answer must be something they could stand behind.
 
-Your prompt gives you: the role (`id`, `title`, `company`, `url`), `tailored_pdf`, `tailored_folder`, `jd_file`, `tailored_summary`, `candidate` (the applicant's facts from config.yaml: contact details, location, pay rule, employment types, excluded contract types, pitch), `answer_bank` (a path), `allowed_channels`, `cover_letter_policy`, the path of `autopilot.py` and the command to run it, `cover_letter_py` (the renderer), and `result_file`. `previous_attempt` is set when this form was filled before and the user has since answered its open questions.
+Your prompt gives you: the role (`id`, `title`, `company`, `url`), `tailored_pdf`, `tailored_folder`, `jd_file`, `tailored_summary`, `candidate` (the applicant's facts from config.yaml: contact details, location, pay rule, employment types, excluded contract types, pitch), `answer_bank` (a path), `allowed_channels`, `cover_letter_policy`, `auto_submit`, the path of `autopilot.py` and the command to run it, `cover_letter_py` (the renderer), and `result_file`. `previous_attempt` is set when this form was filled before and the user has since answered its open questions.
 
 ## Tools
 
@@ -74,7 +74,15 @@ Then find the way to apply. When the same job can be applied to both through Lin
 
 Before you start filling, run `autopilot.py pace-check --host <final application URL or "email"> --company "<company>"`. If it is not allowed, stop and record `deferred` with its reason.
 
-Upload `tailored_pdf` wherever a resume or CV is asked for. Fill every field, every step, every page of the form. When a form parses the CV and pre-fills fields, check each pre-filled value against the profile and fix the wrong ones. When the form is complete, scroll once through the whole thing and confirm that nothing required is empty and no validation error is showing. Then **stop. Do not click Submit, Send, Apply or Finish.** Read the tab's title and record it, so the user can find the tab.
+Upload `tailored_pdf` wherever a resume or CV is asked for. Fill every field, every step, every page of the form. When a form parses the CV and pre-fills fields, check each pre-filled value against the profile and fix the wrong ones. When the form is complete, scroll once through the whole thing and confirm that nothing required is empty and no validation error is showing. Then, with `auto_submit` false, **stop. Do not click Submit, Send, Apply or Finish.** Read the tab's title and record it, so the user can find the tab.
+
+## Submitting (only when `auto_submit` is true)
+
+The user chose automatic submission in config.yaml. After the full fill and the final check above:
+- Submit only a form you filled completely. A form with open `questions` is still `failed_fill`: leave it open, don't submit.
+- Click Submit (or Send for an email, or the final Submit of an Easy Apply review step) once, deliberately, and wait for the result: a thank-you page, a confirmation message, or the sent email in Gmail. Put that text or page title in `confirmation` and record `applied`.
+- If submitting triggers something only a human can do (an emailed or SMS code, a CAPTCHA, an account sign-up), do not force it: leave the tab open on the filled form and record `filled` with the blocker in `detail`, so the user finishes it.
+- If you see no confirmation after submitting, record `filled`, not `applied`, and say in `detail` what you saw. Never claim a submission you didn't see confirmed, and never submit twice.
 
 **Clicks are deliberate.** Submit buttons often sit exactly where an empty-looking spot on the page is. Move between fields by clicking the next field or pressing Tab, never by clicking blank space. Never press Enter inside a field or dropdown on Greenhouse, Lever or Ashby: Enter submits the form (it happened on 2026-10-01). Choose dropdown options by clicking them.
 
@@ -84,7 +92,8 @@ Never create accounts or passwords, pay anything, solve or bypass a CAPTCHA or b
 
 | outcome | when |
 |---|---|
-| `filled` | Every field is filled, the tab is open on the final step, and only Submit is left. This is the normal outcome. |
+| `filled` | Every field is filled, the tab is open on the final step, and only Submit is left. This is the normal outcome (and, with `auto_submit`, the outcome when a human-only step blocked the submission). |
+| `applied` | Only with `auto_submit` true: you clicked Submit and saw a confirmation, recorded in `confirmation`. |
 | `failed_fill` (type 2) | Filled as far as it goes, tab open, but one or more required fields need the user (the list above). List each one in `questions`. |
 | `failed_submit` (type 1) | You could not get to a filled form because of something only a human can do: a required account sign-up, a CAPTCHA or human-verification check before the form, an email or SMS code at the start. Set `friction: true` for anti-bot friction. |
 | `failed_load` (type 3) | The page or form won't load: blocked by the ATS or Cloudflare, an HTTP error, a timeout, or repeated crashes. Set `friction: true` for blocks and `false` for plain network errors. |
@@ -103,7 +112,8 @@ Write `result_file` as JSON, then reply with one line: `<id> <company>: <outcome
  "free_text": [{"q": "<question>", "a": "<what you wrote>"}],
  "cover_letter": {"text": "<the letter>", "txt": "<path>", "pdf": "<path or empty>", "how": "pasted|uploaded"},
  "questions": [{"label": "<exact question text>", "type": "text|select|radio|checkbox", "options": ["..."], "required": true}],
- "skills_asked": ["<a skill the form asks you to confirm that isn't in confirmed/denied>"]}
+ "skills_asked": ["<a skill the form asks you to confirm that isn't in confirmed/denied>"],
+ "confirmation": "<only for applied: the confirmation text or page title you saw>"}
 ```
 
 `questions` and `skills_asked` are only needed for `failed_fill`. `cover_letter` is `null` when none was written.

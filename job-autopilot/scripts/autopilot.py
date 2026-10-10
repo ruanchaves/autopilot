@@ -3,10 +3,11 @@
 application ledger and applika registration. It sits on top of job-source-sweep and reuses
 its caches (JD text, eligibility classes, the fit rubric) in the same <home>.
 
-The skill never submits an application. The apply subagent fills each form completely (CV,
-answers, cover letter when one is required), stops before Submit and leaves the tab open; the
-user reviews and submits, then confirms it here (dashboard "Submitted" button or `confirm`),
-and only confirmed applications are registered in applika.
+By default the skill never submits an application. The apply subagent fills each form completely
+(CV, answers, cover letter when one is required), stops before Submit and leaves the tab open; the
+user reviews and submits, then confirms it here (dashboard "Submitted" button or `confirm`), and
+only confirmed applications are registered in applika. With config.yaml autopilot.auto_submit: true
+the subagent clicks Submit itself and records `applied` with the confirmation it saw.
 
     autopilot.py score-queue   [--batches 14] [--batch-size 20] [--decisions DIR]
     autopilot.py score-ingest
@@ -96,6 +97,9 @@ DEFAULT_SETTINGS = {
     "per_company_per_run": 2,
     # filled forms (tabs left open) waiting for the user; the apply loop stops at this many
     "max_ready": 15,
+    # False: fill and stop in front of Submit (the user submits and confirms). True: the apply
+    # subagent clicks Submit itself and records `applied` with the confirmation it saw.
+    "auto_submit": False,
     # cover letters: "required" = draft one only when the form requires it or the posting asks for
     # one; "always" = draft one wherever a form accepts it; "never"
     "cover_letter": "required",
@@ -755,7 +759,7 @@ def cmd_next(args) -> int:
                    for x in existing or [] if js.company_key(x.get("company_name", "")) == js.company_key(r["company"])]
         rj = rejection_for(recent_rejections(existing, st), r["company"])
         return emit({"banned_companies": st["banned_companies"], "cover_letter_policy": st["cover_letter"],
-                     "candidate": userconfig.profile(),
+                     "auto_submit": bool(st.get("auto_submit")), "candidate": userconfig.profile(),
                      "role": {**r, "tailored_pdf": t["pdf"], "tailored_summary": t.get("summary", ""),
                               "tailored_folder": str(Path(t["pdf"]).parent.parent) if t.get("pdf") else "",
                               "jd_file": t.get("jd_file", ""),
@@ -868,16 +872,22 @@ def cmd_record(args) -> int:
                 e.update(status="failed_fill", failure_type=2, waiting_on=ids)
                 out["questions_queued"] = len(ids)
         elif outcome == "applied":
-            # Not an outcome the subagent should produce any more (it never submits). Accepted only
-            # with a confirmation, for backwards compatibility; otherwise treated as filled.
+            # Only produced when config.yaml sets autopilot.auto_submit: true. Needs the confirmation
+            # the subagent saw; without one it is recorded as a filled form for the user to check.
+            given = res.get("answers_given") or []
+            e.update(answers_given=given, free_text=res.get("free_text") or [], cover_letter=res.get("cover_letter") or None,
+                     tab_title=res.get("tab_title", ""), filled_at=NOW.isoformat())
+            out["estimates_banked"] = bank_estimates(b, given, rid)
             if res.get("confirmation"):
                 e.update(status="applied", failure_type=None, applied_at=TODAY, confirmation=res["confirmation"],
-                         free_text=res.get("free_text") or [], waiting_on=[])
+                         submitted_by="autopilot", waiting_on=[])
             else:
-                e.update(status="filled", failure_type=None, answers_given=res.get("answers_given") or [],
-                         free_text=res.get("free_text") or [], detail="(recorded as filled: no confirmation) " + e.get("detail", ""))
+                e.update(status="filled", failure_type=None, detail="(recorded as filled: no confirmation seen) " + e.get("detail", ""))
             h["used"] += 1
             h["last_submit"] = NOW.isoformat()
+            ck = js.company_key(e.get("company", ""))
+            if ck:
+                p["companies"][ck] = p["companies"].get(ck, 0) + 1
         elif outcome == "failed_submit":
             e.update(status="failed_submit", failure_type=1)
             if res.get("friction", True):
@@ -933,7 +943,7 @@ def mark_confirmed(ledger: dict, rid: str, status: str, at: str = "") -> dict:
     e = ledger.setdefault(rid, {"id": rid, "status": "queued", "attempts": []})
     if status == "submitted":
         e.update(status="applied", failure_type=None, applied_at=(at or TODAY)[:10], waiting_on=[],
-                 confirmation="submitted by the user", confirmed_at=NOW.isoformat())
+                 confirmation="submitted by the user", submitted_by="user", confirmed_at=NOW.isoformat())
     else:
         e.update(status="discarded", failure_type=None, waiting_on=[], confirmed_at=NOW.isoformat(),
                  detail="Discarded by the user" + (f": {e.get('detail')}" if e.get("detail") else ""))
@@ -1090,7 +1100,7 @@ def cmd_applika_sync(args) -> int:
 
 STATUS_LABEL = {"filled": "Ready for you to submit", "failed_fill": "Filled, needs your answers",
                 "failed_submit": "Blocked before filling", "failed_load": "Couldn't load",
-                "applied": "Submitted by you", "discarded": "Discarded", "queued": "Queued", "deferred": "Deferred (pacing)",
+                "applied": "Submitted", "discarded": "Discarded", "queued": "Queued", "deferred": "Deferred (pacing)",
                 "not_applying": "Not applying", "skipped": "Skipped", "awaiting_user": "Waiting for you"}
 
 
@@ -1137,6 +1147,7 @@ def cmd_dashboard(args) -> int:
                      "coverLetter": (e.get("cover_letter") or {}).get("text", "") if isinstance(e.get("cover_letter"), dict) else "",
                      "coverLetterPdf": (e.get("cover_letter") or {}).get("pdf", "") if isinstance(e.get("cover_letter"), dict) else "",
                      "tabTitle": e.get("tab_title", ""), "filledAt": (e.get("filled_at") or "")[:16].replace("T", " "),
+                     "submittedBy": e.get("submitted_by", ""),
                      "ready": is_ready(e)})
     titles = {e["id"]: f'{e.get("title", "")} @ {e.get("company", "")}' for e in ledger.values()}
     questions = [{"qid": k, "question": v["question"], "type": v.get("type", "text"), "options": v.get("options") or [],

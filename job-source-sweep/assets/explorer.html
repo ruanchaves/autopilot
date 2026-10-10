@@ -885,7 +885,7 @@ const REASON = { mismatch: "Clear mismatch", location_explicit: "Explicit locati
 const APP_ST = {
   filled: ["Ready for you to submit", "good"], failed_fill: ["Filled · needs your answers", "weak"],
   failed_submit: ["Type 1 · blocked before filling", "bad"], failed_load: ["Type 3 · couldn't load", "bad"],
-  awaiting_user: ["Waiting for you", "weak"], applied: ["Submitted by you", "good"], discarded: ["Discarded", "none"],
+  awaiting_user: ["Waiting for you", "weak"], applied: ["Submitted", "good"], discarded: ["Discarded", "none"],
   deferred: ["Deferred (pacing)", "none"], queued: ["Queued", "none"], not_applying: ["Not applying", "none"], skipped: ["Skipped", "none"],
 };
 // a Submitted / Discard mark made here shows at once, before the next run imports it
@@ -1007,7 +1007,8 @@ function renderApps() {
     const est = (a.answers || []).filter(x => x.estimated).length;
     const meta = [a.score != null ? `score ${a.score}` : "", [a.channel, a.platform].filter(Boolean).join(" · "),
                   a.filledAt ? `filled ${a.filledAt}` : a.at ? `on ${a.at}` : "", a.attempts > 1 ? `${a.attempts} attempts` : "",
-                  a.applika ? "in applika ✓" : "", mark && st !== a.status ? `marked ${mark.status} ${(mark.at || "").slice(0, 10)}` : ""]
+                  a.applika ? "in applika ✓" : "", a.submittedBy ? `submitted by ${a.submittedBy === "user" ? "you" : "the autopilot"}` : "",
+                  mark && st !== a.status ? `marked ${mark.status} ${(mark.at || "").slice(0, 10)}` : ""]
                  .filter(Boolean).map(m => `<span>${esc(m)}</span>`).join("");
     const answers = (a.answers || []).map(x => `<li><span class="q">${esc(x.q)}</span> <span class="a">${esc(x.a)}</span>${x.estimated ? `<span class="tag">estimated</span>` : ""}</li>`).join("");
     const free = (a.freeText || []).map(x => `<li><span class="q">${esc(x.q)}</span><p class="a">${esc(x.a)}</p></li>`).join("");

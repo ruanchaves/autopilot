@@ -5,7 +5,7 @@ description: Job hunting on autopilot, up to the Submit button. Runs the full /j
 
 # Job autopilot
 
-This skill runs job-source-sweep, ranks everything it finds, and prepares applications from the best role down. **It never submits an application.** Each form is filled completely and left open in Chrome in front of the Submit button; the user reviews the answers on the dashboard, submits, and marks it submitted. Failed attempts are recorded and shown, never hidden. Recruiter outreach is not part of this skill (see `recruiter-outreach`).
+This skill runs job-source-sweep, ranks everything it finds, and prepares applications from the best role down. **By default it never submits an application.** Each form is filled completely and left open in Chrome in front of the Submit button; the user reviews the answers on the dashboard, submits, and marks it submitted. A user who sets `autopilot.auto_submit: true` in `config.yaml` has chosen to let the subagent click Submit itself; then a confirmed submission is recorded as `applied` straight away. Failed attempts are recorded and shown, never hidden. Recruiter outreach is not part of this skill (see `recruiter-outreach`).
 
 **Paths**
 - **Skill:** `<repo>/job-autopilot` (`<ap>`), where `<repo>` is the autopilot repo (here `D:\dev\autopilot`)
@@ -31,6 +31,7 @@ This skill runs job-source-sweep, ranks everything it finds, and prepares applic
 | `autopilot.channels` | Channels the skill may prepare. Public "comment Interested" posts are never used. |
 | `autopilot.max_minutes` | Wall-clock cap for the fill loop. |
 | `autopilot.max_ready` | Filled forms (open tabs) waiting for the user. The loop stops at this many. |
+| `autopilot.auto_submit` | `false` (default): fill and stop in front of Submit; the user submits and confirms. `true`: the subagent clicks Submit itself, records the confirmation it saw, and those applications are registered in applika without a confirmation step. |
 | `autopilot.cover_letter` | `required`: write one when the form requires it or the posting asks for one. `always`: wherever a form accepts one. `never`. |
 | `autopilot.max_load_retries` | Type-3 failures before a role is given up. |
 | `autopilot.tailor_ahead` | Tailored CVs kept ready ahead of the fill loop. |
@@ -91,16 +92,16 @@ Keep about `tailor_ahead` tailored CVs ready:
 
 Top up tailoring in the background while the apply loop runs.
 
-## 5. Fill loop (never submits)
+## 5. Fill loop (submits only when `auto_submit` is true)
 
 Repeat until you stop:
 
 1. Run `autopilot next`.
-   - **`role`:** launch one **sequential** Chrome subagent (`general-purpose`, `model: "sonnet"`; there's only one Chrome) with the prompt: "Read `<ap>/references/apply.md` and follow it. You fill the form completely and never submit." followed by:
+   - **`role`:** launch one **sequential** Chrome subagent (`general-purpose`, `model: "sonnet"`; there's only one Chrome) with the prompt: "Read `<ap>/references/apply.md` and follow it. You fill the form completely." followed by "You never submit." when `auto_submit` is false, or "auto_submit is true: submit after the full fill and record the confirmation you see." when it is true, then:
      - the role JSON (it includes `tailored_pdf`, `tailored_folder`, `jd_file`, `previous_attempt`)
      - `candidate` from the `next` output (the applicant's facts from `config.yaml`)
      - `answer_bank`: `<home>/autopilot/answer-bank.json`
-     - `allowed_channels` and `cover_letter_policy`, from the settings and the `next` output
+     - `allowed_channels`, `cover_letter_policy` and `auto_submit`, from the `next` output
      - the exact `autopilot` command prefix, and `cover_letter_py`: the same prefix with `cover_letter.py` in place of `autopilot.py`
      - `result_file`: `<home>/autopilot/work/<date>/apply_result_<id>.json`
      
@@ -113,7 +114,7 @@ Repeat until you stop:
    - when Chrome is unavailable
    - when the user asks you to stop
 
-Use your judgment on what the subagents report. A result that claims `filled` but describes a blocker, or one that says `applied`, deserves a second look before you record it. The subagents are told never to submit; if one reports that it did, tell the user plainly.
+Use your judgment on what the subagents report. A result that claims `filled` but describes a blocker, or an `applied` without a confirmation, deserves a second look before you record it. With `auto_submit` false the subagents are told never to submit; if one reports that it did, tell the user plainly.
 
 **What "filled" means.** Every field answered (the subagent estimates from the resume rather than leaving gaps, and marks each estimate), the CV uploaded, a cover letter pasted or attached when the policy calls for it, required consent boxes ticked, the tab open on the final step. The dashboard's Applications view shows each form's answers, the estimates flagged, the cover letter text, and the tab title, with a link to the form.
 
@@ -121,7 +122,7 @@ Use your judgment on what the subagents report. A result that claims `filled` bu
 
 ## 6. The user submits, then confirms
 
-After the loop, the filled forms are open in Chrome and listed on the dashboard as "Ready for you to submit". The user:
+With `auto_submit` true, applications the subagent submitted are already `applied` and this step only covers the forms it had to leave open (a human-only step at submit). Otherwise, after the loop, the filled forms are open in Chrome and listed on the dashboard as "Ready for you to submit". The user:
 1. opens each tab (or the form link), checks the answers against the dashboard, fixes anything, and clicks Submit themselves;
 2. marks the form **Submitted** on the dashboard (or **Discard** if they dropped it), or tells you in chat.
 
@@ -135,7 +136,7 @@ Nothing in this skill registers an application until that mark exists. On the ne
 ## 8. Report
 
 Keep the report short:
-- The number of forms filled and ready for the user, by channel, each with its company, score and tab title. Say plainly that none were submitted and that the tabs are open in Chrome.
+- The number of forms filled and ready for the user, by channel, each with its company, score and tab title. Say plainly that none were submitted and that the tabs are open in Chrome. With `auto_submit` true, list the applications submitted (with their confirmations) separately from the forms left open.
 - How many answers were estimated in total, and how many cover letters were written.
 - The number of failures of each type:
   - **type 1, blocked before filling:** account sign-up or human check; link them.
