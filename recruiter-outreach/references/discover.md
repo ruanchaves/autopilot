@@ -48,7 +48,7 @@ Spend about a minute per lead. When the activity page gives you enough, don't re
 
 ## Result
 
-Write `result` as JSON, then reply with one line: `discover: <n> leads (<new> new, <reprobed> reprobed), <queries> queries, blocked: no|yes; dead phrasings: <list or none>`.
+Write `result` with the Write tool at the exact path you were given (a WSL python script given a Windows path fails silently and the orchestrator finds no file). Write it as JSON, then reply with one line: `discover: <n> leads (<new> new, <reprobed> reprobed), <queries> queries, blocked: no|yes; dead phrasings: <list or none>`.
 
 `people_queries_run` and `post_queries_run` list every phrasing you actually ran, invented ones included, exactly as typed (hashtag and snowball searches too: a people search goes in `people_queries_run`, a content search in `post_queries_run`). `pages_read` maps `people:<query>` or `posts:<query>` to the last result page you read for it. `dead_queries` lists phrasings that returned nothing worth keeping.
 

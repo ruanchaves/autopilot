@@ -56,7 +56,7 @@ Before sending each message, read it once as the recruiter would: does it say wh
 
 ## Result
 
-Write `result` as JSON, then reply with one line: `outreach: <n> sent (<connect>/<inmail>/<message>), <m> skipped, <k> connection requests left today, <c> InMail credits left, pile empty: yes|no`. `inmail_credits` is the number the InMail compose window last showed (open one compose window to read it even if you sent no InMail; cancel without sending).
+Write `result` with the Write tool at the exact path you were given (a WSL python script given a Windows path fails silently and the orchestrator finds no file). Write it as JSON, then reply with one line: `outreach: <n> sent (<connect>/<inmail>/<message>), <m> skipped, <k> connection requests left today, <c> InMail credits left, pile empty: yes|no`. `inmail_credits` is the number the InMail compose window last showed (open one compose window to read it even if you sent no InMail; cancel without sending).
 
 ```json
 {"kind": "outreach", "purpose": "recruiter", "inmail_credits": 7, "pile_empty": false, "detail": "<one line>",
