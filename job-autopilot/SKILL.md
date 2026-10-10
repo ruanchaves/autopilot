@@ -96,8 +96,8 @@ Top up tailoring in the background while the apply loop runs.
 
 Repeat until you stop:
 
-1. Run `autopilot next`.
-   - **`role`:** launch one **sequential** Chrome subagent (`general-purpose`, `model: "sonnet"`; there's only one Chrome) with the prompt: "Read `<ap>/references/apply.md` and follow it. You fill the form completely." followed by "You never submit." when `auto_submit` is false, or "auto_submit is true: submit after the full fill and record the confirmation you see." when it is true, then:
+1. Run `autopilot next`, up to `browser_parallel` times (config.yaml, default 3): each call claims a different role for 30 minutes, so the fills run **in parallel**, one Chrome subagent per role, each in its own tab (Chrome is not a serial resource; every tool takes a `tabId`). Launch them in one message. For each `role`:
+   - **`role`:** launch a Chrome subagent (`general-purpose`, `model: "sonnet"`) with the prompt: "Read `<ap>/references/apply.md` and follow it. You fill the form completely." followed by "You never submit." when `auto_submit` is false, or "auto_submit is true: submit after the full fill and record the confirmation you see." when it is true, then:
      - the role JSON (it includes `tailored_pdf`, `tailored_folder`, `jd_file`, `previous_attempt`)
      - `candidate` from the `next` output (the applicant's facts from `config.yaml`)
      - `answer_bank`: `<home>/autopilot/answer-bank.json`
@@ -105,7 +105,7 @@ Repeat until you stop:
      - the exact `autopilot` command prefix, and `cover_letter_py`: the same prefix with `cover_letter.py` in place of `autopilot.py`
      - `result_file`: `<home>/autopilot/work/<date>/apply_result_<id>.json`
      
-     Then run `autopilot record --result <result_file>` and tell the user one line: the company, the outcome, how many answers were estimated, and whether a cover letter was written.
+     As each finishes, run `autopilot record --result <result_file>` (it releases the claim) and tell the user one line: the company, the outcome, how many answers were estimated, and whether a cover letter was written. Then call `next` again to keep `browser_parallel` fills in flight.
    - **`need_tailor`:** wait for the tailoring subagents, or start more.
    - **`wait_seconds`:** use that time to tailor, then call `next` again.
    - **`done`:** stop. The reason says whether it was the time cap, `max_ready` filled forms waiting, or an empty queue.

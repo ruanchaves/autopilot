@@ -736,6 +736,9 @@ def cmd_next(args) -> int:
         e = ledger.get(r["id"], {})
         if e.get("status") not in ("queued", "failed_load", "deferred", None):
             continue
+        # claimed by a fill subagent that is still running (parallel fills call `next` repeatedly)
+        if e.get("filling_since") and e["filling_since"] > (NOW - timedelta(minutes=30)).isoformat():
+            continue
         t = e.get("tailored") or {}
         if t.get("status") == "no_jd":
             continue
@@ -758,6 +761,8 @@ def cmd_next(args) -> int:
                     "feedback": (x.get("feedback") or {}).get("name"), "outcome_date": (x.get("feedback") or {}).get("date")}
                    for x in existing or [] if js.company_key(x.get("company_name", "")) == js.company_key(r["company"])]
         rj = rejection_for(recent_rejections(existing, st), r["company"])
+        ledger.setdefault(r["id"], {"id": r["id"], "status": "queued", "attempts": []})["filling_since"] = NOW.isoformat()
+        save(args.home, "ledger.json", ledger)
         return emit({"banned_companies": st["banned_companies"], "cover_letter_policy": st["cover_letter"],
                      "auto_submit": bool(st.get("auto_submit")), "candidate": userconfig.profile(),
                      "role": {**r, "tailored_pdf": t["pdf"], "tailored_summary": t.get("summary", ""),
@@ -840,6 +845,7 @@ def cmd_record(args) -> int:
         attempt = {"at": NOW.isoformat(), "outcome": outcome, "channel": res.get("channel"), "host": host,
                    "detail": res.get("detail", ""), "apply_url": res.get("apply_url", "")}
         e.setdefault("attempts", []).append(attempt)
+        e.pop("filling_since", None)
         e.update(apply_host=host, channel=res.get("channel"), apply_url=res.get("apply_url") or e.get("apply_url"),
                  detail=res.get("detail", ""), updated=NOW.isoformat())
         for k in ("platform", "work_mode", "country"):

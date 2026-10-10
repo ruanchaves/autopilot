@@ -131,8 +131,8 @@ Then run `merge` straight away and show the user the first table (step 6 format)
 ## 5. Browser lane
 
 1. Run `jobsweep plan --profile <slug> --days <N>` and pick the mode's subset of `tasks` from its output.
-2. **Delegate: never drive the browser in the main conversation.** A long browser session in the main context re-sends every earlier page read on every step, which makes it slow and costly. Instead, run the tasks as **sequential** subagents (Agent tool, `general-purpose`, `model: "sonnet"`), one at a time because there is only one Chrome. Give each subagent one task or at most 3 Google shards, with a prompt containing:
-   - the path to `references/browser-lane.md`, with an instruction to read it first and to load the `claude-in-chrome` tools through a single ToolSearch call
+2. **Delegate: never drive the browser in the main conversation.** A long browser session in the main context re-sends every earlier page read on every step, which makes it slow and costly. Instead, run the tasks as subagents (Agent tool, `general-purpose`, `model: "sonnet"`), up to `browser_parallel` of them **at once** (config.yaml, default 3), launched in one message. Chrome is not a serial resource: each subagent creates its own tab in the shared tab group and works through the DOM tools, so tasks only compete for the sites' own rate limits (keep LinkedIn tasks to one subagent at a time; Google shards and the other boards can run side by side). Give each subagent one task or at most 3 Google shards, with a prompt containing:
+   - the path to `references/browser-lane.md`, with an instruction to read it first, to load the `claude-in-chrome` tools through a single ToolSearch call, and to use only its own tab (no screenshots, since other subagents share the window)
    - the task entries copied from `plan.json` (label, url, hosts, date_fields), `browser_rows_file`, `window_start`, the page cap and a 4-minute-per-task cap
    - an instruction to reply with only the one-line summary per task
 3. After each subagent finishes, run `merge` and tell the user one line, for example: "LinkedIn Jobs: +7 new (23 total)". Then check the stop conditions. Don't paste the table again until the end.
@@ -167,7 +167,7 @@ One Google search per company for people in the candidate's country (`candidate.
 
 1. After the final merge, run `jobsweep verify-queue --profile <slug> --days <N> --limit <country_check_limit> [--ttl 30] [--all]`. It lists companies from **new** rows that have no cached verdict younger than `--ttl` days, one entry per company, with the busiest companies first. It stops at `--limit`, and reports how many were left over, how many rows reused a cached verdict, and how many rows had no company. `--all` also includes rows seen in earlier runs. Raise `--limit` only when the user asks.
 2. If the queue is empty, say so and skip to step 4.
-3. Split the queue into batches of about 10. Run each batch as a **sequential** subagent (`general-purpose`, `model: "sonnet"`). Its prompt should contain the path of `references/country-verification.md`, an instruction to read that first and to load the chrome tools in one ToolSearch call, the batch's queue entries, and `verdicts_file`. Each subagent replies with one line. If a subagent reports `blocked`, don't start further batches; the leftover companies stay queued for a later run.
+3. Split the queue into batches of about 10. Run the batches as subagents (`general-purpose`, `model: "sonnet"`), up to `browser_parallel` at once, each in its own tab. Its prompt should contain the path of `references/country-verification.md`, an instruction to read that first, to load the chrome tools in one ToolSearch call and to use only its own tab, the batch's queue entries, and `verdicts_file`. Each subagent replies with one line. Google's CAPTCHA triggers on burst rate from one IP, so parallel batches must each keep the 3-second gap, and if any subagent reports `blocked`, don't start further batches; the leftover companies stay queued for a later run.
 4. Run `merge` again. It folds the verdicts into the cache at `<home>/verdicts.json` and stamps 🟢/🔴 on each row, linked to the Google search used. The summary now includes Brazil counts, and blocked checks appear as coverage gaps.
 5. In the report:
    - Give the green/red counts and the number of companies still unchecked.
@@ -207,7 +207,7 @@ Only roles classified 1 (open) or 2 (nothing stated) are rated. When the resume 
 
 **8d. Country hiring check.** Do this only when `sweep.country_check` is `always`, or when the user asks.
 1. Run `jobsweep enrich-queue --stage country`. It queues the companies of green and yellow roles whose JD states nothing about eligibility. It skips companies with a verdict younger than 30 days, puts green roles first, and caps the queue at `sweep.country_check_limit`.
-2. Run the sequential Chrome subagents from step 7.3 on that queue, with the same `references/country-verification.md` and the queue's `verdicts_file`.
+2. Run the Chrome subagents from step 7.3 on that queue (up to `browser_parallel` at once), with the same `references/country-verification.md` and the queue's `verdicts_file`.
 
 **8e. Render and publish.** Run `jobsweep explorer`. It folds all subagent output into the caches and writes `roles.json`, `roles.csv` and `explorer.html` to `runs/<date>-explore/`. The page covers the last 14 sweep dates (`--batches N` changes that), and each role is tagged with the batches that found it. It prints counts per batch plus `artifact_url`.
 
