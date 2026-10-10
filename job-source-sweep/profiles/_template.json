@@ -1,0 +1,75 @@
+{
+  "role": "<Human-readable role, e.g. Data Engineer>",
+  "_help": {
+    "google_queries": "Google site: sweeps over ATS hosts and job boards. 3-6 phrasings of the role, each ending in 'remote' if remote is wanted. Each query costs one Google search per shard per page.",
+    "api_queries": "Server-side search for the Getro VC networks and the YC jobs page. Same phrasings without 'remote'.",
+    "remoteok_tags": "One Remote OK tag (a server-side filter that works), e.g. 'ai', 'data', 'devops', 'design', 'product'. Empty string = whole board, filtered by title only.",
+    "rss_category": "Which We Work Remotely / NoDesk feed: engineering roles use programming/engineering, anything else use 'all'.",
+    "linkedin.jobs_keywords": "LinkedIn Jobs keyword searches (one browser pass each).",
+    "linkedin.posts_keywords": "LinkedIn post searches for people announcing openings.",
+    "linkedin.location": "Optional LinkedIn location text, e.g. 'United States' or 'Brazil'. Omit for worldwide.",
+    "rocketship.titles": "Remote Rocketship job-title taxonomy values (must match their dropdown wording). Omit the block to skip Rocketship.",
+    "include": "Case-insensitive regexes; a title must match at least one. This is the ONLY filter on feeds that ignore search terms, so make it cover every synonym and abbreviation.",
+    "exclude": "Case-insensitive regexes; any match drops the title. Start from the noise list below and add seniority/management terms only if they are unwanted.",
+    "location_exclude": "Optional regexes against the location field, e.g. '\\\\bUS only\\\\b'.",
+    "skip_sources": "HTTP source ids to skip (e.g. cryptocurrencyjobs for non-crypto roles).",
+    "brazil_check_term": "Word used by the opt-in Brazil check: '<term> brazil <company> site:linkedin.com'. Default 'engineer'; use e.g. 'designer' for design roles.",
+    "skip_hosts": "Google shard sites to skip (e.g. agentic-engineering-jobs.com for non-AI roles).",
+    "skip_tasks": "Optional browser tasks to skip for this role: linkedin_jobs, linkedin_posts, rocketship, google, or a shard id. Personal skips belong in <home>/config.json instead; both lists are merged.",
+    "_where": "Save new profiles to <home>/profiles/ (default ~/jobsweep/profiles), not the skill folder, so the shared skill stays clean.",
+    "wellfound.roles": "Wellfound role slugs, as in wellfound.com/role/r/<slug> (e.g. 'ai-engineer', 'data-engineer'). Omit the block to derive one slug from the role title; set [] to skip Wellfound."
+  },
+  "google_queries": [
+    "<role> remote",
+    "senior <role> remote",
+    "staff <role> remote"
+  ],
+  "api_queries": [
+    "<role>",
+    "senior <role>"
+  ],
+  "remoteok_tags": "",
+  "rss_category": {
+    "weworkremotely": "all",
+    "nodesk": "all"
+  },
+  "linkedin": {
+    "remote": true,
+    "jobs_keywords": [
+      "<role>"
+    ],
+    "posts_keywords": [
+      "<role> remote hiring",
+      "<role> hiring \"latam\""
+    ]
+  },
+  "include": [
+    "<role regex>",
+    "<synonym regex>"
+  ],
+  "exclude": [
+    "instructor",
+    "teacher",
+    "\\btutor",
+    "professor",
+    "lecturer",
+    "curriculum",
+    "\\bintern\\b",
+    "internship",
+    "annotator",
+    "data entry",
+    "\\brater\\b",
+    "transcrib",
+    "\\bnurse",
+    "therapist",
+    "physician",
+    "\\bdriver\\b",
+    "paralegal",
+    "bookkeep"
+  ],
+  "location_exclude": [],
+  "skip_sources": [],
+  "skip_hosts": [
+    "agentic-engineering-jobs.com"
+  ]
+}

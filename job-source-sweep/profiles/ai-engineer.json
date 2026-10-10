@@ -1,0 +1,133 @@
+{
+  "role": "AI Engineer",
+  "_origin": "Ported from D:/dev/jobsearch/scripts/sources.yaml (match include/exclude, shard queries, Getro queries, LinkedIn and Rocketship URLs).",
+  "google_queries": [
+    "ai engineer remote",
+    "agentic engineer remote",
+    "machine learning engineer remote",
+    "principal engineer remote",
+    "staff software engineer remote",
+    "research engineer remote"
+  ],
+  "api_queries": [
+    "ai engineer",
+    "agentic engineer",
+    "machine learning",
+    "principal engineer",
+    "staff software engineer",
+    "research engineer"
+  ],
+  "remoteok_tags": "ai",
+  "rss_category": {
+    "weworkremotely": "programming",
+    "nodesk": "engineering"
+  },
+  "linkedin": {
+    "remote": true,
+    "jobs_keywords": [
+      "ai engineer"
+    ],
+    "posts_keywords": [
+      "ai engineer remote hiring",
+      "ai engineer hiring \"latam\""
+    ]
+  },
+  "rocketship": {
+    "titles": [
+      "AI Engineer",
+      "Machine Learning Engineer",
+      "NLP Engineer",
+      "Deep Learning Engineer"
+    ],
+    "locations": "United States"
+  },
+  "include": [
+    "\\bai\\b",
+    "\\ba\\.i\\b",
+    "artificial intelligence",
+    "machine learning",
+    "\\bml\\b",
+    "\\bmlops\\b",
+    "\\bllm\\b",
+    "\\bnlp\\b",
+    "deep learning",
+    "computer vision",
+    "generative ai",
+    "\\bgenai\\b",
+    "agentic",
+    "ai agent",
+    "prompt engineer",
+    "research engineer",
+    "research scientist",
+    "applied scientist",
+    "data scien",
+    "data engineer",
+    "software engineer",
+    "software developer",
+    "backend engineer",
+    "back-end engineer",
+    "back end engineer",
+    "full.?stack",
+    "platform engineer",
+    "infrastructure engineer",
+    "devops engineer",
+    "site reliability",
+    "\\bsre\\b",
+    "python engineer",
+    "python developer",
+    "staff engineer",
+    "principal engineer"
+  ],
+  "exclude": [
+    "instructor",
+    "teacher",
+    "\\btutor",
+    "professor",
+    "lecturer",
+    "curriculum",
+    "\\bsales\\b",
+    "account executive",
+    "account manager",
+    "business development",
+    "recruit",
+    "talent acquisition",
+    "\\bhr\\b",
+    "marketing",
+    "customer success",
+    "customer support",
+    "\\bnurse",
+    "therapist",
+    "physician",
+    "\\bdriver\\b",
+    "paralegal",
+    "bookkeep",
+    "accountant",
+    "\\bintern\\b",
+    "internship",
+    "trainer",
+    "\\bwriter\\b",
+    "copywrit",
+    "annotator",
+    "data entry",
+    "\\brater\\b",
+    "transcrib",
+    "\\bdirector\\b",
+    "vice president",
+    "\\bvp[ ,]",
+    "\\bhead of\\b",
+    "\\bmanager\\b",
+    "\\blead of\\b",
+    "graduate programme",
+    "graduate program",
+    "\\bartist\\b",
+    "\\bvfx\\b",
+    "\\banalyst\\b"
+  ],
+  "location_exclude": [],
+  "wellfound": {
+    "roles": [
+      "ai-engineer",
+      "machine-learning-engineer"
+    ]
+  }
+}

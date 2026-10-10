@@ -1,0 +1,576 @@
+{
+  "_comment": "Role-agnostic source catalogue, derived from D:/dev/jobsearch/scripts/sources.yaml. Search terms and title filters live in profiles/, never here.",
+  "user_agent": "jobsweep/1.0 (personal job search)",
+  "http": [
+    {
+      "id": "himalayas",
+      "label": "Himalayas",
+      "kind": "json",
+      "url": "https://himalayas.app/jobs/api?limit=20",
+      "items": "jobs",
+      "map": {
+        "title": "title",
+        "company": "companyName",
+        "location": "locationRestrictions",
+        "url": "applicationLink",
+        "posted": "pubDate"
+      },
+      "pagination": {
+        "kind": "cursor",
+        "param": "cursor",
+        "cursor_at": "nextCursor",
+        "pages": 60
+      },
+      "min_interval": 1,
+      "_note": "The API ignores search/category parameters and caps limit at 20; it lists every category newest first (~3,700/day), so depth is the only lever. 60 pages ~= the last 5 hours; run it a few times a day."
+    },
+    {
+      "id": "remoteok",
+      "label": "Remote OK",
+      "kind": "json",
+      "url": "https://remoteok.com/api",
+      "profile_params": {
+        "tags": "remoteok_tags"
+      },
+      "items": "",
+      "skip_first": 1,
+      "map": {
+        "title": "position",
+        "company": "company",
+        "location": "location",
+        "url": "url",
+        "posted": "date"
+      },
+      "attribution": "Job data by Remote OK",
+      "min_interval": 10
+    },
+    {
+      "id": "jobgether",
+      "label": "Jobgether",
+      "kind": "json",
+      "url": "https://jobgether.com/astroapi/ai/jobs.json?limit=25",
+      "items": "jobs",
+      "map": {
+        "title": "title",
+        "company": "company",
+        "location": "location",
+        "url": "url",
+        "posted": "postedAt"
+      },
+      "pagination": {
+        "kind": "page",
+        "param": "page",
+        "start": 1,
+        "pages": 4
+      },
+      "min_interval": 2
+    },
+    {
+      "id": "workingnomads",
+      "label": "Working Nomads",
+      "kind": "json",
+      "url": "https://www.workingnomads.com/api/exposed_jobs/",
+      "items": "",
+      "map": {
+        "title": "title",
+        "company": "company_name",
+        "location": "location",
+        "url": "url",
+        "posted": "pub_date"
+      },
+      "min_interval": 10
+    },
+    {
+      "id": "remotive",
+      "label": "Remotive",
+      "kind": "rss",
+      "url": "https://remotive.com/remote-jobs/feed",
+      "map": {
+        "company": "company"
+      },
+      "attribution": "Job data by Remotive",
+      "_note": "Remotive asks for at most ~4 requests/day; data is ~24h delayed.",
+      "min_interval": 60
+    },
+    {
+      "id": "weworkremotely",
+      "label": "We Work Remotely",
+      "kind": "rss",
+      "url": "https://weworkremotely.com/categories/remote-programming-jobs.rss",
+      "rss_by_category": {
+        "programming": "https://weworkremotely.com/categories/remote-programming-jobs.rss",
+        "all": "https://weworkremotely.com/remote-jobs.rss"
+      },
+      "title_pattern": "^(?P<company>.+?):\\s*(?P<title>.+)$",
+      "min_interval": 60
+    },
+    {
+      "id": "nodesk",
+      "label": "NoDesk",
+      "kind": "rss",
+      "url": "https://nodesk.co/remote-jobs/engineering/index.xml",
+      "rss_by_category": {
+        "engineering": "https://nodesk.co/remote-jobs/engineering/index.xml",
+        "all": "https://nodesk.co/remote-jobs/index.xml"
+      },
+      "title_pattern": "^(?P<title>.+?)\\s+at\\s+(?P<company>.+)$",
+      "min_interval": 60
+    },
+    {
+      "id": "cryptocurrencyjobs",
+      "label": "Cryptocurrency Jobs",
+      "kind": "rss",
+      "url": "https://cryptocurrencyjobs.co/index.xml",
+      "title_pattern": "^(?P<title>.+?)\\s+at\\s+(?P<company>.+)$",
+      "min_interval": 60
+    },
+    {
+      "id": "hn_hiring",
+      "label": "HN Who is hiring",
+      "kind": "hn",
+      "url": "https://hn.algolia.com/api/v1",
+      "threads": 2,
+      "pages": 3,
+      "min_interval": 1,
+      "_note": "Top-level comments of the newest 'Ask HN: Who is hiring?' threads via the public Algolia API. The first line 'Company | Role | Location | REMOTE' becomes company/title/location; url is the HN item, apply_url the first link in the post."
+    },
+    {
+      "id": "yc_jobs",
+      "label": "YC Work at a Startup",
+      "kind": "yc",
+      "url": "https://www.ycombinator.com/jobs",
+      "role": "eng",
+      "pages": 3,
+      "min_interval": 1,
+      "_note": "ycombinator.com/jobs is public and embeds the Work at a Startup results as Inertia data-page JSON (20 per page; query= and remote=yes work). The job url points at workatastartup.com."
+    },
+    {
+      "id": "getro_generalcatalyst",
+      "label": "General Catalyst portfolio",
+      "kind": "getro",
+      "network_id": 222,
+      "board": "jobs.generalcatalyst.com"
+    },
+    {
+      "id": "getro_khosla",
+      "label": "Khosla Ventures portfolio",
+      "kind": "getro",
+      "network_id": 257,
+      "board": "jobs.khoslaventures.com"
+    },
+    {
+      "id": "getro_accel",
+      "label": "Accel portfolio",
+      "kind": "getro",
+      "network_id": 8672,
+      "board": "jobs.accel.com"
+    },
+    {
+      "id": "getro_menlo",
+      "label": "Menlo Ventures portfolio",
+      "kind": "getro",
+      "network_id": 767,
+      "board": "jobs.menlovc.com"
+    },
+    {
+      "id": "getro_insight",
+      "label": "Insight Partners portfolio",
+      "kind": "getro",
+      "network_id": 246,
+      "board": "jobs.insightpartners.com"
+    },
+    {
+      "id": "getro_b2venture",
+      "label": "b2venture portfolio",
+      "kind": "getro",
+      "network_id": 4283,
+      "board": "jobs.b2venture.vc"
+    },
+    {
+      "id": "getro_cherry",
+      "label": "Cherry Ventures portfolio",
+      "kind": "getro",
+      "network_id": 44081,
+      "board": "talent.cherry.vc"
+    },
+    {
+      "id": "getro_atomico",
+      "label": "Atomico portfolio",
+      "kind": "getro",
+      "network_id": 36986,
+      "board": "careers.atomico.com"
+    },
+    {
+      "id": "getro_earlybird",
+      "label": "Earlybird portfolio",
+      "kind": "getro",
+      "network_id": 617,
+      "board": "jobs.earlybird.com"
+    },
+    {
+      "id": "getro_speedinvest",
+      "label": "Speedinvest portfolio",
+      "kind": "getro",
+      "network_id": 947,
+      "board": "careers.speedinvest.com"
+    },
+    {
+      "id": "getro_hv",
+      "label": "HV Capital portfolio",
+      "kind": "getro",
+      "network_id": 234,
+      "board": "hv.getro.com"
+    },
+    {
+      "id": "getro_pointnine",
+      "label": "Point Nine portfolio",
+      "kind": "getro",
+      "network_id": 1680,
+      "board": "jobs.pointnine.com"
+    },
+    {
+      "id": "consider_sequoia",
+      "label": "Sequoia portfolio",
+      "kind": "consider",
+      "url": "https://jobs.sequoiacap.com/jobs",
+      "api": "https://jobs.sequoiacap.com/api-boards/search-jobs",
+      "board_id": "sequoia-capital",
+      "size": 400,
+      "min_interval": 5
+    },
+    {
+      "id": "consider_lightspeed",
+      "label": "Lightspeed portfolio",
+      "kind": "consider",
+      "url": "https://jobs.lsvp.com/jobs",
+      "api": "https://jobs.lsvp.com/api-boards/search-jobs",
+      "board_id": "lightspeed",
+      "size": 400,
+      "min_interval": 5
+    },
+    {
+      "id": "consider_firstround",
+      "label": "First Round portfolio",
+      "kind": "consider",
+      "url": "https://jobs.firstround.com/jobs",
+      "api": "https://jobs.firstround.com/api-boards/search-jobs",
+      "board_id": "first-round-capital",
+      "size": 400,
+      "min_interval": 5
+    },
+    {
+      "id": "consider_bessemer",
+      "label": "Bessemer portfolio",
+      "kind": "consider",
+      "url": "https://jobs.bvp.com/jobs",
+      "api": "https://jobs.bvp.com/api-boards/search-jobs",
+      "board_id": "bessemer-ventures",
+      "size": 400,
+      "min_interval": 5
+    },
+    {
+      "id": "consider_founderful",
+      "label": "Founderful portfolio",
+      "kind": "consider",
+      "url": "https://jobs.founderful.com/jobs",
+      "api": "https://jobs.founderful.com/api-boards/search-jobs",
+      "board_id": "wingman",
+      "min_interval": 5,
+      "size": 400
+    }
+  ],
+  "getro": {
+    "url": "https://api.getro.com/api/v2/collections/{network_id}/search/jobs",
+    "_note": "POST only. Accept must be exactly application/json or it answers 406. hitsPerPage is ignored (always 20). All networks share one host, so requests are serialised. Networks are listed US-first so a tight --budget cuts the European boards, not these. 2 pages x 20 per query is plenty inside a 2-day window.",
+    "pages": 2,
+    "min_interval": 2
+  },
+  "google_shards": [
+    {
+      "id": "ats_a",
+      "label": "ATS: Greenhouse, Breezy, Teamtailor, Pinpoint, Gem, Oracle, Taleo",
+      "hosts": [
+        {
+          "label": "Greenhouse",
+          "site": "boards.greenhouse.io",
+          "host": "greenhouse.io",
+          "field": "datePublished"
+        },
+        {
+          "label": "Breezy HR",
+          "site": "breezy.hr",
+          "host": "breezy.hr"
+        },
+        {
+          "label": "Teamtailor",
+          "site": "teamtailor.com",
+          "host": "teamtailor.com"
+        },
+        {
+          "label": "Pinpoint",
+          "site": "pinpointhq.com",
+          "host": "pinpointhq.com"
+        },
+        {
+          "label": "Gem",
+          "site": "jobs.gem.com",
+          "host": "jobs.gem.com"
+        },
+        {
+          "label": "Oracle Cloud",
+          "site": "oraclecloud.com",
+          "host": "oraclecloud.com"
+        },
+        {
+          "label": "Taleo",
+          "site": "taleo.net",
+          "host": "taleo.net"
+        }
+      ]
+    },
+    {
+      "id": "ats_b",
+      "label": "ATS: Ashby, Lever, Recruitee, BambooHR, Personio, SuccessFactors",
+      "hosts": [
+        {
+          "label": "Ashby",
+          "site": "jobs.ashbyhq.com",
+          "host": "jobs.ashbyhq.com"
+        },
+        {
+          "label": "Lever",
+          "site": "jobs.lever.co",
+          "host": "jobs.lever.co"
+        },
+        {
+          "label": "Recruitee",
+          "site": "recruitee.com",
+          "host": "recruitee.com"
+        },
+        {
+          "label": "BambooHR",
+          "site": "bamboohr.com",
+          "host": "bamboohr.com"
+        },
+        {
+          "label": "Personio",
+          "site": "jobs.personio.com",
+          "host": "personio.com"
+        },
+        {
+          "label": "SuccessFactors",
+          "site": "jobs.hr.cloud.sap.com",
+          "host": "hr.cloud.sap.com"
+        }
+      ]
+    },
+    {
+      "id": "ats_c",
+      "label": "ATS: Workday, SmartRecruiters, Workable, Jobvite, iCIMS, Rippling",
+      "hosts": [
+        {
+          "label": "Workday",
+          "site": "myworkdayjobs.com",
+          "host": "myworkdayjobs.com"
+        },
+        {
+          "label": "SmartRecruiters",
+          "site": "jobs.smartrecruiters.com",
+          "host": "smartrecruiters.com"
+        },
+        {
+          "label": "Workable",
+          "site": "apply.workable.com",
+          "host": "apply.workable.com"
+        },
+        {
+          "label": "Jobvite",
+          "site": "jobs.jobvite.com",
+          "host": "jobs.jobvite.com"
+        },
+        {
+          "label": "iCIMS",
+          "site": "icims.com",
+          "host": "icims.com"
+        },
+        {
+          "label": "Rippling Recruiting",
+          "site": "ats.rippling.com",
+          "host": "ats.rippling.com",
+          "field": "createdOn"
+        }
+      ]
+    },
+    {
+      "id": "boards_a",
+      "label": "Boards: Torre, WTTJ, Get on Board, Remote3, OpenToWorkRemote, Agentic Engineering Jobs",
+      "hosts": [
+        {
+          "label": "Torre",
+          "site": "torre.ai",
+          "host": "torre.ai"
+        },
+        {
+          "label": "Welcome to the Jungle",
+          "site": "welcometothejungle.com",
+          "host": "welcometothejungle.com"
+        },
+        {
+          "label": "Get on Board",
+          "site": "getonbrd.com",
+          "host": "getonbrd.com"
+        },
+        {
+          "label": "Remote3",
+          "site": "remote3.co",
+          "host": "remote3.co"
+        },
+        {
+          "label": "OpenToWorkRemote",
+          "site": "opentoworkremote.com",
+          "host": "opentoworkremote.com"
+        },
+        {
+          "label": "Agentic Engineering Jobs",
+          "site": "agentic-engineering-jobs.com",
+          "host": "agentic-engineering-jobs.com"
+        }
+      ]
+    },
+    {
+      "id": "boards_b",
+      "label": "Boards: Arc, DailyRemote, Web3.career, Crypto Careers, Remote.com",
+      "hosts": [
+        {
+          "label": "Arc",
+          "site": "arc.dev",
+          "host": "arc.dev"
+        },
+        {
+          "label": "DailyRemote",
+          "site": "dailyremote.com",
+          "host": "dailyremote.com"
+        },
+        {
+          "label": "Web3.career",
+          "site": "web3.career",
+          "host": "web3.career"
+        },
+        {
+          "label": "Crypto Careers",
+          "site": "crypto-careers.com",
+          "host": "crypto-careers.com"
+        },
+        {
+          "label": "Remote.com",
+          "site": "remote.com",
+          "host": "remote.com"
+        }
+      ]
+    },
+    {
+      "id": "boards_c",
+      "label": "Boards: Levels.fyi, Product Hunt, Jobright, a16z Speedrun",
+      "hosts": [
+        {
+          "label": "Levels.fyi",
+          "site": "levels.fyi",
+          "host": "levels.fyi"
+        },
+        {
+          "label": "Product Hunt",
+          "site": "producthunt.com",
+          "host": "producthunt.com"
+        },
+        {
+          "label": "Jobright AI",
+          "site": "jobright.ai",
+          "host": "jobright.ai"
+        },
+        {
+          "label": "a16z Speedrun",
+          "site": "speedrun-talent-network.com",
+          "host": "speedrun-talent-network.com"
+        }
+      ]
+    }
+  ],
+  "vc_directories": [
+    {
+      "label": "Andreessen Horowitz",
+      "url": "https://a16z.com/portfolio/"
+    },
+    {
+      "label": "Sequoia Capital",
+      "url": "https://sequoiacap.com/our-companies/"
+    },
+    {
+      "label": "Bessemer",
+      "url": "https://www.bvp.com/companies"
+    },
+    {
+      "label": "General Catalyst",
+      "url": "https://www.generalcatalyst.com/portfolio"
+    },
+    {
+      "label": "Accel",
+      "url": "https://www.accel.com/companies"
+    },
+    {
+      "label": "Index Ventures",
+      "url": "https://www.indexventures.com/companies/"
+    },
+    {
+      "label": "Greylock",
+      "url": "https://greylock.com/portfolio/"
+    },
+    {
+      "label": "Khosla Ventures",
+      "url": "https://www.khoslaventures.com/portfolio"
+    },
+    {
+      "label": "Radical Ventures",
+      "url": "https://radical.vc/portfolios/"
+    },
+    {
+      "label": "Lightspeed",
+      "url": "https://lsvp.com/companies/"
+    },
+    {
+      "label": "Menlo Ventures",
+      "url": "https://menlovc.com/portfolio/"
+    },
+    {
+      "label": "Founders Fund",
+      "url": "https://foundersfund.com/portfolio/"
+    },
+    {
+      "label": "NEA",
+      "url": "https://www.nea.com/portfolio"
+    },
+    {
+      "label": "Kaszek (LATAM)",
+      "url": "https://www.kaszek.com/companies/"
+    },
+    {
+      "label": "monashees (LATAM)",
+      "url": "https://www.monashees.com/portfolio"
+    },
+    {
+      "label": "Valor Capital (LATAM)",
+      "url": "https://valorcapitalgroup.com/companies/"
+    },
+    {
+      "label": "Canary (LATAM)",
+      "url": "https://www.canary.com.br/portfolio/"
+    }
+  ],
+  "_unreachable": {
+    "_comment": "Checked 2026-10-01. Not sweepable without a browser or at all; listed so nobody re-adds them as HTTP sources.",
+    "wellfound.com": "job search needs a signed-in session and is rendered client-side; it is a browser task (plan task 'wellfound').",
+    "jobs.a16z.com, jobs.greylock.com, speedrun-talent-network.com": "custom job sites without a JSON endpoint; Google rarely indexes their postings.",
+    "jobs.foundersfund.com, jobs.nea.com, jobs.radical.vc, jobs.monashees.com": "no such hosts.",
+    "jobs.indexventures.com": "TLS certificate mismatch.",
+    "hiring.cafe": "403 for non-browser clients."
+  }
+}

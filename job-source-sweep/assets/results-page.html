@@ -1,0 +1,244 @@
+<title>__TITLE__</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --paper: #F5F6F3;
+    --surface: #FFFFFF;
+    --ink: #1A2230;
+    --muted: #5D6873;
+    --rule: #DDE1DC;
+    --accent: #2A5CA6;
+    --accent-soft: #E6EDF8;
+    --green: #1E7A4C;
+    --green-soft: #E2F2E8;
+    --red: #B23A2E;
+    --red-soft: #F8E6E3;
+    --star: #B7791F;
+    --sans: "Public Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #111418; --surface: #181C22; --ink: #E4E8EC; --muted: #98A2AD; --rule: #2A3038;
+      --accent: #86AEEB; --accent-soft: #1D2A3D; --green: #6FCF97; --green-soft: #173024;
+      --red: #F08A7E; --red-soft: #3A1F1C; --star: #E3B455; color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #111418; --surface: #181C22; --ink: #E4E8EC; --muted: #98A2AD; --rule: #2A3038;
+    --accent: #86AEEB; --accent-soft: #1D2A3D; --green: #6FCF97; --green-soft: #173024;
+    --red: #F08A7E; --red-soft: #3A1F1C; --star: #E3B455; color-scheme: dark;
+  }
+
+  body { background: var(--paper); color: var(--ink); font: 15px/1.5 var(--sans); }
+  .wrap { max-width: 1240px; margin: 0 auto; padding-inline: 20px; padding-block: 28px 48px; display: grid; gap: 20px; }
+  @media (max-width: 480px) { .wrap { padding-inline: 16px; } }
+
+  header { display: grid; gap: 6px; }
+  .eyebrow { font: 500 12px/1 var(--mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+  h1 { margin: 0; font-size: clamp(24px, 4vw, 32px); font-weight: 700; letter-spacing: -.01em; text-wrap: balance; }
+  .facts { display: flex; flex-wrap: wrap; gap: 6px 18px; color: var(--muted); font-size: 14px; font-variant-numeric: tabular-nums; }
+  .facts b { color: var(--ink); font-weight: 600; }
+
+  details.gaps { background: var(--red-soft); border-radius: 6px; padding: 10px 14px; font-size: 14px; }
+  details.gaps summary { cursor: pointer; font-weight: 600; color: var(--red); }
+  details.gaps ul { margin: 8px 0 2px; padding-left: 18px; color: var(--ink); }
+
+  .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .controls input[type="search"], .controls select {
+    font: inherit; font-size: 14px; color: var(--ink); background: var(--surface);
+    border: 1px solid var(--rule); border-radius: 6px; padding: 7px 10px; min-height: 36px;
+  }
+  .controls input[type="search"] { flex: 1 1 240px; min-width: 0; }
+  .toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; cursor: pointer; user-select: none; }
+  .toggle input { accent-color: var(--accent); width: 16px; height: 16px; }
+  .count { margin-left: auto; font: 500 13px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .table-box { overflow-x: auto; background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  tbody tr:last-child td { border-bottom: 0; }
+  thead th { position: sticky; top: 0; background: var(--surface); z-index: 1; font: 600 12px var(--sans);
+             letter-spacing: .04em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+  th button { all: unset; cursor: pointer; }
+  th button[aria-sort="ascending"]::after { content: " ↑"; color: var(--accent); }
+  th button[aria-sort="descending"]::after { content: " ↓"; color: var(--accent); }
+  tbody tr:hover { background: var(--accent-soft); }
+
+  .new { color: var(--star); font-size: 15px; }
+  .when { font: 13px var(--mono); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .when small { display: block; color: var(--muted); font-size: 11px; }
+  .title a { color: var(--ink); font-weight: 600; text-decoration: none; }
+  .title a:hover { color: var(--accent); text-decoration: underline; }
+  .sub { display: block; color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+  .muted { color: var(--muted); }
+  .pill { display: inline-block; font: 600 11.5px/1 var(--sans); padding: 5px 8px; border-radius: 999px; white-space: nowrap; text-decoration: none; }
+  .pill.green { background: var(--green-soft); color: var(--green); }
+  .pill.red { background: var(--red-soft); color: var(--red); }
+  .pill.none { color: var(--muted); border: 1px dashed var(--rule); }
+  .src { display: flex; flex-wrap: wrap; gap: 4px; }
+  .src span { font-size: 12px; background: var(--paper); border: 1px solid var(--rule); border-radius: 4px; padding: 1px 6px; white-space: nowrap; }
+  .empty { padding: 28px; text-align: center; color: var(--muted); }
+
+  footer { color: var(--muted); font-size: 12.5px; display: grid; gap: 4px; }
+
+  @media (max-width: 760px) {
+    .table-box { border: 0; background: none; overflow: visible; }
+    table, tbody { display: block; }
+    thead { display: none; }
+    tbody tr { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; background: var(--surface);
+               border: 1px solid var(--rule); border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; }
+    td { display: block; padding: 0; border: 0; }
+    td.c-new { display: none; }
+    td.c-title { grid-column: 1 / -1; order: -2; }
+    td.c-when { order: -1; }
+    td.c-brazil { order: -1; justify-self: end; }
+    td.c-company, td.c-loc, td.c-src { grid-column: 1 / -1; }
+    tr.is-new td.c-title a::before { content: "★ "; color: var(--star); }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <span class="eyebrow">Job source sweep · <span id="swept"></span></span>
+    <h1 id="role"></h1>
+    <div class="facts" id="facts"></div>
+  </header>
+
+  <details class="gaps" id="gaps" hidden><summary id="gaps-sum"></summary><ul id="gaps-list"></ul></details>
+
+  <div class="controls">
+    <input type="search" id="q" placeholder="Search title, company, location" aria-label="Search postings">
+    <label class="toggle"><input type="checkbox" id="only-new"> New only</label>
+    <select id="brazil" aria-label="Brazil check">
+      <option value="">Brazil: any</option>
+      <option value="green">Brazil: green</option>
+      <option value="red">Brazil: red</option>
+      <option value="none">Brazil: not checked</option>
+    </select>
+    <select id="source" aria-label="Source"><option value="">All sources</option></select>
+    <span class="count" id="count"></span>
+  </div>
+
+  <div class="table-box">
+    <table>
+      <thead><tr>
+        <th scope="col"><span class="sr" aria-label="New">★</span></th>
+        <th scope="col"><button data-sort="posted" id="s-posted">Posted</button></th>
+        <th scope="col"><button data-sort="brazil" id="s-brazil">Brazil</button></th>
+        <th scope="col"><button data-sort="title" id="s-title">Role</button></th>
+        <th scope="col"><button data-sort="company" id="s-company">Company</button></th>
+        <th scope="col">Location</th>
+        <th scope="col">Sources</th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+
+  <footer>
+    <span>🟢 means an engineer profile at the company appeared on Google's first page for "<span id="term"></span> brazil &lt;company&gt; site:linkedin.com". 🔴 means none appeared there, which is not proof the company has no one in Brazil. Each pill links to the search it came from.</span>
+    <span id="attrib"></span>
+  </footer>
+</div>
+
+<script id="data" type="application/json">__DATA__</script>
+<script id="meta" type="application/json">__META__</script>
+<script>
+(() => {
+  const rows = JSON.parse(document.getElementById('data').textContent);
+  const meta = JSON.parse(document.getElementById('meta').textContent);
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const safeUrl = (u) => /^https?:\/\//i.test(u || '') ? u : '#';
+
+  $('role').textContent = meta.role + ' openings';
+  $('swept').textContent = meta.date;
+  $('term').textContent = meta.term || 'engineer';
+  const green = rows.filter((r) => r.brazil === 'green').length, red = rows.filter((r) => r.brazil === 'red').length;
+  $('facts').innerHTML = [
+    `<span><b>${rows.length}</b> postings</span>`,
+    `<span><b>${rows.filter((r) => r.new).length}</b> new since last sweep</span>`,
+    `<span>posted since <b>${esc(meta.window_start)}</b></span>`,
+    (green + red) ? `<span>Brazil: <b>${green}</b> green · <b>${red}</b> red</span>` : ''
+  ].join('');
+
+  if (meta.gaps && meta.gaps.length) {
+    $('gaps').hidden = false;
+    $('gaps-sum').textContent = `${meta.gaps.length} source${meta.gaps.length > 1 ? 's' : ''} not fully covered`;
+    $('gaps-list').innerHTML = meta.gaps.map((g) => `<li>${esc(g.source || g.task)}: ${esc(g.error || g.reason || 'incomplete')}</li>`).join('');
+  }
+
+  const sources = [...new Set(rows.flatMap((r) => r.sources || []))].sort();
+  $('source').insertAdjacentHTML('beforeend', sources.map((s) => `<option>${esc(s)}</option>`).join(''));
+  const credits = [];
+  if (sources.some((s) => /remote ok/i.test(s))) credits.push('Job data by Remote OK.');
+  if (sources.some((s) => /remotive/i.test(s))) credits.push('Job data by Remotive.');
+  $('attrib').textContent = credits.join(' ');
+
+  const now = Date.now();
+  const ts = (r) => r.posted_iso ? Date.parse(r.posted_iso.length === 10 ? r.posted_iso + 'T12:00Z' : r.posted_iso.replace(/Z$/, ':00Z')) : NaN;
+  const ago = (t) => {
+    if (isNaN(t)) return '';
+    const h = Math.max(0, (now - t) / 36e5);
+    return h < 1 ? 'under 1h ago' : h < 48 ? `${Math.round(h)}h ago` : `${Math.round(h / 24)}d ago`;
+  };
+  rows.forEach((r) => { r._t = ts(r); r._hay = [r.title, r.company, r.location, r.eligibility].join(' ').toLowerCase(); });
+
+  const KEY = 'jobsweep.page.v1.' + meta.slug;
+  let state = { q: '', onlyNew: false, brazil: '', source: '', sort: 'posted', dir: -1 };
+  try { Object.assign(state, JSON.parse(localStorage.getItem(KEY) || '{}')); } catch (e) {}
+  const save = () => { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {} };
+  $('q').value = state.q; $('only-new').checked = state.onlyNew; $('brazil').value = state.brazil;
+  if (sources.includes(state.source)) $('source').value = state.source; else state.source = '';
+
+  const rank = { green: 0, red: 1 };
+  const cmp = {
+    posted: (a, b) => (isNaN(a._t) ? -Infinity : a._t) - (isNaN(b._t) ? -Infinity : b._t),
+    brazil: (a, b) => (rank[a.brazil] ?? 2) - (rank[b.brazil] ?? 2),
+    title: (a, b) => a.title.localeCompare(b.title),
+    company: (a, b) => (a.company || '~').localeCompare(b.company || '~'),
+  };
+
+  function render() {
+    const q = state.q.trim().toLowerCase();
+    const list = rows.filter((r) =>
+      (!q || r._hay.includes(q)) && (!state.onlyNew || r.new) &&
+      (!state.brazil || (state.brazil === 'none' ? !r.brazil : r.brazil === state.brazil)) &&
+      (!state.source || (r.sources || []).includes(state.source))
+    ).sort((a, b) => state.dir * cmp[state.sort](a, b) || (b.new - a.new));
+
+    document.querySelectorAll('th button').forEach((b) =>
+      b.setAttribute('aria-sort', b.dataset.sort === state.sort ? (state.dir > 0 ? 'ascending' : 'descending') : 'none'));
+    $('count').textContent = `${list.length} of ${rows.length}`;
+    $('rows').innerHTML = list.length ? list.map((r) => {
+      const extra = [r.compensation, r.eligibility, r.signal].filter(Boolean).map(esc).join(' · ');
+      const pill = r.brazil
+        ? `<a class="pill ${r.brazil}" href="${esc(safeUrl(r.brazil_evidence))}" target="_blank" rel="noopener" title="Checked ${esc(r.brazil_checked)}${r.brazil_located ? ' · a matching profile is located in Brazil' : ''}">${r.brazil === 'green' ? 'Green' : 'Red'}${r.brazil_located ? ' · BR' : ''}</a>`
+        : `<span class="pill none">Not checked</span>`;
+      return `<tr class="${r.new ? 'is-new' : ''}">
+        <td class="c-new">${r.new ? '<span class="new" title="New since the last sweep">★</span>' : ''}</td>
+        <td class="c-when when">${esc(ago(r._t) || '—')}<small>${esc(r.posted_iso || 'date unknown')}</small></td>
+        <td class="c-brazil">${pill}</td>
+        <td class="c-title title"><a href="${esc(safeUrl(r.url))}" target="_blank" rel="noopener">${esc(r.title)}</a>${extra ? `<span class="sub">${extra}</span>` : ''}</td>
+        <td class="c-company">${esc(r.company) || '<span class="muted">Not stated</span>'}</td>
+        <td class="c-loc">${esc(r.location) || '<span class="muted">Not stated</span>'}</td>
+        <td class="c-src"><div class="src">${(r.sources || []).map((s) => `<span>${esc(s)}</span>`).join('')}</div></td>
+      </tr>`;
+    }).join('') : `<tr><td colspan="7" class="empty">No postings match these filters.</td></tr>`;
+  }
+
+  $('q').addEventListener('input', (e) => { state.q = e.target.value; save(); render(); });
+  $('only-new').addEventListener('change', (e) => { state.onlyNew = e.target.checked; save(); render(); });
+  $('brazil').addEventListener('change', (e) => { state.brazil = e.target.value; save(); render(); });
+  $('source').addEventListener('change', (e) => { state.source = e.target.value; save(); render(); });
+  document.querySelectorAll('th button').forEach((b) => b.addEventListener('click', () => {
+    state.dir = state.sort === b.dataset.sort ? -state.dir : (b.dataset.sort === 'posted' ? -1 : 1);
+    state.sort = b.dataset.sort; save(); render();
+  }));
+  render();
+})();
+</script>
