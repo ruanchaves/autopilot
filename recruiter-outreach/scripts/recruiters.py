@@ -14,6 +14,7 @@ Separate from job-autopilot: nothing here depends on an application.
 A run is done only when `status` says done: connection requests and InMails for the day are all used.
     recruiters.py dashboard                                 # dashboard.json for the role explorer's Outreach view
     recruiters.py status
+    recruiters.py companies                                 # people contacted per company/agency vs max_per_company
 
 Settings come from config.yaml at the repo root (recruiter_outreach, role, pay, banned_companies).
 Everything else lives in <home>/recruiters/:
@@ -78,6 +79,7 @@ DEFAULT_SETTINGS = {
     "message_per_day": 20,
     "gap_seconds": {"connect": 90, "inmail": 120, "message": 60},
     "min_score": 45,           # leads below this are not contacted
+    "max_per_company": 3,      # people ever contacted at one company or agency (companies.json keeps the count)
     "stale_days": 60,          # a lead's signals are re-probed after this many days
     "people_queries": [],      # from config.yaml recruiter_outreach.people_queries
     "post_queries": [],
@@ -98,6 +100,64 @@ def settings(home: str) -> dict:
 
 def squash(name: str) -> str:
     return re.sub(r"[^a-z0-9]", "", (name or "").lower())
+
+
+_CO_SUFFIX = re.compile(r"\b(inc|llc|ltd|ltda|limited|corp|corporation|co|company|group|gmbh|sa|s\.a\.|srl|plc|lp)\b\.?")
+_CO_TRAIL = {"systems", "system", "technologies", "technology", "tech", "solutions", "labs", "consulting", "software",
+             "digital", "services", "staffing", "recruitment", "recruiting", "talent", "global", "international",
+             "latam", "brasil", "brazil", "usa", "us"}
+_CO_NOISE = {"", "unknown", "na", "n/a", "none", "self", "freelance", "independent", "selfemployed"}
+
+
+def company_key(name: str) -> str:
+    """One key per employer or agency: 'Strider (freelance)', 'Strider Inc.' and 'strider' all map to 'strider'.
+    Empty for unknown or self-employed, which the cap ignores."""
+    n = (name or "").lower()
+    n = re.sub(r"\(.*?\)|\[.*?\]", " ", n)            # parentheticals: "(CloudX)", "(freelance)"
+    n = re.split(r"\s+[/|,@]\s+|\s+[-\u2013]\s+|\s+via\s+", n)[0]   # "Epidata / Applica Corp" -> epidata
+    n = _CO_SUFFIX.sub(" ", n)
+    words = n.split()
+    while len(words) > 1 and words[-1] in _CO_TRAIL:   # "EPAM Systems" / "10Pearls LATAM" -> epam / 10pearls
+        words.pop()
+    k = squash(" ".join(words))
+    return "" if k in _CO_NOISE else k
+
+
+def companies_from(cts: dict) -> dict:
+    """The per-company memory, derived from every contact ever sent (any purpose, any channel)."""
+    out: dict = {}
+    for who, c in cts.items():
+        if c.get("status") != "sent":
+            continue
+        k = company_key(c.get("company", ""))
+        if not k:
+            continue
+        e = out.setdefault(k, {"name": (c.get("company") or "").strip(), "contacted": 0, "profiles": [], "last": ""})
+        e["contacted"] += 1
+        e["profiles"].append(who)
+        e["last"] = max(e["last"], c.get("at", "") or "")
+    return out
+
+
+def companies(home: str, cts: dict | None = None) -> dict:
+    """companies.json, rebuilt from contacts.json when missing or when `cts` is given."""
+    if cts is None:
+        data = load(home, "companies.json", None)
+        if data is not None:
+            return data
+        cts = contacted(home)
+    data = companies_from(cts)
+    save(home, "companies.json", data)
+    return data
+
+
+def company_room(home: str, st: dict, company: str, cos: dict | None = None) -> tuple[int, str]:
+    """How many more people may be contacted at `company` under max_per_company, and the key."""
+    k = company_key(company)
+    if not k:
+        return 10 ** 6, ""
+    cos = companies(home) if cos is None else cos
+    return max(0, int(st["max_per_company"]) - cos.get(k, {}).get("contacted", 0)), k
 
 
 def is_banned(company: str, st: dict) -> bool:
@@ -158,8 +218,11 @@ def need(home: str, st: dict) -> tuple[int, dict]:
     return q["connect"]["left"] + inmail_left, q
 
 
-def contactable(leads: dict, st: dict) -> list:
-    return sorted((v for v in leads.values() if v["status"] == "new" and v["score"] >= st["min_score"]),
+def contactable(leads: dict, st: dict, home: str | None = None) -> list:
+    """Uncontacted leads at or above min_score whose company still has room under max_per_company."""
+    cos = companies(home) if home else {}
+    return sorted((v for v in leads.values() if v["status"] == "new" and v["score"] >= st["min_score"]
+                   and (not home or company_room(home, st, v.get("company", ""), cos)[0] > 0)),
                   key=lambda v: -v["score"])
 
 
@@ -175,7 +238,7 @@ def cmd_discover_plan(args) -> int:
     reprobe = [{"profile_url": v["profile_url"], "name": v.get("name"), "probed_at": v.get("probed_at")}
                for v in leads.values() if (v.get("probed_at") or "") < stale and v.get("status") == "new"][:10]
     needed, q = need(args.home, st)
-    have = len(contactable(leads, st))
+    have = len(contactable(leads, st, args.home))
     # phrasings already run this week whose deeper result pages haven't been read yet
     deeper = [{"kind": k.split(":", 1)[0], "query": k.split(":", 1)[1], "start_page": depth.get(k, 2) + 1}
               for k, at in runs.items() if at >= cutoff and depth.get(k, 2) < MAX_PAGES]
@@ -244,7 +307,7 @@ def cmd_ingest(args) -> int:
     save(args.home, "leads.json", leads)
     save(args.home, "discovery-runs.json", runs)
     save(args.home, "discovery-depth.json", depth)
-    ranked = contactable(leads, st)
+    ranked = contactable(leads, st, args.home)
     needed, _ = need(args.home, st)
     return emit({"added": added, "updated": updated, "skipped_banned": banned, "leads_total": len(leads),
                  "contactable_now": len(ranked), "needed": needed,
@@ -286,7 +349,8 @@ def cmd_plan(args) -> int:
     p = pacing(args.home)
     save(args.home, "pacing.json", p)
     q = quotas(p, st)
-    pile = []
+    cos = companies(args.home, cts)
+    pile, capped = [], []
     for key, v in leads.items():
         if v.get("status") != "new" or v["score"] < st["min_score"]:
             continue
@@ -301,11 +365,27 @@ def cmd_plan(args) -> int:
     save(args.home, "leads.json", leads)
     needed, _ = need(args.home, st)
     budget = needed + q["message"]["left"]
+    # at most max_per_company people per employer/agency, counting everyone contacted before today
+    room: dict = {}
+    chosen = []
+    for v in pile:
+        left, k = company_room(args.home, st, v.get("company", ""), cos)
+        if k:
+            left = room.setdefault(k, left)
+        if left <= 0:
+            capped.append(f'{v["name"]} ({v.get("company", "")})')
+            continue
+        if k:
+            room[k] -= 1
+        chosen.append(v)
+        if len(chosen) >= min(args.n, budget):
+            break
     tasks = [{k: v.get(k) for k in ("profile_url", "name", "headline", "company", "location", "degree", "language",
                                      "score", "parts", "signals", "evidence", "recent_roles", "vibe")}
-             for v in pile[: min(args.n, budget)]]
+             for v in chosen]
     out = work_dir(args.home)
-    return emit({"quotas": q, "needed": needed, "pile": len(pile), "short_by": max(0, needed - len(pile)), "tasks": tasks,
+    return emit({"quotas": q, "needed": needed, "pile": len(pile) - len(capped), "short_by": max(0, needed - len(chosen)),
+                 "max_per_company": st["max_per_company"], "held_by_company_cap": capped, "tasks": tasks,
                  "order": "connection requests first; when they're used up, InMail while credits last; 1st-degree leads get a plain message",
                  "banned_companies": st["banned_companies"], "target_role": st["target_role"],
                  "candidate": userconfig.snapshot(),
@@ -321,15 +401,19 @@ def cmd_check(args) -> int:
     res = {"kind": args.kind, "who": who}
     prev = cts.get(who)
     q = quotas(p, st)
+    company = args.company or load(args.home, "leads.json", {}).get(who, {}).get("company", "")
+    room, ckey = company_room(args.home, st, company)
     if prev and prev.get("status") == "sent":
         res.update(allowed=False, reason=f"already contacted on {prev.get('at', '')[:10]} via {prev.get('channel')}")
+    elif room <= 0:
+        res.update(allowed=False, reason=f"company cap: {st['max_per_company']} people already contacted at {company}")
     elif q[args.kind]["left"] <= 0:
         res.update(allowed=False, reason=f"daily {args.kind} cap of {q[args.kind]['cap']} reached")
     else:
         last = p["last"].get(args.kind)
         gap = st["gap_seconds"].get(args.kind, 60)
         wait = gap - (NOW - datetime.fromisoformat(last)).total_seconds() if last else 0
-        res.update(allowed=wait <= 0, left_today=q[args.kind]["left"],
+        res.update(allowed=wait <= 0, left_today=q[args.kind]["left"], company=company, company_room=room,
                    **({"wait_seconds": math.ceil(wait), "reason": "minimum gap"} if wait > 0 else {}))
     save(args.home, "pacing.json", p)
     return emit(res)
@@ -377,9 +461,12 @@ def cmd_record(args) -> int:
     if res.get("inmail_credits") is not None:
         p["inmail_credits"] = res["inmail_credits"]
     save(args.home, "contacts.json", cts)
+    cos = companies(args.home, cts)
+    at_cap = sorted(e["name"] for e in cos.values() if e["contacted"] >= st["max_per_company"])
     save(args.home, "leads.json", leads)
     save(args.home, "pacing.json", p)
-    return emit({"recorded": len(res.get("contacts") or []), "sent": sent, "quotas": quotas(p, st)})
+    return emit({"recorded": len(res.get("contacts") or []), "sent": sent, "quotas": quotas(p, st),
+                 "companies_at_cap": at_cap})
 
 
 def cmd_mark(args) -> int:
@@ -406,7 +493,8 @@ def cmd_import_contacts(args) -> int:
             cts[who] = {**c, "imported_from": str(args.file)}
             n += 1
     save(args.home, "contacts.json", cts)
-    return emit({"imported": n, "contacts_total": len(cts)})
+    cos = companies(args.home, cts)
+    return emit({"imported": n, "contacts_total": len(cts), "companies": len(cos)})
 
 
 # --------------------------------------------------------------- dashboard
@@ -433,12 +521,26 @@ def cmd_status(args) -> int:
     st = settings(args.home)
     leads = load(args.home, "leads.json", {})
     p = pacing(args.home)
-    new = contactable(leads, st)
+    new = contactable(leads, st, args.home)
     needed, q = need(args.home, st)
+    cos = companies(args.home)
+    at_cap = sorted(e["name"] for e in cos.values() if e["contacted"] >= st["max_per_company"])
     return emit({"leads": len(leads), "by_status": dict(Counter(v["status"] for v in leads.values())),
                  "contactable_now": len(new), "needed": needed, "done": needed == 0,
+                 "companies_contacted": len(cos), "companies_at_cap": at_cap, "max_per_company": st["max_per_company"],
                  "quotas": q, "inmail_credits": p.get("inmail_credits"), "contacts": len(contacted(args.home)),
                  "top": [f'{v["score"]} {v["name"]} - {v["headline"][:50]}' for v in new[:8]]})
+
+
+def cmd_companies(args) -> int:
+    """The per-company memory: who was contacted where, and which companies are at the cap."""
+    st = settings(args.home)
+    cos = companies(args.home, contacted(args.home))  # rebuild from contacts so it is always current
+    rows = sorted(cos.values(), key=lambda e: (-e["contacted"], e["name"].lower()))
+    return emit({"max_per_company": st["max_per_company"], "companies": len(rows),
+                 "at_cap": [e["name"] for e in rows if e["contacted"] >= st["max_per_company"]],
+                 "rows": [{"company": e["name"], "contacted": e["contacted"], "last": e["last"][:10],
+                           "profiles": e["profiles"]} for e in rows]})
 
 
 def main() -> int:
@@ -450,7 +552,8 @@ def main() -> int:
     sub.add_parser("score").set_defaults(fn=cmd_score)
     p = sub.add_parser("plan"); p.add_argument("--n", type=int, default=30); p.set_defaults(fn=cmd_plan)
     p = sub.add_parser("check"); p.add_argument("--kind", required=True, choices=["connect", "inmail", "message"])
-    p.add_argument("--profile", required=True); p.set_defaults(fn=cmd_check)
+    p.add_argument("--profile", required=True); p.add_argument("--company", default="")
+    p.set_defaults(fn=cmd_check)
     p = sub.add_parser("record"); p.add_argument("--result", required=True); p.set_defaults(fn=cmd_record)
     p = sub.add_parser("mark"); p.add_argument("--profile", required=True)
     p.add_argument("--status", required=True, choices=["replied", "skipped", "contacted", "new"]); p.add_argument("--note")
@@ -458,6 +561,7 @@ def main() -> int:
     p = sub.add_parser("import-contacts"); p.add_argument("--file", required=True); p.set_defaults(fn=cmd_import_contacts)
     sub.add_parser("dashboard").set_defaults(fn=cmd_dashboard)
     sub.add_parser("status").set_defaults(fn=cmd_status)
+    sub.add_parser("companies").set_defaults(fn=cmd_companies)
     args = ap.parse_args()
     return args.fn(args)
 

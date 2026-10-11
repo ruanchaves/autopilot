@@ -12,7 +12,7 @@ Read `fit-rubric.md` once for the facts. The pitch is `candidate.pitch`, which y
 
 ## Order and channel
 
-Work down `tasks` in order. For each lead, decide the channel, then run `recruiters check --kind <kind> --profile <url>` and obey it: not allowed means skip this lead or stop; `wait_seconds` means wait and check again.
+Work down `tasks` in order. For each lead, decide the channel, then run `recruiters check --kind <kind> --profile <url>` and obey it: not allowed means skip this lead or stop (a `company cap` reason means enough people at that company or agency were already contacted: skip the lead, record it as `skipped` with that reason, and move on); `wait_seconds` means wait and check again.
 
 1. **1st-degree connection:** a plain message (`message`). No quota is spent on these.
 2. **Connection requests left today:** a connection request with a custom note (`connect`). The user's hard limit is 20 a day, and `check` enforces it.
