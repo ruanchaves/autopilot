@@ -1,6 +1,6 @@
 ---
 name: job-autopilot
-description: Job hunting on autopilot, up to the Submit button. Runs the full /job-source-sweep, gives every role a 0-100 global fit score and ranks them, decides liberally which roles are worth applying to (skipping only clear mismatches, explicit location/citizenship exclusions, non-remote roles and excluded contract types), then works down the ranking - tailoring the resume for each role with /tailor-resume (automatic mode, JD-specific summary), filling the application completely through the company ATS form, LinkedIn Easy Apply or an email draft, drafting and attaching a short cover letter when the form requires one, and STOPPING before Submit with the tab left open for the user. By default it never submits; config.yaml autopilot.auto_submit: true lets it click Submit itself. It answers every form question from the resume and context, marking estimates for the user to confirm, keeps every answer so a question is asked only once, and asks the user only the few things it can't estimate (IDs, authorisation, documents). The user reviews each filled form on the role explorer's Autopilot tab, submits it, and marks it Submitted; only then is it registered in applika via WSL. It paces work per site, records every outcome, and never applies to the user's current employers (banned_companies in the repo's config.yaml, where every personal setting lives). It does no LinkedIn outreach; that is the separate /recruiter-outreach skill. Use when the user wants to sweep and prepare applications automatically, continue or resume the apply loop, retry failed applications, confirm which filled applications they submitted, or see which applications are ready, submitted or failed.
+description: Job hunting on autopilot, up to the Submit button. Runs the full /job-source-sweep, gives every role a 0-100 global fit score and ranks them, decides liberally which roles are worth applying to (skipping only clear mismatches, explicit location/citizenship exclusions, non-remote roles and excluded contract types), then works down the ranking - tailoring the resume for each role with /tailor-resume (automatic mode, JD-specific summary), filling the application completely through the company ATS form, LinkedIn Easy Apply or an email draft, drafting and attaching a short cover letter when the form requires one, and STOPPING before Submit with the tab left open for the user. By default it never submits; config.yaml autopilot.auto_submit: true lets it click Submit itself. It answers every form question from the resume and context, marking estimates for the user to confirm, keeps every answer so a question is asked only once, and asks the user only the few things it can't estimate (IDs, authorisation, documents). The user reviews each filled form on the role explorer's Autopilot tab, submits it, and marks it Submitted; only then is it registered in applika via WSL. It paces work per site, records every outcome, and never applies to the user's current employers (banned_companies in the repo's config.yaml, where every personal setting lives). It does no LinkedIn outreach; that is the separate /recruiter-outreach skill. On first use it runs an interactive setup (submit policy, cover letters, channels, tracker, caps) and reruns it on "set up" or "reconfigure". Use when the user wants to sweep and prepare applications automatically, continue or resume the apply loop, retry failed applications, confirm which filled applications they submitted, or see which applications are ready, submitted or failed.
 ---
 
 # Job autopilot
@@ -35,9 +35,34 @@ This skill runs job-source-sweep, ranks everything it finds, and prepares applic
 | `autopilot.cover_letter` | `required`: write one when the form requires it or the posting asks for one. `always`: wherever a form accepts one. `never`. |
 | `autopilot.max_load_retries` | Type-3 failures before a role is given up. |
 | `autopilot.tailor_ahead` | Tailored CVs kept ready ahead of the fill loop. |
+| `autopilot.tailor` | `true`: tailor the resume per role with the tailor-resume skill. `false`: skip tailoring and upload `resume.pdf` as-is (set by first-run setup when the skill isn't installed). |
 | `autopilot.per_company_per_run` | Most forms prepared for one company in a run. |
 
 Change them by editing `config.yaml` when the user asks.
+
+## 0. First run
+
+Run `jobsweep config` (the sweep's script) and read `setup_done`. Run this section when `job-autopilot` is not in it, or when the user asks to "set up" or "reconfigure" the autopilot. Otherwise skip to step 1.
+
+1. If `job-source-sweep` is not in `setup_done` either, run the sweep's setup first: read `<repo>/job-source-sweep/SKILL.md` step 1 and follow it to the end. It settles the runner, the data folder, the candidate (filled from the resume), the role, the pay target and the banned companies, and adds `job-source-sweep` to `setup_done`.
+2. Check the optional tools without asking: `wsl.exe -e bash -lc 'applika whoami'` (or `applika whoami` with a native runner) says whether the tracker is installed; `~/.claude/skills/tailor-resume/SKILL.md` says whether tailoring is available. For whatever is missing, set `tracker.enabled: false` or `autopilot.tailor: false` and tell the user in one line what that means (no application tracking or rejection cooldowns; the base resume PDF uploaded as-is).
+3. Say in one line that this is the autopilot's first-run setup, that it never submits an application unless they choose that here, and that `/job-autopilot reconfigure` or editing `config.yaml` changes it later. Then call **AskUserQuestion**, up to 4 questions per call. Skip any question the request already answers; when rerunning, put the current value first marked "(current)".
+
+**Call 1**
+1. *Submitting*: "Should the autopilot click Submit?" Options: No, fill every form completely and leave it open for me to submit (Recommended); Yes, submit automatically and record the confirmation. → `autopilot.auto_submit`
+2. *Cover letters*: "When should it write a cover letter?" Options: Only when the form requires one or the posting asks for one (Recommended); Wherever a form accepts one; Never. → `autopilot.cover_letter` (`required` / `always` / `never`)
+3. *Channels* (multiSelect): "Which application channels may it use?" Options: ATS forms such as Greenhouse, Lever, Workday and Ashby; LinkedIn Easy Apply; Email applications. → `autopilot.channels` (`ats`, `linkedin_easy_apply`, `email`)
+4. *Tracker* (only when applika is installed): "Register confirmed applications in applika, and skip companies that rejected you recently?" Options: Yes, with a 180-day cooldown after a rejection (Recommended); Yes, no cooldown; No. → `tracker.enabled`, `tracker.rejection_cooldown_days`
+
+**Call 2**
+5. *Open forms*: "How many filled forms may wait for you before the loop pauses?" Options: 15 (Recommended), 5, 30. → `autopilot.max_ready`
+6. *Session length*: "Wall-clock cap for one fill loop?" Options: 2 hours (Recommended), 1 hour, 4 hours. → `autopilot.max_minutes`
+7. *Pay floor*: "Skip roles whose posted pay tops out below…?" Options: 80% of your target (Recommended); your target; no floor. Explain that roles with no posted pay are never skipped for pay. → `pay.skip_below_usd_month`
+8. *Pay answer*: "When a form demands a number, what should it type?" Options: your target plus 20% (Recommended); your target; another number through "Other". → `pay.ask_usd_month`. `pay.free_text_answer` stays "Open / negotiable" unless they say otherwise.
+
+**Call 3, only when tailoring is off**: "Which PDF should be uploaded as your resume?" A path through "Other"; check that the file exists. → `resume.pdf`
+
+4. Edit `config.yaml` key by key with the Edit tool, keeping its comments, and add `job-autopilot` to `setup_done`. Show the saved settings as a short list, and mention that `autopilot.per_company_per_run` (2), `autopilot.tailor_ahead` (6) and `autopilot.max_load_retries` (3) keep their defaults and live in `config.yaml`. Then continue into the run if the invocation asked for one; otherwise offer to start.
 
 ## 1. Preflight
 
@@ -85,7 +110,7 @@ The script also skips banned companies, companies that rejected the user within 
 
 ## 4. Tailor ahead of the apply loop
 
-Keep about `tailor_ahead` tailored CVs ready:
+Skip this step when `autopilot.tailor` is false: `tailor-queue` returns no jobs and `next` hands the fill subagent `resume.pdf` as-is. Otherwise keep about `tailor_ahead` tailored CVs ready:
 1. Run `autopilot tailor-queue --n <k>`.
 2. For each job, launch a parallel subagent (`general-purpose`, `model: "sonnet"`) with this prompt: "Read `~/.claude/skills/tailor-resume/SKILL.md` and follow its **Automatic mode** section. Job: `<job JSON>`. confirmed_skills: `<list>`. denied_skills: `<list>`. previous_tailored: `<list>`."
 3. When each finishes, run `autopilot record --result <job.result>`.

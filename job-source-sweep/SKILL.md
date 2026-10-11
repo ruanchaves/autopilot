@@ -41,7 +41,7 @@ Always pass the same `--home` and `--days` to every command in a sweep. Output l
 
 Everything personal lives in **`config.yaml` at the repo root** (`<repo>/config.yaml`): the candidate's facts, the resume, the target role and pay, the data folder (`home`), the Python runner, and this skill's preferences under `sweep:`. The only per-home state the script writes is `<home>/config.json` with `explorer_url`. A new user copies the repo and edits `config.yaml`; the comments in it explain every key.
 
-Run setup when `exists` is false, when the `candidate` section still holds someone else's details, or when the user asks to "set up", "reconfigure" or "change my defaults". Otherwise skip to step 2.
+Run setup when `exists` is false, when `job-source-sweep` is not in `setup_done` (the list in `config.yaml` of skills whose first-run setup has run; a fresh clone starts with it empty, so the `candidate`, `resume`, `role` and `pay` sections still hold the previous owner's values and must be replaced), or when the user asks to "set up", "reconfigure" or "change my defaults". Otherwise skip to step 2. The other two skills run this setup first when their own first run comes before the sweep's.
 
 ### 1a. Detect the runner (no question)
 
@@ -67,11 +67,11 @@ Say in one line that this is first-run setup, that it takes a couple of minutes,
 9. *Role explorer*: "After each sweep, build the role explorer page?" Options: Full (Recommended): fetch every job description, classify location eligibility, rate resume fit and publish the filterable page, about 10-20 min of background work; Table only; Off. → `sweep.explorer`
 10. *Resume* (only if 9 is Full): "Which resume should roles be rated against?" Options: Skip (no fit rating); a path (YAML, Markdown, text or PDF) through "Other". Check that the file exists. → `resume.base`
 
-**Call 4, only when the `candidate` section is empty or someone else's**: ask for the candidate's country and the wider region job posts use for it (for example Brazil and LATAM), the city and time zone, the target pay in USD per month, and their current employers or clients (never applied to). → `candidate.country`, `candidate.region`, `candidate.city`, `candidate.timezone`, `pay.target_usd_month`, `banned_companies`. Tell the user the remaining candidate fields (contact details, pitch, stories, employment types) are theirs to fill in `config.yaml`, and point at the file.
+**Call 4, only when `job-source-sweep` is not in `setup_done`** (the candidate section is empty or someone else's): ask for the resume path first if question 10 didn't, then ask for the candidate's country and the wider region job posts use for it (for example Brazil and LATAM), the city and time zone, the target pay in USD per month, and their current employers or clients (never applied to). → `candidate.country`, `candidate.region`, `candidate.region_aliases`, `candidate.city`, `candidate.timezone`, `pay.target_usd_month`, `banned_companies`. Then **read the resume** and fill the rest of `candidate` from it without asking: name, email, phone, LinkedIn and GitHub URLs, languages and native language, years of experience and the year they started, level, headline, a two-line `pitch`, `core_areas`, `domains`, `stack`, three to five `stories` (proof points the resume supports), `location_pitch`, `work_authorization`, `sponsorship`, `employment_types`, `excluded_contract_types` (ask: local contract types they won't take), `working_hours`, `availability`, `relocation`. Show the filled section and ask one question: "Does this describe you?" with options Yes (Recommended) and "let me correct something" (Other).
 
 ### 1c. Save
 
-Edit `config.yaml` with the Edit tool, key by key, keeping its comments. Don't use `jobsweep config --set` for preferences: it only stores `explorer_url`. If the role has no profile yet, create it now (step 3). Then show the saved settings as a short list and say where `config.yaml` lives. If the invocation also asked for a sweep, continue into it. Otherwise, offer to run a first sweep.
+Edit `config.yaml` with the Edit tool, key by key, keeping its comments. Don't use `jobsweep config --set` for preferences: it only stores `explorer_url`. If the role has no profile yet, create it now (step 3). Add `job-source-sweep` to `setup_done`. Then show the saved settings as a short list and say where `config.yaml` lives. If the invocation also asked for a sweep, continue into it. Otherwise, offer to run a first sweep.
 
 ## 2. Settle this run's parameters
 

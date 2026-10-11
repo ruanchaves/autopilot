@@ -1004,6 +1004,7 @@ def cmd_config(args) -> int:
     names = sorted({p.stem for d in profile_dirs(args.home) for p in d.glob("*.json") if not p.stem.startswith("_")})
     print(json.dumps({
         "exists": userconfig.CONFIG_PATH.exists(), "config_yaml": str(userconfig.CONFIG_PATH), "state_path": str(path),
+        "setup_done": userconfig.setup_done(),
         "config": load_config(args.home),
         "user_profiles_dir": str(profile_dirs(args.home)[0]), "profiles": names,
         "options": {

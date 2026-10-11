@@ -39,11 +39,17 @@ def load() -> dict:
     for k in ("candidate", "resume", "role", "pay", "tracker", "sweep", "autopilot", "recruiter_outreach"):
         cfg.setdefault(k, {})
     cfg.setdefault("banned_companies", [])
+    cfg.setdefault("setup_done", [])   # skills whose first-run setup has run
     c = cfg["candidate"]
     c.setdefault("region_aliases", [c.get("region")] if c.get("region") else [])
     c.setdefault("excluded_contract_types", [])
     c.setdefault("stories", [])
     return cfg
+
+
+def setup_done() -> list:
+    """Names of the skills whose first-run setup has run (config.yaml `setup_done`)."""
+    return list(load().get("setup_done") or [])
 
 
 def home() -> str:

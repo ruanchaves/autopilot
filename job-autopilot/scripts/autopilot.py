@@ -94,6 +94,7 @@ DEFAULT_SETTINGS = {
     "max_minutes": 120,       # wall-clock cap for the apply loop
     "max_load_retries": 3,    # type-3 failures before a role is given up
     "tailor_ahead": 6,        # tailored CVs kept ready ahead of the apply loop
+    "tailor": True,           # False: skip /tailor-resume and upload config resume.pdf as-is
     "per_company_per_run": 2,
     # filled forms (tabs left open) waiting for the user; the apply loop stops at this many
     "max_ready": 15,
@@ -590,6 +591,8 @@ def slug(text: str, n: int) -> str:
 
 def cmd_tailor_queue(args) -> int:
     home = js.fix_path(args.home)
+    if not settings(args.home).get("tailor", True):
+        return emit({"jobs": [], "tailor": False, "note": "autopilot.tailor is false: resume.pdf is uploaded as-is"})
     config = js.load_config(args.home)
     base = js.fix_path(config.get("resume") or "")
     if not base.exists():
@@ -732,6 +735,11 @@ def cmd_next(args) -> int:
                      "reason": f"{ready} filled forms are waiting for you to submit (max_ready {st['max_ready']}); "
                                "submit or discard some, then run the apply loop again"})
     waiting, untailored = [], 0
+    tailor = bool(st.get("tailor", True))
+    base_pdf = (userconfig.load().get("resume") or {}).get("pdf") or ""
+    if not tailor and not base_pdf:
+        return emit({"done": True, "reason": "autopilot.tailor is false but resume.pdf is not set in config.yaml"})
+    index = {} if tailor else enrich.read_json(js.fix_path(args.home) / "jds" / "index.json", {})
     for r in load(args.home, "queue.json", []):
         e = ledger.get(r["id"], {})
         if e.get("status") not in ("queued", "failed_load", "deferred", None):
@@ -740,9 +748,13 @@ def cmd_next(args) -> int:
         if e.get("filling_since") and e["filling_since"] > (NOW - timedelta(minutes=30)).isoformat():
             continue
         t = e.get("tailored") or {}
-        if t.get("status") == "no_jd":
+        if not tailor:   # no tailoring: the base PDF goes up as-is, the JD comes from the sweep's cache
+            jd = index.get(r.get("key"), {})
+            t = {"pdf": base_pdf, "summary": "",
+                 "jd_file": enrich.host_path(js.fix_path(args.home) / "jds" / jd["file"]) if jd.get("status") == "ok" else ""}
+        elif t.get("status") == "no_jd":
             continue
-        if not t.get("pdf"):
+        elif not t.get("pdf"):
             untailored += 1
             continue
         # The listing URL is often an aggregator; only a known ATS/LinkedIn host is paced here.
@@ -766,7 +778,7 @@ def cmd_next(args) -> int:
         return emit({"banned_companies": st["banned_companies"], "cover_letter_policy": st["cover_letter"],
                      "auto_submit": bool(st.get("auto_submit")), "candidate": userconfig.profile(),
                      "role": {**r, "tailored_pdf": t["pdf"], "tailored_summary": t.get("summary", ""),
-                              "tailored_folder": str(Path(t["pdf"]).parent.parent) if t.get("pdf") else "",
+                              "tailored_folder": str(Path(t["pdf"]).parent.parent) if t.get("pdf") and tailor else "",
                               "jd_file": t.get("jd_file", ""),
                               "earlier_applications_to_company": earlier,
                               "recent_rejection": rejection_detail(rj) if rj else "",

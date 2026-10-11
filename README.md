@@ -73,69 +73,36 @@ Three principles run through everything:
 
 ## Quick start
 
-**Requirements**
-
-- Claude Code with the Claude in Chrome extension connected to a Chrome profile that is logged in to LinkedIn.
-- Python 3.11+ with PyYAML. On Windows, Python inside WSL is enough (`python: wsl` in `config.yaml`).
-- Optional: [applika](https://github.com/ruanchaves/applika) for application tracking (`tracker.enabled`), and a `tailor-resume` skill in `~/.claude/skills` that the autopilot calls to tailor the CV per role.
-
-**Install**
-
 ```bash
-git clone https://github.com/<you>/autopilot.git
+git clone https://github.com/ruanchaves/autopilot.git
 cd autopilot
+claude
 ```
 
-Make each skill folder visible to Claude Code as `~/.claude/skills/<name>`. On Linux or macOS:
+Then paste this into Claude Code:
 
-```bash
-ln -s "$PWD/job-source-sweep"   ~/.claude/skills/job-source-sweep
-ln -s "$PWD/job-autopilot"      ~/.claude/skills/job-autopilot
-ln -s "$PWD/recruiter-outreach" ~/.claude/skills/recruiter-outreach
-```
+> Read SETUP.md in this folder and follow it to install the autopilot skills.
 
-On Windows (PowerShell), directory junctions do the same:
+Claude links the three skill folders into `~/.claude/skills`, finds a Python 3.11+ with PyYAML (native, or inside WSL on Windows), sets the runner and the data folder in `config.yaml`, and starts the first-run setup, which asks about your role, resume, country, pay and sweep preferences and fills the candidate section from your resume. After a restart of Claude Code, `/job-source-sweep`, `/job-autopilot` and `/recruiter-outreach` are available. The last two ask their own few questions the first time they run (submit policy, cover letters, channels, tracker; daily caps, per-company cap, permission to send, search phrasings). `config.yaml` keeps a `setup_done` list of the skills that have been set up; empty it, or say "reconfigure", to go through the questions again.
 
-```powershell
-New-Item -ItemType Junction -Path "$HOME\.claude\skills\job-source-sweep"   -Target "D:\dev\autopilot\job-source-sweep"
-New-Item -ItemType Junction -Path "$HOME\.claude\skills\job-autopilot"      -Target "D:\dev\autopilot\job-autopilot"
-New-Item -ItemType Junction -Path "$HOME\.claude\skills\recruiter-outreach" -Target "D:\dev\autopilot\recruiter-outreach"
-```
-
-**Configure**
-
-Edit `config.yaml` (every key is commented), or let the sweep's first-run setup ask you. Then check the merged result:
-
-```bash
-python3 job-source-sweep/scripts/jobsweep.py config
-```
-
-**Run**
-
-In Claude Code:
-
-```
-/job-source-sweep          # first run: interactive setup, then a sweep and the role explorer
-/job-autopilot             # sweep, score, tailor, fill forms up to Submit
-/recruiter-outreach        # discover, score and contact recruiters until today's budget is spent
-```
+**Requirements:** Claude Code with the [Claude in Chrome](https://claude.com/chrome) extension connected to a Chrome profile logged in to LinkedIn; Python 3.11+ with PyYAML. Optional: [applika](https://github.com/ruanchaves/applika) for application tracking, and a `tailor-resume` skill in `~/.claude/skills` for per-role CVs (without it the autopilot uploads your resume PDF as-is).
 
 ## config.yaml
 
 | Section | Keys | Used by |
 |---|---|---|
-| top level | `home` (data folder), `python` (`python3`, `python`, `py -3` or `wsl`), `browser_parallel` (Chrome subagents at once, default 3) | all |
+| top level | `home` (data folder), `python` (`python3`, `python`, `py -3` or `wsl`), `browser_parallel` (Chrome subagents at once, default 3), `setup_done` (skills whose first-run setup has run) | all |
 | `candidate` | name and contact details, `country`, `region`, `region_aliases`, `timezone`, `languages`, `native_language`, `years_experience`, `level`, `headline`, `pitch`, `core_areas`, `domains`, `stack`, `stories`, `location_pitch`, `work_authorization`, `sponsorship`, `employment_types`, `excluded_contract_types`, `working_hours`, `availability`, `relocation` | eligibility, scoring, form answers, cover letters, recruiter messages |
-| `resume` | `base` (RenderCV YAML, Markdown, text or PDF), `tailored_dir`, `file_prefix` | fit rating, tailoring, uploads |
+| `resume` | `base` (RenderCV YAML, Markdown, text or PDF), `tailored_dir`, `file_prefix`, `pdf` (uploaded as-is when tailoring is off) | fit rating, tailoring, uploads |
 | `role` | `title`, `profile` (a `profiles/<slug>.json` with the search patterns) | sweep, recruiter matching |
 | `pay` | `target_usd_month`, `skip_below_usd_month`, `ask_usd_month`, `free_text_answer` | ranking, skips, form answers, recruiter pay signal |
 | `banned_companies` | current employers and clients | never applied to, never contacted |
 | `tracker` | `enabled`, `rejection_cooldown_days`, `rejection_neutral_feedback`, `rejection_ignore_companies` | applika registration and rejection cooldowns |
 | `sweep` | `days`, `mode` (`quick`/`standard`/`full`), `explorer` (`full`/`table`/`off`), `max_new_roles`, `remote_only`, `report_rows`, `country_check`, `country_check_limit`, `skip_tasks`, `skip_sources`, `skip_hosts` | job-source-sweep |
-| `autopilot` | `channels`, `max_minutes`, `max_ready`, `auto_submit`, `cover_letter` (`required`/`always`/`never`), `max_load_retries`, `tailor_ahead`, `per_company_per_run` | job-autopilot |
+| `autopilot` | `channels`, `max_minutes`, `max_ready`, `auto_submit`, `cover_letter` (`required`/`always`/`never`), `max_load_retries`, `tailor`, `tailor_ahead`, `per_company_per_run` | job-autopilot |
 | `recruiter_outreach` | `connect_per_day`, `inmail_per_day`, `message_per_day`, `min_score`, `max_per_company`, `stale_days`, `gap_seconds`, `people_queries`, `post_queries` | recruiter-outreach |
 
-`job-source-sweep/scripts/userconfig.py` is the loader all three skills share. Set `AUTOPILOT_CONFIG` to point at a different file. The only state the scripts write back is `<home>/config.json` with the explorer's artifact URL; preferences are always edited in `config.yaml`.
+Each skill has an interactive first-run setup that writes its section: the sweep asks about the role, resume, country, pay and sweep preferences and fills `candidate` from the resume; the autopilot asks about submitting, cover letters, channels, the tracker and caps; recruiter outreach asks for permission to send, the daily and per-company caps, strictness, and proposes the search phrasings. `job-source-sweep/scripts/userconfig.py` is the loader all three skills share. Set `AUTOPILOT_CONFIG` to point at a different file. The only state the scripts write back is `<home>/config.json` with the explorer's artifact URL; preferences are always edited in `config.yaml`.
 
 ## job-source-sweep
 
