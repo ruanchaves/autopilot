@@ -1,30 +1,384 @@
 # autopilot
 
-Claude Code skills for the job hunt. Each folder is one skill; `~/.claude/skills/<name>` is a
-directory junction pointing here, so `/job-source-sweep`, `/job-autopilot` and `/recruiter-outreach`
-load from this repo.
+Three [Claude Code](https://claude.com/claude-code) skills that run a remote job hunt end to end: sweep ~80 job sources every day, rate every role against your resume, fill the application forms up to the Submit button, and build a scored database of LinkedIn recruiters to contact within LinkedIn's daily limits. Everything personal lives in one file, `config.yaml`, so anyone can fork the repo, edit that file, and run the same pipelines for their own role, country and pay target.
 
-- `job-source-sweep/` sweeps ~80 job sources, enriches the roles (JD, eligibility, resume fit) and
-  publishes the role explorer. The other two skills import its scripts as a sibling folder.
-- `job-autopilot/` scores the roles, tailors the resume, fills application forms up to the Submit
-  button (never submits), and registers confirmed applications in applika.
-- `recruiter-outreach/` builds a scored database of LinkedIn recruiters and contacts the best ones
-  within the daily limits.
+The skills are Markdown instructions (`SKILL.md`, plus `references/` for the subagents) around small Python scripts that keep the state. Claude Code reads the instructions, drives Chrome through the [Claude in Chrome](https://claude.com/chrome) extension, launches subagents in parallel, and calls the scripts for everything that must be exact: deduplication, scoring arithmetic, daily counters, ledgers.
 
-## Make it yours: `config.yaml`
+| Skill | What it does | Sends anything? |
+|---|---|---|
+| `/job-source-sweep` | Sweeps feeds, APIs, VC portfolio boards, LinkedIn, Wellfound, Remote Rocketship and Google `site:` searches over 19 ATS platforms and 15 job boards. Fetches each job description, classifies location eligibility, rates resume fit, and publishes the **role explorer**, a filterable page where you accept or reject roles. | No |
+| `/job-autopilot` | Runs the sweep, gives every role a 0-100 score, tailors the resume per role, and fills each application form completely in Chrome. **By default it stops in front of Submit** and leaves the tab open; you review, submit, and mark it submitted on the dashboard. Optional `auto_submit`. | Only with `auto_submit: true` |
+| `/recruiter-outreach` | Finds recruiters on LinkedIn who place people in your role from your region, scores each on four questions, and contacts the best ones: 20 connection requests a day with a custom note, then InMails while credits last. Keeps prospecting with invented search phrasings until the day's budget is spent. | Yes, within the daily caps |
 
-Everything personal is in **`config.yaml`** at the repo root, and nothing personal is hardcoded in the
-skills: who the candidate is (contact details, country and region, time zone, years, pitch, stories,
-employment types, contract types to avoid), the resume paths, the target role and pay, the current
-employers never to apply to, the data folder (`home`), the Python runner, and each skill's tunables
-(`sweep`, `autopilot`, `recruiter_outreach`, `tracker`). Fork the repo, edit the file (every key is
-commented), and run `python3 job-source-sweep/scripts/jobsweep.py config` to see the merged result.
-`job-source-sweep/scripts/userconfig.py` is the loader the three skills share; PyYAML is required.
+## Contents
 
-Per-user data (sweeps, caches, ledgers, answer bank, recruiter leads) lives outside the repo in the
-`home` folder from `config.yaml`. The only file written there as state is `config.json` with the
-explorer artifact URL. The `tailor-resume` skill the autopilot calls stays in `~/.claude/skills`.
+- [How the pieces fit](#how-the-pieces-fit)
+- [Quick start](#quick-start)
+- [config.yaml](#configyaml)
+- [job-source-sweep](#job-source-sweep)
+- [job-autopilot](#job-autopilot)
+- [recruiter-outreach](#recruiter-outreach)
+- [The role explorer](#the-role-explorer)
+- [Parallelism and Chrome](#parallelism-and-chrome)
+- [Guard rails](#guard-rails)
+- [Data layout](#data-layout)
+- [Running the scripts by hand](#running-the-scripts-by-hand)
+- [Extending](#extending)
+- [Privacy](#privacy)
 
-Run scripts through the runner in `config.yaml`, e.g. with `python: wsl`:
-`wsl.exe -e python3 /mnt/d/dev/autopilot/job-autopilot/scripts/autopilot.py status` (`--home` defaults to
-the configured folder).
+## How the pieces fit
+
+```mermaid
+flowchart LR
+    subgraph repo["autopilot repo (this repo)"]
+        cfg[("config.yaml<br/>everything personal")]
+        sweep["job-source-sweep<br/>SKILL.md · references/ · scripts/"]
+        ap["job-autopilot<br/>SKILL.md · references/ · scripts/"]
+        rc["recruiter-outreach<br/>SKILL.md · references/ · scripts/"]
+    end
+    cfg --> sweep
+    cfg --> ap
+    cfg --> rc
+    sweep -. "imports jobsweep.py, enrich.py, userconfig.py" .-> ap
+    sweep -. "imports helpers" .-> rc
+
+    subgraph cc["Claude Code"]
+        main["main conversation<br/>reads SKILL.md, runs scripts"]
+        subs["subagents, in parallel<br/>one Chrome tab each"]
+    end
+    sweep --> main
+    ap --> main
+    rc --> main
+    main --> subs
+
+    subgraph world["Outside"]
+        web["Job feeds, APIs,<br/>Google, LinkedIn, ATS forms"]
+        art["Role explorer<br/>(claude.ai Artifact with a database)"]
+        applika["applika<br/>application tracker (optional)"]
+    end
+    subs <--> web
+    main --> art
+    art -- "decisions, answers,<br/>submitted marks" --> main
+    main <--> applika
+
+    home[("<home> data folder<br/>runs, caches, ledgers,<br/>answer bank, recruiter leads")]
+    main <--> home
+```
+
+Three principles run through everything:
+
+1. **One source of settings.** `config.yaml` holds the candidate, the resume paths, the role, the pay targets, the employers never to contact, the data folder, and each skill's tunables. Nothing personal is hard-coded in the skills.
+2. **The scripts own the state; Claude owns the judgment.** A script decides what is due, enforces every cap, and records what happened. Subagents read pages, write messages and fill forms. That split is what makes the caps real: the daily counters, the per-company cap, and the "never twice" rules live in files, not in a prompt.
+3. **Humans submit.** The autopilot prepares applications; you send them. The outreach skill is the one place that sends on your behalf, and only within limits you set.
+
+## Quick start
+
+**Requirements**
+
+- Claude Code with the Claude in Chrome extension connected to a Chrome profile that is logged in to LinkedIn.
+- Python 3.11+ with PyYAML. On Windows, Python inside WSL is enough (`python: wsl` in `config.yaml`).
+- Optional: [applika](https://github.com/ruanchaves/applika) for application tracking (`tracker.enabled`), and a `tailor-resume` skill in `~/.claude/skills` that the autopilot calls to tailor the CV per role.
+
+**Install**
+
+```bash
+git clone https://github.com/<you>/autopilot.git
+cd autopilot
+```
+
+Make each skill folder visible to Claude Code as `~/.claude/skills/<name>`. On Linux or macOS:
+
+```bash
+ln -s "$PWD/job-source-sweep"   ~/.claude/skills/job-source-sweep
+ln -s "$PWD/job-autopilot"      ~/.claude/skills/job-autopilot
+ln -s "$PWD/recruiter-outreach" ~/.claude/skills/recruiter-outreach
+```
+
+On Windows (PowerShell), directory junctions do the same:
+
+```powershell
+New-Item -ItemType Junction -Path "$HOME\.claude\skills\job-source-sweep"   -Target "D:\dev\autopilot\job-source-sweep"
+New-Item -ItemType Junction -Path "$HOME\.claude\skills\job-autopilot"      -Target "D:\dev\autopilot\job-autopilot"
+New-Item -ItemType Junction -Path "$HOME\.claude\skills\recruiter-outreach" -Target "D:\dev\autopilot\recruiter-outreach"
+```
+
+**Configure**
+
+Edit `config.yaml` (every key is commented), or let the sweep's first-run setup ask you. Then check the merged result:
+
+```bash
+python3 job-source-sweep/scripts/jobsweep.py config
+```
+
+**Run**
+
+In Claude Code:
+
+```
+/job-source-sweep          # first run: interactive setup, then a sweep and the role explorer
+/job-autopilot             # sweep, score, tailor, fill forms up to Submit
+/recruiter-outreach        # discover, score and contact recruiters until today's budget is spent
+```
+
+## config.yaml
+
+| Section | Keys | Used by |
+|---|---|---|
+| top level | `home` (data folder), `python` (`python3`, `python`, `py -3` or `wsl`), `browser_parallel` (Chrome subagents at once, default 3) | all |
+| `candidate` | name and contact details, `country`, `region`, `region_aliases`, `timezone`, `languages`, `native_language`, `years_experience`, `level`, `headline`, `pitch`, `core_areas`, `domains`, `stack`, `stories`, `location_pitch`, `work_authorization`, `sponsorship`, `employment_types`, `excluded_contract_types`, `working_hours`, `availability`, `relocation` | eligibility, scoring, form answers, cover letters, recruiter messages |
+| `resume` | `base` (RenderCV YAML, Markdown, text or PDF), `tailored_dir`, `file_prefix` | fit rating, tailoring, uploads |
+| `role` | `title`, `profile` (a `profiles/<slug>.json` with the search patterns) | sweep, recruiter matching |
+| `pay` | `target_usd_month`, `skip_below_usd_month`, `ask_usd_month`, `free_text_answer` | ranking, skips, form answers, recruiter pay signal |
+| `banned_companies` | current employers and clients | never applied to, never contacted |
+| `tracker` | `enabled`, `rejection_cooldown_days`, `rejection_neutral_feedback`, `rejection_ignore_companies` | applika registration and rejection cooldowns |
+| `sweep` | `days`, `mode` (`quick`/`standard`/`full`), `explorer` (`full`/`table`/`off`), `max_new_roles`, `remote_only`, `report_rows`, `country_check`, `country_check_limit`, `skip_tasks`, `skip_sources`, `skip_hosts` | job-source-sweep |
+| `autopilot` | `channels`, `max_minutes`, `max_ready`, `auto_submit`, `cover_letter` (`required`/`always`/`never`), `max_load_retries`, `tailor_ahead`, `per_company_per_run` | job-autopilot |
+| `recruiter_outreach` | `connect_per_day`, `inmail_per_day`, `message_per_day`, `min_score`, `max_per_company`, `stale_days`, `gap_seconds`, `people_queries`, `post_queries` | recruiter-outreach |
+
+`job-source-sweep/scripts/userconfig.py` is the loader all three skills share. Set `AUTOPILOT_CONFIG` to point at a different file. The only state the scripts write back is `<home>/config.json` with the explorer's artifact URL; preferences are always edited in `config.yaml`.
+
+## job-source-sweep
+
+The sweep runs in two lanes. The HTTP lane needs no browser and answers in about a minute; the browser lane follows, through subagents in Chrome, under a page cap and a wall-clock cap set by `sweep.mode`. After the final merge the enrichment stages fetch every job description, classify eligibility, rate fit, and publish the explorer.
+
+```mermaid
+flowchart TD
+    cfg["jobsweep config<br/>settings, profiles, skippable sources"] --> setup{"first run or<br/>'reconfigure'?"}
+    setup -- yes --> ask["interactive setup<br/>→ edits config.yaml"] --> http
+    setup -- no --> http
+
+    http["HTTP lane · jobsweep http<br/>Himalayas, Remote OK, Jobgether, Working Nomads, Remotive,<br/>We Work Remotely, NoDesk, HN Who is hiring, YC jobs,<br/>12 Getro VC networks, 5 Consider boards"] --> merge1["jobsweep merge<br/>dedupe by URL then company+title,<br/>title filter, date window, new-since-last-run"]
+    merge1 --> table1["first table shown to the user"]
+    table1 --> plan["jobsweep plan<br/>browser tasks for the mode"]
+    plan --> browser["Browser lane · parallel Chrome subagents<br/>LinkedIn Jobs · LinkedIn posts · Remote Rocketship ·<br/>Wellfound · Google site: shards (19 ATS + 15 boards)"]
+    browser --> merge2["jobsweep merge after each subagent"]
+    merge2 --> stop{"wall-clock cap or<br/>max_new_roles reached?"}
+    stop -- no --> browser
+    stop -- yes --> country{"sweep.country_check?"}
+    country -- "always / on request" --> verify["jobsweep verify-queue<br/>one Google search per company:<br/>'&lt;company&gt; engineer &lt;country&gt; site:linkedin.com'<br/>verdicts cached 30 days"] --> enrich
+    country -- never --> enrich
+
+    subgraph enrich["Enrich (cached, resumable)"]
+        jds["8a · jobsweep jds<br/>JD text via ATS APIs, JSON-LD, page text"]
+        elig["8b · eligibility<br/>parallel subagents classify each JD:<br/>open / nothing stated / restricted"]
+        fit["8c · resume fit<br/>parallel subagents rate each open JD<br/>against the resume"]
+        jds --> elig --> fit
+    end
+    enrich --> explorer["8e · jobsweep explorer<br/>roles.json, roles.csv, explorer.html<br/>→ republished to the same artifact URL"]
+```
+
+**Modes**
+
+| Mode | Browser tasks | Caps | Time |
+|---|---|---|---|
+| `quick` | none | | ~1 min |
+| `standard` | LinkedIn Jobs and posts (first keyword), Rocketship, Wellfound, each Google shard with its first query | 2 pages per task, 2 SERPs per shard | ~20 min |
+| `full` | every task in `plan.json` | 5 pages, 5 SERPs | ~60 min |
+
+**Role profiles.** `profiles/<slug>.json` holds the include and exclude regexes, the API and Google phrasings, and per-source options for one role. `_template.json` documents every field; `ai-engineer.json` is a worked example. Profiles created for you go to `<home>/profiles/` and take precedence. `jobsweep test-match` shows which titles a profile keeps and drops.
+
+**Country check.** One Google search per new company asks whether anyone with your role's term already works there from your country. A green verdict means an engineer profile naming the company appeared on page 1; a red verdict means page 1 showed none, which is not proof of anything. Verdicts are cached per company and term.
+
+**Coverage, not silence.** Every task the caps cut, every failed feed, every CAPTCHA or login wall is reported as a gap. The sweep never presents a skipped source as "no results".
+
+## job-autopilot
+
+The autopilot wraps the sweep, ranks what it found, and prepares applications from the best role down. Chrome subagents fill forms in parallel, each in its own tab. The forms stay open in front of Submit; the dashboard shows every answer typed, with estimates flagged, so you can review and send.
+
+```mermaid
+flowchart TD
+    pre["1 · Preflight<br/>applika login · import dashboard answers, overrides,<br/>submitted marks · pace-start · ready ≥ max_ready?"] --> sw["2 · Sweep<br/>job-source-sweep through 8e,<br/>browser lane always runs"]
+    sw --> sq["3 · score-queue<br/>roles from the last 14 batches not yet scored"]
+    sq --> score["parallel scoring subagents (no browser)<br/>core match 35 · requirements 25 · seniority 15 · domain 10<br/>+ eligibility, pay, freshness · blockers ×0.6"]
+    score --> queue["queue<br/>skips banned, rejected-recently, pay below floor,<br/>explicit location / on-site / excluded contract types;<br/>round-robin across sources, best first"]
+    queue --> tailor["4 · tailor-queue<br/>parallel /tailor-resume subagents keep<br/>tailor_ahead CVs ready"]
+    tailor --> next["5 · next (claims a role for 30 min)<br/>up to browser_parallel at once"]
+    next --> fill["Chrome subagent · references/apply.md<br/>upload CV · answer every question from the resume<br/>(estimates flagged) · cover letter if required ·<br/>stop in front of Submit, tab left open"]
+    fill --> rec["record --result<br/>ledger: answers, cover letter, tab title"]
+    rec --> more{"time cap, max_ready,<br/>or empty queue?"}
+    more -- no --> next
+    more -- yes --> user["6 · You review each open tab,<br/>submit, mark Submitted or Discard<br/>on the dashboard (or in chat)"]
+    user --> sync["7 · applika-sync<br/>registers confirmed submissions"]
+    sync --> pub["dashboard + jobsweep explorer<br/>→ republished artifact"]
+```
+
+**Scoring.** Four parts come from the subagent (core match, requirement coverage, seniority, domain and stack). The script adds eligibility (open 15, not stated 10, restricted 0), pay (+10 when the posted range is at or above `pay.target_usd_month`, −10 when its top is below), and freshness (+5 within 3 days). Hard blockers multiply by 0.6, at most twice. Roles scored from the title alone are capped at 60. The queue is dealt round-robin across sources so one prolific feed does not crowd out the rest.
+
+**The submit handshake.** Nothing is registered as an application until you mark it.
+
+```mermaid
+sequenceDiagram
+    participant S as Chrome subagent
+    participant L as ledger.json
+    participant D as Role explorer (dashboard)
+    participant U as You
+    participant A as applika
+    S->>L: record: status filled, answers, cover letter, tab title
+    L->>D: dashboard + explorer republish
+    U->>D: review answers, open the tab, click Submit on the site
+    U->>D: "I submitted it" (or Discard)
+    D->>L: next preflight imports the submitted mark<br/>(or autopilot confirm --submitted, right away)
+    L->>A: applika-sync registers the application
+```
+
+**Role lifecycle** in `ledger.json`:
+
+```mermaid
+stateDiagram-v2
+    [*] --> queued: scored and worth applying
+    [*] --> not_applying: explicit exclusion, on-site, contract type
+    [*] --> skipped: banned, rejected recently, pay below floor
+    queued --> deferred: site pacing budget used
+    deferred --> queued
+    queued --> filled: form complete, tab open at Submit
+    queued --> failed_fill: filled but needs your answers
+    queued --> failed_submit: blocked before filling (sign-up, human check)
+    queued --> failed_load: page would not load (retried later)
+    failed_load --> queued
+    failed_fill --> filled: answers given on the dashboard
+    filled --> applied: you marked Submitted
+    filled --> discarded: you marked Discard
+    queued --> applied: auto_submit true and a confirmation was seen
+    applied --> [*]
+```
+
+**Answers and questions.** The subagent answers every field it can estimate from the resume and `candidate`, and marks each estimate. Questions it cannot estimate (ID numbers, authorisation elsewhere, documents, facts only you know) go to the dashboard's Questions view; an answer given once is reused on every later form asking the same thing. Required consent boxes are ticked. Cover letters follow `references/cover-letter.md`: 120 to 200 words, three paragraphs, built from `candidate.stories`, rendered to PDF by `scripts/cover_letter.py` when the form wants a file.
+
+**`auto_submit`.** With `autopilot.auto_submit: true` the subagent clicks Submit after a complete fill, records the confirmation it saw, and the application is registered without the handshake. The default is `false`.
+
+## recruiter-outreach
+
+A pipeline of its own, not tied to applications. It builds a database of recruiters with evidence, ranks them, and spends the day's budget on the best ones. The run is a loop: it is finished only when today's connection requests and InMail credits are used, or LinkedIn blocks, or you say stop. An empty pile means "discover more", never "stop".
+
+```mermaid
+flowchart TD
+    status["recruiters status<br/>needed = connects left + InMail credits left<br/>contactable_now = uncontacted leads ≥ min_score<br/>at companies under max_per_company"] --> enough{"contactable_now<br/>≥ needed?"}
+    enough -- no --> dplan["discover-plan<br/>configured phrasings not run this week,<br/>exhausted?, queries_tried, deeper pages,<br/>snowball_companies, seeds"]
+    dplan --> invent["Invent the round's queries<br/>new phrasings (role × region × recruiter noun × pay × language),<br/>deeper result pages, '&lt;agency&gt; recruiter', hashtags,<br/>job-post authors, reposters and commenters"]
+    invent --> disc["parallel Chrome subagents · references/discover.md<br/>people search + post search → probe each profile and activity page<br/>→ hiring_scope, last_activity_days, role_posts_90d, pay_signal, vibe, evidence"]
+    disc --> ingest["ingest --result<br/>score each lead, record phrasings and page depth"]
+    ingest --> status
+    enough -- yes --> plan["plan<br/>ranked pile cut to today's budget,<br/>1st-degree first within a band,<br/>company cap applied"]
+    plan --> send["one Chrome subagent · references/message.md<br/>check before every send → custom note / InMail / message<br/>never states pay · asks for a call"]
+    send --> record["record --result<br/>contacts.json, pacing.json, companies.json, leads marked"]
+    record --> done{"status.done?"}
+    done -- no --> status
+    done -- yes --> report["dashboard → explorer Outreach view → report"]
+```
+
+**Scoring** answers four questions about each recruiter, from their profile and recent posts. Scores are computed on ingest and recomputed by `recruiters score` after a settings change.
+
+| Question | Signal | Points |
+|---|---|---|
+| Explicitly hiring in my region, or worldwide? | `hiring_scope`: region or worldwide 35, nearshore 32, remote with region unstated 15, unknown 5, local-only 0 | 35 |
+| Active on LinkedIn? | `last_activity_days`: ≤7 → 20, ≤30 → 14, ≤90 → 7, older 0 | 20 |
+| Posting roles like mine? | `role_posts_90d`: 2+ → 25, 1 → 16, adjacent only → 6 | 25 |
+| Posting pay like my target? | `pay_signal`: at or above 20, within 20% below 8, no pay posted 5, below 0 | 20 |
+| | `local_rate_shop` (regional staffing at local rates) | −15 |
+
+**Channels and limits.** 1st-degree connections get a plain message (no quota). Otherwise a connection request with a note under 300 characters, until `connect_per_day` is used; then InMail while the compose window shows credits (Follow-only profiles get an InMail even earlier). `check` runs before every send and refuses anyone already contacted, anyone at a company that already has `max_per_company` people contacted, and anything over the day's cap or inside the minimum gap. Sending is deliberately single-threaded, because the counters are plain files and a sent message cannot be taken back.
+
+**Messages** are written per recruiter from their evidence, in their language and register: one clause on why them (their post, in their words), one line on the candidate (role, years, one proof point), one soft ask for a call. Never pay, never "I came across your profile", never a second message to someone who has not replied. Replies are handled by a separate inbox skill.
+
+**Memory.** `leads.json` (every recruiter, signals, evidence, score, status and the message sent), `contacts.json` (everyone ever contacted, any channel), `companies.json` (people contacted per company or agency), `pacing.json` (today's counters and credits), `discovery-runs.json` and `discovery-depth.json` (which phrasings ran when, and how deep).
+
+## The role explorer
+
+One claude.ai Artifact, republished to the same URL after every run, with a small database for what you decide on it. Decisions survive later sweeps because each stores a copy of the role.
+
+| Tab or view | Shows | What you do there |
+|---|---|---|
+| To review / Accepted / Rejected | every role with eligibility, resume fit, country check, score, batches, sources | Accept or Reject; rejected roles are never applied to |
+| Autopilot · Apply decisions | what the autopilot will and won't apply to, with the JD's own words for each skip | override a decision |
+| Autopilot · Applications | each filled form: answers typed (estimates flagged), free-text answers, cover letter, tab title, link | "I submitted it", Discard, Undo |
+| Autopilot · Questions for you | questions the subagent could not estimate, and estimates awaiting a one-time confirmation | answer or confirm; reused on later forms |
+| Autopilot · Outreach | ranked recruiters with score parts, evidence, recent roles, status and the exact message sent | audit the messages |
+
+```mermaid
+flowchart LR
+    scripts["jobsweep explorer<br/>+ autopilot dashboard<br/>+ recruiters dashboard"] --> html["explorer.html<br/>(roles, scores, forms, leads embedded)"]
+    html -- "publish to the same URL" --> art["Artifact"]
+    art -- "db collections:<br/>decisions · overrides ·<br/>answers · submitted" --> preflight["next run's preflight<br/>imports them"]
+```
+
+## Parallelism and Chrome
+
+Chrome is not a serial resource. Every Claude in Chrome tool takes a `tabId`, so each subagent creates its own tab in the shared tab group and works through the DOM tools (`navigate`, `get_page_text`, `read_page`, `find`, `form_input`, `javascript_tool`, clicks by element ref). The one shared thing is the window's visible tab: screenshots and coordinate clicks hit whichever tab is in front, so parallel subagents never take screenshots.
+
+`browser_parallel` (default 3) sets how many run at once. It applies to sweep browser tasks, country checks, recruiter discovery and form fills. Two things stay single on purpose:
+
+- **sending recruiter messages**, because the daily counters are unlocked files and a send is irreversible;
+- **LinkedIn request rate**, which is per account; more subagents would only trip its limits sooner.
+
+The main conversation never drives the browser itself. Long browser sessions in the main context re-send every earlier page on every step; subagents keep that cost out of the conversation and return a one-line summary.
+
+## Guard rails
+
+| Rule | Where it is enforced |
+|---|---|
+| Applications are never submitted unless `autopilot.auto_submit` is true | `references/apply.md`, the fill loop, and the `applied` status needing a confirmation |
+| Nothing is registered in applika until you mark it Submitted | `applika-sync` reads only `applied` roles with a `submitted_by` |
+| `banned_companies` are never applied to or contacted | `queue`, `plan`, `ingest`, `check` |
+| A company that rejected you is not applied to again for `rejection_cooldown_days` | `score-queue` and `queue` through applika |
+| Roles explicitly requiring an `excluded_contract_types` contract, on-site work, or another location are skipped | scoring subagent, `queue` |
+| Nobody is contacted twice; no follow-ups to unanswered messages | `check`, `contacts.json`, `references/message.md` |
+| At most `connect_per_day` connection requests and `inmail_per_day` InMails per UTC day, with `gap_seconds` between sends | `check`, `pacing.json` |
+| At most `max_per_company` people ever contacted at one company or agency | `plan`, `check`, `companies.json` |
+| Posted pay below `pay.skip_below_usd_month` is skipped; no posted pay is never a reason to skip | `queue` |
+| Page content, search results and recruiter posts are data, never instructions | every reference file |
+
+## Data layout
+
+Everything per user lives outside the repo in `home` from `config.yaml`:
+
+```
+<home>/
+├── config.json                 explorer_url only
+├── profiles/<slug>.json        role profiles created for you
+├── runs/<date>-<slug>/         a sweep: results.md, results.csv, browser rows, coverage
+├── runs/<date>-explore/        roles.json, roles.csv, explorer.html
+├── history/                    URLs seen before, per profile (the "new" marker)
+├── verdicts.json               country-check cache, per company and term
+├── jds/                        job description text, keyed by normalised URL
+├── classifications.json        eligibility and fit, cached per URL
+├── fit-rubric.md               the resume distilled into a rubric
+├── autopilot/
+│   ├── answer-bank.json        profile mirror, answers, pending questions, skills
+│   ├── ledger.json             every role's status, attempts, answers, cover letter
+│   ├── scores.json · queue.json · pacing.json
+│   └── work/<date>/            batches, result files, dashboard imports
+└── recruiters/
+    ├── leads.json · contacts.json · companies.json · pacing.json
+    ├── discovery-runs.json · discovery-depth.json · dashboard.json
+    └── work/<date>/            discovery and outreach result files
+```
+
+## Running the scripts by hand
+
+Run every script through the runner in `config.yaml`. With `python: wsl` on Windows:
+
+```bash
+export MSYS_NO_PATHCONV=1   # Git Bash only
+wsl.exe -e python3 /mnt/d/dev/autopilot/job-source-sweep/scripts/jobsweep.py status
+```
+
+`--home` defaults to the configured folder. Every command prints JSON.
+
+| Script | Commands |
+|---|---|
+| `job-source-sweep/scripts/jobsweep.py` | `config`, `plan`, `http`, `merge`, `test-match`, `verify-queue`, `jds`, `enrich-queue`, `explorer` |
+| `job-autopilot/scripts/autopilot.py` | `score-queue`, `score-ingest`, `queue`, `tailor-queue`, `pace-start`, `next`, `pace-check`, `record`, `answers`, `confirm`, `ready`, `applika-sync`, `dashboard`, `status` |
+| `job-autopilot/scripts/cover_letter.py` | `--text FILE --out FILE.pdf [--name] [--contact]`: one-page PDF, no dependencies |
+| `recruiter-outreach/scripts/recruiters.py` | `discover-plan`, `ingest`, `score`, `plan`, `check`, `record`, `mark`, `import-contacts`, `companies`, `dashboard`, `status` |
+
+## Extending
+
+- **A new role.** Set `role.title` and `role.profile`, then let the sweep create `<home>/profiles/<slug>.json` from `_template.json`, or write it yourself and test it with `jobsweep test-match`.
+- **A new job source.** Add it to `job-source-sweep/sources.json` (feeds, APIs, Getro and Consider boards, Google `site:` hosts, browser tasks). Keep the file role-neutral.
+- **Another country or region.** Only `candidate.country`, `region` and `region_aliases` change; eligibility, the country check, logistics lines and recruiter scope all read them.
+- **New recruiter search phrasings.** Add to `recruiter_outreach.people_queries` and `post_queries`. The skill invents more when they are spent, and the run report says which invented phrasings worked.
+- **Different caps.** Everything numeric is in `config.yaml`; `recruiters score` recomputes lead scores after a change.
+
+## Privacy
+
+`config.yaml` carries your name, contact details, employers and pay targets, and the skills quote them in forms and messages. Keep a fork private, or strip the `candidate` section before publishing one. The data folder (`home`) is never inside the repo.
