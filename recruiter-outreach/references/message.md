@@ -18,14 +18,14 @@ When `accept_check` is not null, some earlier connection requests haven't been s
 
 Work down `tasks` in order. For each lead, decide the channel, then run `recruiters check --kind <kind> --profile <url>` and obey it: not allowed means skip this lead or stop (a `company cap` reason means enough people at that company or agency were already contacted: skip the lead, record it as `skipped` with that reason, and move on); `wait_seconds` means wait and check again.
 
-1. **1st-degree connection:** a plain message (`message`). No quota is spent on these.
-2. **Connection requests left today:** a connection request with a custom note (`connect`). The user's hard limit is 20 a day, and `check` enforces it.
+1. **1st-degree connection:** a plain message (`message`). This is not a connection request and never counts toward the 20-a-day limit: message every 1st-degree lead in `tasks`, even after all 20 requests are used. There is no daily cap on these unless `check` reports one.
+2. **Connection requests left today:** a connection request with a custom note (`connect`). The user's hard limit is 20 new connection requests a day, and `check` enforces it.
 3. **Connection requests used up:** InMail (`inmail`), if the compose window shows credits. The user has Premium; spending the credits is allowed. Record the credits shown as `inmail_credits`. An InMail has a subject line.
-4. **No connection requests and no credits:** stop.
+4. **No connection requests and no credits:** skip the remaining 2nd and 3rd-degree leads as `deferred`, but still message the 1st-degree ones.
 
 Connect is often hidden under the profile's **More** menu, so open More before deciding a profile is Follow-only. If a profile truly offers only "Follow" (no Connect under More either), send an InMail instead when the compose window shows credits, even while connection requests remain; that spends a credit on a lead that can't be reached otherwise, which is what the credits are for. Only when messaging is closed too, record it as `skipped` and move on.
 
-**Don't stop early.** The day's budget is meant to be spent: every connection request and every InMail credit. You stop only when the pile is empty or `check` says both the connection cap and the InMail credits are gone. A skip costs nothing, so skipping never brings you closer to done. When the pile runs out with budget left, finish the result with `"pile_empty": true` and the orchestrator will discover more leads and call you again; never pad the pile with leads you weren't given.
+**Don't stop early.** The day's budget is meant to be spent: every connection request and every InMail credit. You stop only when the pile is empty, or when `check` says both the connection cap and the InMail credits are gone and no 1st-degree lead is left in `tasks`. A skip costs nothing, so skipping never brings you closer to done. When the pile runs out with budget left, finish the result with `"pile_empty": true` and the orchestrator will discover more leads and call you again; never pad the pile with leads you weren't given.
 
 ## Writing the message
 

@@ -13,7 +13,9 @@ Separate from job-autopilot: nothing here depends on an application.
     recruiters.py outcome       --profile URL | --name NAME --event accepted|replied|positive|call|declined [--note TEXT]
     recruiters.py queries       [--top 25]                  # which searches found the recruiters who accept and reply
     recruiters.py import-contacts --file FILE               # seed contacts from job-autopilot's contacts.json
-A run is done only when `status` says done: connection requests and InMails for the day are all used.
+A run is done only when `status` says done: connection requests and InMails for the day are all used, and every
+contactable 1st-degree lead has had its plain message. Messages to 1st-degree connections never count toward the
+connection-request budget.
     recruiters.py dashboard                                 # dashboard.json for the role explorer's Outreach view
     recruiters.py status
     recruiters.py companies                                 # people contacted per company/agency vs max_per_company
@@ -83,7 +85,8 @@ def emit(obj) -> int:
 DEFAULT_SETTINGS = {
     "connect_per_day": 20,     # the user's hard limit on connection requests per UTC day
     "inmail_per_day": 15,      # a second guard; the real bound is the credits LinkedIn shows
-    "message_per_day": 20,
+    "message_per_day": None,   # plain messages to 1st-degree connections: None = no daily cap, 0 = none at all;
+                               # they never count toward connect_per_day
     "gap_seconds": {"connect": 90, "inmail": 120, "message": 60},
     "min_score": 45,           # leads below this are not contacted
     "max_per_company": 3,      # people ever contacted at one company or agency (companies.json keeps the count)
@@ -339,6 +342,11 @@ def contactable(leads: dict, st: dict, home: str | None = None) -> list:
                   key=lambda v: -v["score"])
 
 
+def first_degree(v: dict) -> bool:
+    """Already a connection: gets a plain message, which spends no connection request."""
+    return str(v.get("degree") or "").strip().lower().startswith("1")
+
+
 def cmd_discover_plan(args) -> int:
     st = settings(args.home)
     leads = load(args.home, "leads.json", {})
@@ -351,7 +359,7 @@ def cmd_discover_plan(args) -> int:
     reprobe = [{"profile_url": v["profile_url"], "name": v.get("name"), "probed_at": v.get("probed_at")}
                for v in leads.values() if (v.get("probed_at") or "") < stale and v.get("status") == "new"][:10]
     needed, q = need(args.home, st)
-    have = len(contactable(leads, st, args.home))
+    have = sum(not first_degree(v) for v in contactable(leads, st, args.home))
     # phrasings already run this week whose deeper result pages haven't been read yet
     deeper = [{"kind": k.split(":", 1)[0], "query": k.split(":", 1)[1], "start_page": depth.get(k, 2) + 1}
               for k, at in runs.items() if at >= cutoff and depth.get(k, 2) < MAX_PAGES]
@@ -441,7 +449,9 @@ def cmd_ingest(args) -> int:
     missing = [f"{t}: no {k} phrasing used it" for t, u in used.items() for k, n in u.items() if not n]
     unattributed = sum(1 for L in res.get("leads") or [] if not source_key(L.get("found_via", "")))
     return emit({"added": added, "updated": updated, "skipped_banned": banned, "leads_total": len(leads),
-                 "contactable_now": len(ranked), "needed": needed, "required_terms_used": used,
+                 "contactable_now": sum(not first_degree(v) for v in ranked),
+                 "first_degree_pending": sum(first_degree(v) for v in ranked) if st["message_per_day"] != 0 else 0,
+                 "needed": needed, "required_terms_used": used,
                  **({"required_terms_missing": missing} if missing else {}),
                  **({"leads_without_found_via": unattributed} if unattributed else {}),
                  "top": [f'{v["score"]} {v["name"]} - {v["headline"][:60]}' for v in ranked[:10]]})
@@ -470,7 +480,8 @@ def pacing(home: str) -> dict:
 
 def quotas(p: dict, st: dict) -> dict:
     caps = {"connect": st["connect_per_day"], "inmail": st["inmail_per_day"], "message": st["message_per_day"]}
-    return {k: {"used": p.get(k, 0), "cap": v, "left": max(0, v - p.get(k, 0))} for k, v in caps.items()} | \
+    return {k: {"used": p.get(k, 0), "cap": v, "left": None if v is None else max(0, v - p.get(k, 0))}
+            for k, v in caps.items()} | \
         {"inmail_credits_hint": p.get("inmail_credits")}
 
 
@@ -497,14 +508,22 @@ def cmd_plan(args) -> int:
             continue
         pile.append(v)
     # best first; 1st-degree connections cost no quota, so they break ties upward
-    pile.sort(key=lambda v: (-v["score"], v.get("degree") != "1st", v.get("found_at", "")))
+    pile.sort(key=lambda v: (-v["score"], not first_degree(v), v.get("found_at", "")))
     save(args.home, "leads.json", leads)
     needed, _ = need(args.home, st)
-    budget = needed + q["message"]["left"]
+    # two separate budgets: connection requests + InMails (`needed`) for everyone else, and plain messages for
+    # 1st-degree connections, which spend no connection request (message_per_day None = no cap)
+    msg_left = q["message"]["left"]
     # at most max_per_company people per employer/agency, counting everyone contacted before today
     room: dict = {}
     chosen = []
+    n_first = n_other = 0
     for v in pile:
+        if first_degree(v):
+            if msg_left is not None and n_first >= msg_left:
+                continue
+        elif n_other >= needed:
+            continue
         left, k = company_room(args.home, st, v.get("company", ""), cos)
         if k:
             left = room.setdefault(k, left)
@@ -514,7 +533,9 @@ def cmd_plan(args) -> int:
         if k:
             room[k] -= 1
         chosen.append(v)
-        if len(chosen) >= min(args.n, budget):
+        n_first += first_degree(v)
+        n_other += not first_degree(v)
+        if len(chosen) >= args.n:
             break
     styles = list(st["cta_styles"] or [])
     tasks = [{**{k: v.get(k) for k in ("profile_url", "name", "headline", "company", "location", "degree", "language",
@@ -527,10 +548,12 @@ def cmd_plan(args) -> int:
     since = p.get("connections_checked_at") or min((v["contact"].get("at", "") for v in awaiting), default="")
     accept_check = {"awaiting": len(awaiting), "since": (since or TODAY)[:10]} if awaiting else None
     out = work_dir(args.home)
-    return emit({"quotas": q, "needed": needed, "pile": len(pile) - len(capped), "short_by": max(0, needed - len(chosen)),
+    return emit({"quotas": q, "needed": needed, "pile": len(pile) - len(capped), "short_by": max(0, needed - n_other),
+                 "first_degree_tasks": n_first,
                  "cta_styles": styles, "accept_check": accept_check,
                  "max_per_company": st["max_per_company"], "held_by_company_cap": capped, "tasks": tasks,
-                 "order": "connection requests first; when they're used up, InMail while credits last; 1st-degree leads get a plain message",
+                 "order": "1st-degree leads get a plain message whatever the connection budget says (it never counts toward it); "
+                          "everyone else: connection requests first, then InMail while credits last",
                  "banned_companies": st["banned_companies"], "target_role": st["target_role"],
                  "candidate": userconfig.snapshot(),
                  "contacts_file": enrich.host_path(rc_dir(args.home) / "contacts.json"),
@@ -551,7 +574,7 @@ def cmd_check(args) -> int:
         res.update(allowed=False, reason=f"already contacted on {prev.get('at', '')[:10]} via {prev.get('channel')}")
     elif room <= 0:
         res.update(allowed=False, reason=f"company cap: {st['max_per_company']} people already contacted at {company}")
-    elif q[args.kind]["left"] <= 0:
+    elif q[args.kind]["left"] is not None and q[args.kind]["left"] <= 0:
         res.update(allowed=False, reason=f"daily {args.kind} cap of {q[args.kind]['cap']} reached")
     else:
         last = p["last"].get(args.kind)
@@ -763,10 +786,13 @@ def cmd_status(args) -> int:
     p = pacing(args.home)
     new = contactable(leads, st, args.home)
     needed, q = need(args.home, st)
+    # 1st-degree leads wait on the message channel, not on connection requests: done needs both budgets spent
+    first = sum(first_degree(v) for v in new) if q["message"]["cap"] != 0 else 0
     cos = companies(args.home)
     at_cap = sorted(e["name"] for e in cos.values() if e["contacted"] >= st["max_per_company"])
     return emit({"leads": len(leads), "by_status": dict(Counter(v["status"] for v in leads.values())),
-                 "contactable_now": len(new), "needed": needed, "done": needed == 0,
+                 "contactable_now": sum(not first_degree(v) for v in new), "first_degree_pending": first,
+                 "needed": needed, "done": needed == 0 and first == 0,
                  "companies_contacted": len(cos), "companies_at_cap": at_cap, "max_per_company": st["max_per_company"],
                  "quotas": q, "inmail_credits": p.get("inmail_credits"), "contacts": len(contacted(args.home)),
                  "top": [f'{v["score"]} {v["name"]} - {v["headline"][:50]}' for v in new[:8]]})
