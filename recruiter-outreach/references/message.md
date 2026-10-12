@@ -29,7 +29,7 @@ Connect is often hidden under the profile's **More** menu, so open More before d
 
 ## Writing the message
 
-Every message is written for this one recruiter, from their evidence, in their language, and in a register that matches their `vibe`. What earns a reply from a recruiter: years of experience, current role, and the role wanted, in two lines, plus one reason it's them you're writing to. What gets a message ignored: a vague "interested in opportunities" with no role named, "do you have any roles for me" (it hands them work), a pasted career history, flattery, or anything that could have been sent to anyone.
+Every message is written for this one recruiter, from their evidence, in English (see **Language** below), and in a register that matches their `vibe`. What earns a reply from a recruiter: years of experience, current role, and the role wanted, in two lines, plus one reason it's them you're writing to. What gets a message ignored: a vague "interested in opportunities" with no role named, "do you have any roles for me" (it hands them work), a pasted career history, flattery, or anything that could have been sent to anyone.
 
 ### The close: an open door, not a request for a call
 
@@ -62,7 +62,9 @@ Neither style ends in a question that can be answered "no", and neither mentions
 - Line 5: the close from `cta`.
 - No attachment unless they asked for one in a post.
 
-**Match the recruiter.** A terse recruiter gets a terse note. A warm, emoji-using recruiter gets a warmer note (still no emoji from the candidate unless they use several). Write in the recruiter's language when it is `candidate.native_language` or English; another language only if you can write it cleanly. If their recent post names a tech in `candidate.stack`, mention it.
+**Match the recruiter.** A terse recruiter gets a terse note. A warm, emoji-using recruiter gets a warmer note (still no emoji from the candidate unless they use several). If their recent post names a tech in `candidate.stack`, mention it.
+
+**Language.** Write every message in English, whatever the recruiter's location, headline or post language, and whatever a task's `language` field says. The one exception: when a conversation thread with this person already exists and was held in another language, continue in that thread's language. A connection note or a first message is always in English (the user's rule, 2026-10-12).
 
 **Never:**
 - the phrases that mark a generated message: "I hope this message finds you well", "I came across your profile", "I'm reaching out", "I'm excited about the opportunity", "aligns with", "leverage", "passionate", "proven track record", "I would love to connect", "synergy", "cutting-edge"

@@ -54,7 +54,7 @@ Run `jobsweep config` (the sweep's script) and read `setup_done`. Run this secti
 
 **Call 2**
 5. *Strictness*: "Contact leads scoring at least…?" Options: 45 of 100, meaning they hire in your region or post your role (Recommended); 60, meaning both; 30, meaning anyone plausible. → `recruiter_outreach.min_score`
-6. *Languages*: "Which languages may messages be written in?" Options: English and your native language (Recommended); English only. → make sure `candidate.languages` and `candidate.native_language` say so.
+6. *Languages*: no question. Messages are always written in English; the only exception is an existing conversation thread held in another language, which continues in that language (`references/message.md`, **Language**).
 
 3. **Write the search phrasings.** From `role.title`, `candidate.country`, `region`, `region_aliases` and `native_language`, write eight `people_queries` (recruiter nouns × role synonyms × region terms, two of them in the native language, and at least two with each `required_terms` word, such as "nearshore" for a LATAM candidate) and six `post_queries` (the words a recruiter would use in the hiring post: "hiring senior <role> remote <region> USD"). Show them and ask one question: "Use these search phrasings?" Options: Yes (Recommended); "let me edit them" (Other). → `recruiter_outreach.people_queries`, `post_queries`. They are a seed: the skill invents more when they are spent.
 4. Seed the contacts memory so nobody is written to twice: if `<home>/autopilot/contacts.json` exists, run `recruiters import-contacts --file <home>/autopilot/contacts.json`. Also offer to import the user's LinkedIn connections export (CSV) the same way if they have one.
