@@ -68,11 +68,11 @@ Neither style ends in a question that can be answered "no", and neither mentions
 - the phrases that mark a generated message: "I hope this message finds you well", "I came across your profile", "I'm reaching out", "I'm excited about the opportunity", "aligns with", "leverage", "passionate", "proven track record", "I would love to connect", "synergy", "cutting-edge"
 - lists of three, em-dashes, exclamation marks beyond one, a closing that restates the message
 - pay, visa questions, availability dates, or a bare "open to opportunities" with no role named
-- any request for a call, chat or meeting: "Worth a call?", "Want a call this week?", "Open to a quick call?", "Can we set up 15 minutes?", calendar links
+- any request for a call, chat or meeting, in any language and in any message (first touch, 1st-degree note, or a reply to an old thread): "Worth a call?", "Worth a short call?", "Want a call this week?", "Open to a quick call/chat?", "Can we set up 15 minutes?", "Let's connect for a call", "Vale uma conversa?", "Podemos marcar uma call/um bate-papo?", "¿Te parece una llamada?", "¿Agendamos una charla?", "¿Tienes 15 minutos?", calendar links. Ending on a question is the warning sign: the close is a statement (`open`) or a CV offer (`cv`).
 - claims the resume doesn't support, invented shared connections, or compliments about their company or post
 - a second message to someone who hasn't replied; follow-ups are not this skill's job
 
-Before sending each message, read it once as the recruiter would: does it say who, what, and why them, in under ten seconds? If not, cut until it does.
+Before sending each message, read it once as the recruiter would: does it say who, what, and why them, in under ten seconds? If not, cut until it does. Then check the last sentence: if it proposes a call, chat, meeting or time slot (call, chat, meeting, minutes, conversa, bate-papo, reunião, llamada, charla, reunión), rewrite it as the lead's `cta` before inserting the text. `recruiters record` flags any sent message that still contains one.
 
 **Sending is irreversible.** Review each message before clicking Send or Connect, click deliberately, and never withdraw or delete anything afterwards. Never contact anyone at a `banned_companies` employer, and never contact anyone `check` says was already contacted.
 

@@ -586,6 +586,12 @@ def cmd_check(args) -> int:
     return emit(res)
 
 
+# a first message never proposes a call, chat or meeting (references/message.md); record flags any that slipped through
+CALL_ASK = re.compile(r"\b(worth an? (short |quick )?(call|chat)|(quick|short) (call|chat)|hop on a call|call this week|"
+                      r"set up \d+ ?min|\d+ minutes\b|calendly|vale uma conversa|bate-papo|marcar uma (call|conversa|reuni)|"
+                      r"llamada|charla|agendamos|tienes \d+ minutos)", re.I)
+
+
 _BAD_ESCAPE = re.compile(r'\\(?!["\\/bfnrtu])')
 
 
@@ -615,6 +621,7 @@ def cmd_record(args) -> int:
     cts = contacted(args.home)
     p = pacing(args.home)
     sent = held = 0
+    call_asks = []
     for c in res.get("contacts") or []:
         who = norm_profile(c.get("profile_url", ""))
         if not who:
@@ -631,6 +638,8 @@ def cmd_record(args) -> int:
         cts[who] = entry
         if entry["status"] == "sent":
             sent += 1
+            if CALL_ASK.search(entry["message"] or ""):
+                call_asks.append(entry["name"] or who)
             kind = entry["channel"] if entry["channel"] in ("connect", "inmail", "message") else "message"
             p[kind] = p.get(kind, 0) + 1
             p["last"][kind] = NOW.isoformat()
@@ -656,7 +665,9 @@ def cmd_record(args) -> int:
     save(args.home, "leads.json", leads)
     save(args.home, "pacing.json", p)
     return emit({"recorded": len(res.get("contacts") or []), "sent": sent, "quotas": quotas(p, st),
-                 "deferred_to_next_day": held, "accepted_now": accepted, "companies_at_cap": at_cap})
+                 "deferred_to_next_day": held, "accepted_now": accepted, "companies_at_cap": at_cap,
+                 **({"call_asks": call_asks, "warning": "these sent messages propose a call or chat, which the "
+                     "first message must never do; correct the sender's instructions"} if call_asks else {})})
 
 
 def cmd_mark(args) -> int:
