@@ -510,7 +510,7 @@
     <ul>
       <li><strong>Accept / Reject</strong> decisions are saved with this page and kept across daily updates. Each one stores a copy of the role, so accepted and rejected roles stay listed after later sweeps stop finding them. Click the highlighted button again to undo.</li>
       <li><strong>Autopilot · Applications</strong> lists every form the autopilot filled and left open in Chrome. It never submits. Review the typed answers (estimates are flagged), submit the form yourself, then click <em>I submitted it</em>; the next run registers it in applika. <em>Discard</em> closes a form you won't send.</li>
-      <li><strong>Autopilot · Outreach</strong> is the recruiter pipeline, separate from applications: recruiters found on LinkedIn, scored on whether they hire in <span data-region></span> or worldwide, are active, and post roles and pay like your target, with the exact message sent to each.</li>
+      <li><strong>Autopilot · Outreach</strong> is the recruiter pipeline, separate from applications: recruiters found on LinkedIn, scored on whether they hire in <span data-region></span> or worldwide, are active, and post roles and pay like your target, with the exact message sent to each, the search that found them, and what they did next (accepted, replied, interested, declined). "Which searches work" above the list shows that funnel per search and per closing style.</li>
       <li><strong><span data-country></span> eligibility</strong> is read from the job description text. "Open" means it names <span data-country></span>, <span data-region></span> or worldwide eligibility; "Restricted" means it states a visa, citizenship or residency requirement (e.g. "must live in the US"); "Nothing stated" means neither. Roles without JD text are "Not classified".</li>
       <li><strong>Resume fit</strong> rates the JD against <code id="resume-name"></code>. Only roles classified "Open" or "Nothing stated" are rated.</li>
       <li><strong><span data-country></span> hiring check</strong> is one Google search per company, <code id="bz-query"></code>, first page only, run for the green and yellow roles with nothing stated (results are cached per company, so other roles from a checked company show them too). A match shows the company employs people there; it doesn't prove the role is open to <span data-country></span>. "No match" means only that the first page had none.</li>
@@ -1045,14 +1045,33 @@ const SCOPE = { latam: `Hires in ${REGION}`, worldwide: "Hires worldwide", nears
                 local_only: "Local only", unknown: "Scope unknown" };
 const PAYSIG = { at_or_above: "pay ≥ target", near: "pay near target", below: "pay below target", unknown: "no pay posted" };
 const LEAD_PARTS = [["scope", `${REGION} / worldwide`, 35], ["active", "Active", 20], ["role", "Role posts", 25], ["pay", "Pay posts", 20]];
+const OUTCOME = [["accepted_at", "Accepted", "good"], ["replied_at", "Replied", "good"], ["positive_at", "Interested", "good"],
+                 ["call_at", "Call booked", "good"], ["declined_at", "Declined", "bad"]];
+const CTA = { open: "Close: open to new roles", cv: "Close: offers the CV" };
+// Funnel per search, avenue and closing style, from `recruiters queries` (each lead counts under the search that found it first)
+function searchReport() {
+  const Q = RC && RC.queries;
+  if (!Q) return "";
+  const pc = v => v == null ? "" : ` (${v}%)`;
+  const tbl = (rows, head) => `<table><thead><tr><th>${head}</th><th>Found</th><th>Qualified</th><th>Contacted</th><th>Accepted</th><th>Replied</th><th>Interested</th></tr></thead><tbody>${
+    rows.map(r => `<tr><td>${esc(r.key)}${r.small_sample && r.contacted ? ' <span class="tag">small sample</span>' : ""}</td><td>${r.found}</td>` +
+      `<td>${r.qualified}${pc(r.qualified_pct)}</td><td>${r.contacted}</td><td>${r.accepted}${pc(r.accept_pct)}</td>` +
+      `<td>${r.replied}${pc(r.reply_pct)}</td><td>${r.positive}</td></tr>`).join("") || '<tr><td colspan="7" class="empty">Nothing yet.</td></tr>'}</tbody></table>`;
+  return `<details class="review" style="padding:12px 14px"><summary>Which searches work (as of ${esc(Q.built)})</summary>
+    <p class="note">${esc(Q.note)} ${Q.ran_without_leads} phrasings ran without producing a lead.</p>
+    <p class="q">By avenue</p>${tbl(Q.by_avenue || [], "Avenue")}<p class="q">By closing style</p>${tbl(Q.by_cta || [], "Close")}
+    <p class="q">Top searches</p>${tbl(Q.queries || [], "Search")}</details>`;
+}
 function renderOutreach() {
   const leads = RC ? RC.leads || [] : [], minScore = RC ? RC.min_score || 0 : 0;
   const all = leads.filter(c => matchQ(c.name, (c.company || "") + " " + (c.headline || "")));
   const tests = { all: () => true, pile: c => c.status === "new" && c.score >= minScore, contacted: c => c.status === "contacted",
-                  replied: c => c.status === "replied", low: c => c.status === "new" && c.score < minScore, skipped: c => c.status === "skipped" };
+                  accepted: c => !!(c.outcome && c.outcome.accepted_at), replied: c => c.status === "replied",
+                  low: c => c.status === "new" && c.score < minScore, skipped: c => c.status === "skipped" };
   if (!tests[auto.chip]) auto.chip = "all";
   chipBar([["all", "All leads", all.length], ["pile", "Ranked pile (to contact)", all.filter(tests.pile).length],
-           ["contacted", "Contacted", all.filter(tests.contacted).length], ["replied", "Replied", all.filter(tests.replied).length],
+           ["contacted", "Contacted", all.filter(tests.contacted).length], ["accepted", "Accepted", all.filter(tests.accepted).length],
+           ["replied", "Replied", all.filter(tests.replied).length],
            ["low", `Below ${minScore}`, all.filter(tests.low).length], ["skipped", "Skipped", all.filter(tests.skipped).length]]);
   const rows = all.filter(tests[auto.chip]).sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
   const q = (RC && RC.quotas) || {}, f = k => q[k] ? `${q[k].used}/${q[k].cap}` : "–";
@@ -1073,16 +1092,18 @@ function renderOutreach() {
     return `<tr>
       <td class="c-role" data-label="Recruiter"><div class="cell role"><a href="${esc(c.profile_url)}" target="_blank" rel="noopener">${esc(c.name || c.profile_url)}</a>
         <span class="company">${esc(c.company || "")}${c.degree ? ` · ${esc(c.degree)}` : ""}</span>
-        <div class="meta"><span>${esc(trunc(c.headline || "", 110))}</span>${c.location ? `<span>${esc(c.location)}</span>` : ""}</div></div></td>
+        <div class="meta"><span>${esc(trunc(c.headline || "", 110))}</span>${c.location ? `<span>${esc(c.location)}</span>` : ""}</div>
+        ${c.source ? `<p class="note">Found via ${esc(c.source)}</p>` : ""}</div></td>
       <td data-label="Score"><div class="cell"><span class="score">${c.score}</span><div class="parts">${parts}</div>
         <p class="note">${esc(facts.join(" · "))}</p>
         ${(c.evidence || []).length ? `<details class="review"><summary>Evidence</summary><ul class="answers">${c.evidence.map(e => `<li><span class="a">${esc(e)}</span></li>`).join("")}</ul>${roles ? `<p class="q">Recent roles</p><ul class="answers">${roles}</ul>` : ""}</details>` : ""}</div></td>
       <td data-label="Status"><div class="cell"><span class="pill ${cls}">${esc(label)}</span>
         ${ct ? `<span class="tag">${esc(CHANNEL[ct.channel] || ct.channel)}</span><span class="meta"><span>${esc((ct.at || "").slice(0, 16).replace("T", " "))}</span></span>` : ""}
-        ${c.skipReason ? `<p class="note">${esc(c.skipReason)}</p>` : ""}${c.repliedAt ? `<p class="note">Replied ${esc(c.repliedAt)}</p>` : ""}</div></td>
-      <td data-label="Message"><div class="cell">${ct && ct.subject ? `<strong>${esc(ct.subject)}</strong>` : ""}${ct && ct.message ? `<p class="note" style="white-space:pre-wrap">${esc(ct.message)}</p>` : `<p class="note">${c.status === "new" ? "Not contacted yet." : ""}</p>`}</div></td></tr>`;
+        ${OUTCOME.filter(([k]) => c.outcome && c.outcome[k]).map(([k, l, cl]) => `<span class="pill ${cl}">${l} ${esc(c.outcome[k])}</span>`).join("")}
+        ${c.skipReason ? `<p class="note">${esc(c.skipReason)}</p>` : ""}${c.repliedAt && !(c.outcome && c.outcome.replied_at) ? `<p class="note">Replied ${esc(c.repliedAt)}</p>` : ""}</div></td>
+      <td data-label="Message"><div class="cell">${ct && ct.cta ? `<span class="tag">${esc(CTA[ct.cta] || ct.cta)}</span>` : ""}${ct && ct.subject ? `<strong>${esc(ct.subject)}</strong>` : ""}${ct && ct.message ? `<p class="note" style="white-space:pre-wrap">${esc(ct.message)}</p>` : `<p class="note">${c.status === "new" ? "Not contacted yet." : ""}</p>`}</div></td></tr>`;
   }).join("");
-  return `<table><thead><tr><th class="c-role">Recruiter</th><th>Score</th><th>Status</th><th>Message</th></tr></thead>
+  return `${searchReport()}<table><thead><tr><th class="c-role">Recruiter</th><th>Score</th><th>Status</th><th>Message</th></tr></thead>
     <tbody>${body || `<tr><td colspan="4" class="empty">No recruiter leads yet.</td></tr>`}</tbody></table>`;
 }
 

@@ -100,7 +100,7 @@ Claude links the three skill folders into `~/.claude/skills`, finds a Python 3.1
 | `tracker` | `enabled`, `rejection_cooldown_days`, `rejection_neutral_feedback`, `rejection_ignore_companies` | applika registration and rejection cooldowns |
 | `sweep` | `days`, `mode` (`quick`/`standard`/`full`), `explorer` (`full`/`table`/`off`), `max_new_roles`, `remote_only`, `report_rows`, `country_check`, `country_check_limit`, `skip_tasks`, `skip_sources`, `skip_hosts` | job-source-sweep |
 | `autopilot` | `channels`, `max_minutes`, `max_ready`, `auto_submit`, `cover_letter` (`required`/`always`/`never`), `max_load_retries`, `tailor`, `tailor_ahead`, `per_company_per_run` | job-autopilot |
-| `recruiter_outreach` | `connect_per_day`, `inmail_per_day`, `message_per_day`, `min_score`, `max_per_company`, `stale_days`, `gap_seconds`, `people_queries`, `post_queries` | recruiter-outreach |
+| `recruiter_outreach` | `connect_per_day`, `inmail_per_day`, `message_per_day`, `min_score`, `max_per_company`, `stale_days`, `gap_seconds`, `people_queries`, `post_queries`, `required_terms`, `cta_styles` | recruiter-outreach |
 
 Each skill has an interactive first-run setup that writes its section: the sweep asks about the role, resume, country, pay and sweep preferences and fills `candidate` from the resume; the autopilot asks about submitting, cover letters, channels, the tracker and caps; recruiter outreach asks for permission to send, the daily and per-company caps, strictness, and proposes the search phrasings. `job-source-sweep/scripts/userconfig.py` is the loader all three skills share. Set `AUTOPILOT_CONFIG` to point at a different file. The only state the scripts write back is `<home>/config.json` with the explorer's artifact URL; preferences are always edited in `config.yaml`.
 
@@ -223,14 +223,14 @@ flowchart TD
     enough -- no --> dplan["discover-plan<br/>configured phrasings not run this week,<br/>exhausted?, queries_tried, deeper pages,<br/>snowball_companies, seeds"]
     dplan --> invent["Invent the round's queries<br/>new phrasings (role × region × recruiter noun × pay × language),<br/>deeper result pages, '&lt;agency&gt; recruiter', hashtags,<br/>job-post authors, reposters and commenters"]
     invent --> disc["parallel Chrome subagents · references/discover.md<br/>people search + post search → probe each profile and activity page<br/>→ hiring_scope, last_activity_days, role_posts_90d, pay_signal, vibe, evidence"]
-    disc --> ingest["ingest --result<br/>score each lead, record phrasings and page depth"]
+    disc --> ingest["ingest --result<br/>score each lead, remember the search that found it,<br/>record phrasings and page depth, check required terms"]
     ingest --> status
     enough -- yes --> plan["plan<br/>ranked pile cut to today's budget,<br/>1st-degree first within a band,<br/>company cap applied"]
-    plan --> send["one Chrome subagent · references/message.md<br/>check before every send → custom note / InMail / message<br/>never states pay · asks for a call"]
-    send --> record["record --result<br/>contacts.json, pacing.json, companies.json, leads marked"]
+    plan --> send["one Chrome subagent · references/message.md<br/>read new connections → check before every send → custom note / InMail / message<br/>never states pay · closes with an open door, never a call request"]
+    send --> record["record --result<br/>contacts.json, pacing.json, companies.json,<br/>leads marked, accepted requests recorded"]
     record --> done{"status.done?"}
     done -- no --> status
-    done -- yes --> report["dashboard → explorer Outreach view → report"]
+    done -- yes --> report["queries → dashboard → explorer Outreach view → report"]
 ```
 
 **Scoring** answers four questions about each recruiter, from their profile and recent posts. Scores are computed on ingest and recomputed by `recruiters score` after a settings change.
@@ -245,9 +245,11 @@ flowchart TD
 
 **Channels and limits.** 1st-degree connections get a plain message (no quota). Otherwise a connection request with a note under 300 characters, until `connect_per_day` is used; then InMail while the compose window shows credits (Follow-only profiles get an InMail even earlier). `check` runs before every send and refuses anyone already contacted, anyone at a company that already has `max_per_company` people contacted, and anything over the day's cap or inside the minimum gap. Sending is deliberately single-threaded, because the counters are plain files and a sent message cannot be taken back.
 
-**Messages** are written per recruiter from their evidence, in their language and register: one clause on why them (their post, in their words), one line on the candidate (role, years, one proof point), one soft ask for a call. Never pay, never "I came across your profile", never a second message to someone who has not replied. Replies are handled by a separate inbox skill.
+**Messages** are written per recruiter from their evidence, in their language and register: one clause on why them (their post, in their words), one line on the candidate (role, years, one proof point), and a close that leaves the door open. The first message never asks for a call. A yes/no call request asks a stranger for calendar time before they know there is a fit, so it is easy to ignore and gives recruiters who screen by text no way to answer. Instead each lead gets one of the `cta_styles`: `open` says the candidate is open to new roles of this kind, and `cv` offers to share the CV in the chat. Never pay, never "I came across your profile", never a second message to someone who has not replied. Replies are handled by a separate inbox skill.
 
-**Memory.** `leads.json` (every recruiter, signals, evidence, score, status and the message sent), `contacts.json` (everyone ever contacted, any channel), `companies.json` (people contacted per company or agency), `pacing.json` (today's counters and credits), `discovery-runs.json` and `discovery-depth.json` (which phrasings ran when, and how deep).
+**Learning which searches work.** Every lead remembers the search that first found it (`source`) and every later one (`sources`). Outcomes come back from three places: the sender reads your recently added connections before each run (accepted requests), the linkedin-inbox skill runs `recruiters outcome` for each recruiter who writes back (replied, interested, call booked, declined), and you can run it yourself. `recruiters queries` joins them into a funnel per search, per avenue and per closing style: found, qualified, contacted, accepted, replied, interested. The run report recommends adding the searches that convert to `config.yaml` and retiring the ones that don't, and the explorer's Outreach view shows the same table. `required_terms` (for example `nearshore`) are words every discovery pass must search with, so a known-good angle is never dropped.
+
+**Memory.** `leads.json` (every recruiter, signals, evidence, score, status, the message sent, the searches that found them and what they did next), `queries.json` (the last search funnel report), `contacts.json` (everyone ever contacted, any channel), `companies.json` (people contacted per company or agency), `pacing.json` (today's counters and credits), `discovery-runs.json` and `discovery-depth.json` (which phrasings ran when, and how deep).
 
 ## The role explorer
 
@@ -259,7 +261,7 @@ One claude.ai Artifact, republished to the same URL after every run, with a smal
 | Autopilot · Apply decisions | what the autopilot will and won't apply to, with the JD's own words for each skip | override a decision |
 | Autopilot · Applications | each filled form: answers typed (estimates flagged), free-text answers, cover letter, tab title, link | "I submitted it", Discard, Undo |
 | Autopilot · Questions for you | questions the subagent could not estimate, and estimates awaiting a one-time confirmation | answer or confirm; reused on later forms |
-| Autopilot · Outreach | ranked recruiters with score parts, evidence, recent roles, status and the exact message sent | audit the messages |
+| Autopilot · Outreach | ranked recruiters with score parts, evidence, recent roles, status, the exact message sent, the search that found them and their outcome; a "which searches work" funnel on top | audit the messages, see which searches convert |
 
 ```mermaid
 flowchart LR

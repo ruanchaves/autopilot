@@ -641,7 +641,7 @@ def cmd_explorer(args) -> int:
             "resume": Path(config.get("resume") or "").name, "term": term,
             "country": userconfig.country(), "region": userconfig.region(), "role": config.get("role_title", ""),
             "autopilot": {k: auto.get(k) for k in ("built", "apps", "questions", "estimates", "skills", "ready", "max_ready")} if auto else None,
-            "recruiters": {k: recruiters.get(k) for k in ("built", "leads", "quotas", "min_score")} if recruiters else None}
+            "recruiters": {k: recruiters.get(k) for k in ("built", "leads", "quotas", "min_score", "queries")} if recruiters else None}
     template = (js.SKILL / "assets" / "explorer.html").read_text(encoding="utf-8")
     safe = lambda obj: json.dumps(obj, ensure_ascii=False).replace("</", "<\\/")  # noqa: E731
     page = template.replace("__DATA__", safe(records)).replace("__META__", safe(meta))

@@ -10,6 +10,8 @@ Separate from job-autopilot: nothing here depends on an application.
     recruiters.py check         --kind connect|inmail|message --profile URL
     recruiters.py record        --result FILE               # outreach result: contacts, counters, credits
     recruiters.py mark          --profile URL --status replied|skipped|contacted [--note TEXT]
+    recruiters.py outcome       --profile URL | --name NAME --event accepted|replied|positive|call|declined [--note TEXT]
+    recruiters.py queries       [--top 25]                  # which searches found the recruiters who accept and reply
     recruiters.py import-contacts --file FILE               # seed contacts from job-autopilot's contacts.json
 A run is done only when `status` says done: connection requests and InMails for the day are all used.
     recruiters.py dashboard                                 # dashboard.json for the role explorer's Outreach view
@@ -18,9 +20,11 @@ A run is done only when `status` says done: connection requests and InMails for 
 
 Settings come from config.yaml at the repo root (recruiter_outreach, role, pay, banned_companies).
 Everything else lives in <home>/recruiters/:
-    leads.json      every recruiter found: profile, signals, evidence, score, status
+    leads.json      every recruiter found: profile, signals, evidence, score, status, the search that found
+                    them (source, sources) and what they did after contact (outcome)
     contacts.json   everyone ever contacted (seeded from autopilot), with the exact message sent
-    pacing.json     today's counters, last-send times, InMail credits last seen
+    pacing.json     today's counters, last-send times, InMail credits last seen, last acceptance check
+    queries.json    the last `queries` report (also embedded in dashboard.json)
     work/<date>/    discovery and outreach result files
 """
 
@@ -32,9 +36,12 @@ import math
 import os
 import re
 import sys
+import unicodedata
+import zlib
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 SWEEP = Path(__file__).resolve().parents[2] / "job-source-sweep" / "scripts"
 sys.path.insert(0, str(SWEEP))
@@ -83,6 +90,8 @@ DEFAULT_SETTINGS = {
     "stale_days": 60,          # a lead's signals are re-probed after this many days
     "people_queries": [],      # from config.yaml recruiter_outreach.people_queries
     "post_queries": [],
+    "required_terms": [],      # words every discovery pass must search with (e.g. "nearshore"); ingest warns when missing
+    "cta_styles": ["open", "cv"],  # how first-touch messages close; rotated per lead, compared by `recruiters queries`
     # filled in from config.yaml by settings(): target_role, pay_target_usd_month, banned_companies
 }
 
@@ -170,6 +179,109 @@ def norm_profile(url: str) -> str:
     return f"linkedin.com/{m[1].lower()}/{m[2].lower()}" if m else (url or "").strip().lower()
 
 
+# ------------------------------------------------------------- attribution
+# Every lead remembers the search that first surfaced it (`source`) and every later one (`sources`), and every
+# contacted lead collects outcome events (accepted, replied, positive, call, declined) from the sender's
+# acceptance check and from linkedin-inbox. `recruiters queries` joins the two, so the searches whose recruiters
+# accept and answer can be told apart from the ones that only fill the pile.
+
+_PAGE_NOTE = re.compile(r"\s*\((?:page|p\.?)\s*\d+\)\s*$", re.I)
+
+
+def source_key(found_via: str) -> str:
+    """The canonical key of the search that found a lead, in the same namespace as discovery-runs.json:
+    'people:<phrasing>', 'posts:<phrasing>' (hashtags included), 'snowball:<company>', 'also_viewed:<lead>',
+    'jobs:<keywords> @ <location>', 'jobs:posting', 'engagement:post'. Page notes like '(page 3)' are dropped,
+    so every page of one phrasing counts toward that phrasing. Empty when unknown."""
+    s = (found_via or "").strip()
+    if ":" not in s:
+        return ""
+    kind, rest = (x.strip() for x in s.split(":", 1))
+    kind = kind.lower()
+    if kind == "jobs":
+        m = re.search(r"https?://\S+", rest)
+        url = m[0] if m else rest
+        if "/jobs/search" in url:
+            qs = parse_qs(urlparse(url).query)
+            kw, loc = (qs.get("keywords") or [""])[0], (qs.get("location") or [""])[0]
+            return f"jobs:{kw}" + (f" @ {loc}" if loc else "")
+        return "jobs:posting" if "/jobs/view" in url else "jobs:" + _PAGE_NOTE.sub("", rest)
+    rest = _PAGE_NOTE.sub("", rest)
+    if kind == "snowball":
+        m = re.match(r"(.+?)\s+people also viewed\b", rest, re.I)
+        if m:
+            return "also_viewed:" + m[1].strip()
+        rest = re.sub(r"\s*\(.*\)\s*$", "", rest)
+        return "snowball:" + re.sub(r"\s+(recruiters?|talent)$", "", rest, flags=re.I)
+    if kind == "engagement":
+        return "engagement:post"
+    return f"{kind}:{rest}"
+
+
+def avenue(key: str) -> str:
+    kind, _, rest = (key or "").partition(":")
+    if not kind or kind == "unattributed":
+        return "unattributed"
+    return "hashtag" if kind == "posts" and "#" in rest else kind
+
+
+def lead_source(v: dict | None) -> str:
+    v = v or {}
+    return v.get("source") or source_key(v.get("found_via", ""))
+
+
+def cta_for(key: str, styles: list) -> str:
+    """The closing style for a lead's first message: stable per lead, spread evenly across `styles`."""
+    return styles[zlib.crc32(key.encode()) % len(styles)] if styles else ""
+
+
+STAGES = ("accepted", "replied", "positive", "call")  # each stage implies the ones before it
+EVENTS = STAGES + ("declined",)
+
+
+def add_event(lead: dict, event: str, at: str, note: str = "") -> bool:
+    """Record an outcome event on a lead; the earliest time wins. A later stage implies the earlier ones (a reply
+    means the request was accepted), except that InMails and messages to 1st-degree leads have no request to accept.
+    Returns True when anything changed."""
+    out = lead.setdefault("outcome", {})
+    implied = list(STAGES[:STAGES.index(event) + 1]) if event in STAGES else ["accepted", "replied", "declined"]
+    is_connect = (lead.get("contact") or {}).get("channel") == "connect"
+    changed = False
+    for e in implied:
+        if e == "accepted" and e != event and not is_connect:
+            continue
+        k = e + "_at"
+        if not out.get(k) or at < out[k]:
+            out[k] = at
+            changed = True
+    notes = out.setdefault("notes", [])
+    if note and not any(n.endswith(f"{event}: {note}") for n in notes):
+        notes.append(f"{at[:10]} {event}: {note}")
+        changed = True
+    if not notes:
+        out.pop("notes")
+    if event != "accepted" and lead.get("status") in ("new", "contacted"):
+        lead["status"] = "replied"
+    if out.get("replied_at"):
+        lead["replied_at"] = out["replied_at"]  # the field the dashboard has always shown
+    return changed
+
+
+def _plain(s: str) -> str:
+    return squash(unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode())
+
+
+def find_lead(leads: dict, profile: str = "", name: str = "") -> str:
+    """A lead's key from its profile URL, or else from its name among contacted leads (messaging often links
+    profiles by member id, not the public slug). Empty when there is no unique match."""
+    who = norm_profile(profile) if profile else ""
+    if who in leads:
+        return who
+    n = _plain(name)
+    hits = [k for k, v in leads.items() if n and v.get("contact") and _plain(v.get("name", "")) == n]
+    return hits[0] if len(hits) == 1 else ""
+
+
 # ---------------------------------------------------------------- scoring
 # Four questions, in the user's words: is the recruiter explicitly hiring in LATAM and/or
 # worldwide? active on LinkedIn? posting roles aligned with the target role? posting roles
@@ -250,15 +362,21 @@ def cmd_discover_plan(args) -> int:
             snowball.append(c)
     cand = userconfig.snapshot()
     seeds = {"role_terms": [st["target_role"]] + list(cand.get("core_areas") or []),
-             "region_terms": [cand.get("country"), cand.get("region")] + list(cand.get("region_aliases") or []),
+             "region_terms": [cand.get("country"), cand.get("region")] + list(cand.get("region_aliases") or [])
+                             + [t for t in st["required_terms"] if t not in (cand.get("region_aliases") or [])],
              "recruiter_nouns": ["recruiter", "technical recruiter", "talent partner", "talent acquisition",
                                  "sourcer", "headhunter", "hiring", "we're hiring"],
              "languages": [x for x in ["English", cand.get("native_language")] if x],
              "pay_terms": ["USD", "contractor", "B2B", f"${st['pay_target_usd_month'] // 1000}k"],
              "hashtags": ["#hiring", f"#{(cand.get('region') or '').lower()}", "#remotework", "#" + squash(st["target_role"])]}
     max_leads = args.max_leads or max(30, needed * 2)
+    week = [k for k, at in runs.items() if at >= cutoff]
+    required = [{"term": t, "run_this_week": sum(t.lower() in k.lower() for k in week),
+                 "rule": "every discovery subagent runs at least one people and one post phrasing containing it"}
+                for t in st["required_terms"]]
     out = work_dir(args.home)
     return emit({"people_queries": people, "post_queries": posts, "exhausted": not people and not posts,
+                 "required_terms": required,
                  "needed": needed, "contactable_now": have, "quotas": q, "max_leads": max_leads,
                  "queries_tried": sorted(runs), "deeper": deeper[:12], "snowball_companies": snowball[:15],
                  "seeds": seeds, "known_profiles": sorted(leads), "reprobe": reprobe,
@@ -290,12 +408,20 @@ def cmd_ingest(args) -> int:
             banned += 1
             continue
         cur = leads.get(key)
+        src = source_key(L.get("found_via", ""))
+        first = lead_source(cur) if cur else ""
+        seen = list((cur or {}).get("sources") or ([first] if first else []))
+        for s in [src] + [source_key(x) for x in (L.get("also_found_via") or [])]:
+            if s and s not in seen:
+                seen.append(s)
         entry = {**(cur or {"found_at": NOW.isoformat(), "status": "new", "contact": None}),
                  "profile_url": L.get("profile_url"), "name": L.get("name", ""), "headline": L.get("headline", ""),
                  "company": L.get("company", ""), "location": L.get("location", ""), "degree": L.get("degree", ""),
                  "language": L.get("language", "en"), "signals": L.get("signals") or {},
                  "evidence": L.get("evidence") or [], "recent_roles": L.get("recent_roles") or [],
-                 "vibe": L.get("vibe", ""), "irrelevant": bool(L.get("irrelevant")), "found_via": L.get("found_via", ""),
+                 "vibe": L.get("vibe", ""), "irrelevant": bool(L.get("irrelevant")),
+                 "found_via": (cur or {}).get("found_via") or L.get("found_via", ""),
+                 "source": first or src, "sources": seen,
                  "probed_at": NOW.isoformat()}
         if entry["irrelevant"] and entry["status"] == "new":
             entry["status"] = "skipped"
@@ -309,8 +435,14 @@ def cmd_ingest(args) -> int:
     save(args.home, "discovery-depth.json", depth)
     ranked = contactable(leads, st, args.home)
     needed, _ = need(args.home, st)
+    ran = {"people": res.get("people_queries_run") or [], "posts": res.get("post_queries_run") or []}
+    used = {t: {k: sum(t.lower() in q.lower() for q in qs) for k, qs in ran.items()} for t in st["required_terms"]}
+    missing = [f"{t}: no {k} phrasing used it" for t, u in used.items() for k, n in u.items() if not n]
+    unattributed = sum(1 for L in res.get("leads") or [] if not source_key(L.get("found_via", "")))
     return emit({"added": added, "updated": updated, "skipped_banned": banned, "leads_total": len(leads),
-                 "contactable_now": len(ranked), "needed": needed,
+                 "contactable_now": len(ranked), "needed": needed, "required_terms_used": used,
+                 **({"required_terms_missing": missing} if missing else {}),
+                 **({"leads_without_found_via": unattributed} if unattributed else {}),
                  "top": [f'{v["score"]} {v["name"]} - {v["headline"][:60]}' for v in ranked[:10]]})
 
 
@@ -318,6 +450,9 @@ def cmd_score(args) -> int:
     leads = load(args.home, "leads.json", {})
     for v in leads.values():
         rescore(v)
+        if not v.get("source") and lead_source(v):
+            v["source"] = lead_source(v)
+            v.setdefault("sources", [v["source"]])
     save(args.home, "leads.json", leads)
     return emit({"rescored": len(leads), "by_status": dict(Counter(v["status"] for v in leads.values()))})
 
@@ -380,11 +515,19 @@ def cmd_plan(args) -> int:
         chosen.append(v)
         if len(chosen) >= min(args.n, budget):
             break
-    tasks = [{k: v.get(k) for k in ("profile_url", "name", "headline", "company", "location", "degree", "language",
-                                     "score", "parts", "signals", "evidence", "recent_roles", "vibe")}
+    styles = list(st["cta_styles"] or [])
+    tasks = [{**{k: v.get(k) for k in ("profile_url", "name", "headline", "company", "location", "degree", "language",
+                                       "score", "parts", "signals", "evidence", "recent_roles", "vibe")},
+              "cta": cta_for(norm_profile(v.get("profile_url", "")), styles)}
              for v in chosen]
+    # connection requests not yet seen accepted: the sender reads "Recently added" connections back to `since`
+    awaiting = [v for v in leads.values() if (v.get("contact") or {}).get("channel") == "connect"
+                and not (v.get("outcome") or {}).get("accepted_at")]
+    since = p.get("connections_checked_at") or min((v["contact"].get("at", "") for v in awaiting), default="")
+    accept_check = {"awaiting": len(awaiting), "since": (since or TODAY)[:10]} if awaiting else None
     out = work_dir(args.home)
     return emit({"quotas": q, "needed": needed, "pile": len(pile) - len(capped), "short_by": max(0, needed - len(chosen)),
+                 "cta_styles": styles, "accept_check": accept_check,
                  "max_per_company": st["max_per_company"], "held_by_company_cap": capped, "tasks": tasks,
                  "order": "connection requests first; when they're used up, InMail while credits last; 1st-degree leads get a plain message",
                  "banned_companies": st["banned_companies"], "target_role": st["target_role"],
@@ -430,24 +573,38 @@ def load_result(path) -> dict:
         return json.loads(_BAD_ESCAPE.sub(r"\\\\", raw))
 
 
+# a lead the sender passed over only because today's budget ran out stays in the pile for the next day
+_BUDGET = re.compile(r"quota|budget|no (connection request )?slots? left|daily \w+ cap|requests? (are )?(all )?used|"
+                     r"cap of \d+ reached", re.I)
+
+
+def deferred(c: dict) -> bool:
+    detail = c.get("detail") or ""
+    return c.get("status") == "deferred" or (c.get("status") == "skipped" and bool(_BUDGET.search(detail))
+                                              and "company cap" not in detail.lower())
+
+
 def cmd_record(args) -> int:
     res = load_result(args.result)
     st = settings(args.home)
     leads = load(args.home, "leads.json", {})
     cts = contacted(args.home)
     p = pacing(args.home)
-    sent = 0
+    sent = held = 0
     for c in res.get("contacts") or []:
         who = norm_profile(c.get("profile_url", ""))
         if not who:
             continue
+        if deferred(c):
+            held += 1
+            continue
+        lead = leads.get(who)
         entry = {**{k: c.get(k, "") for k in ("name", "headline", "company", "profile_url", "channel", "subject",
-                                              "message", "status", "detail")},
-                 "purpose": "recruiter", "at": NOW.isoformat()}
+                                              "message", "status", "detail", "cta")},
+                 "source": lead_source(lead), "purpose": "recruiter", "at": NOW.isoformat()}
         if cts.get(who, {}).get("status") == "sent" and entry["status"] != "sent":
             continue
         cts[who] = entry
-        lead = leads.get(who)
         if entry["status"] == "sent":
             sent += 1
             kind = entry["channel"] if entry["channel"] in ("connect", "inmail", "message") else "message"
@@ -455,18 +612,27 @@ def cmd_record(args) -> int:
             p["last"][kind] = NOW.isoformat()
             if lead:
                 lead.update(status="contacted", contact={"at": entry["at"], "channel": kind, "subject": entry["subject"],
-                                                         "message": entry["message"]})
+                                                         "message": entry["message"], "cta": entry["cta"]})
         elif lead and entry["status"] == "skipped" and lead.get("status") == "new":
             lead.update(status="skipped", skip_reason=entry.get("detail", ""))
     if res.get("inmail_credits") is not None:
         p["inmail_credits"] = res["inmail_credits"]
+    accepted = []
+    for c in res.get("new_connections") or []:
+        url, name = (c, "") if isinstance(c, str) else (c.get("profile_url", ""), c.get("name", ""))
+        key = find_lead(leads, url, name)
+        lead = leads.get(key)
+        if lead and (lead.get("contact") or {}).get("channel") == "connect" and add_event(lead, "accepted", NOW.isoformat()):
+            accepted.append(lead.get("name", key))
+    if res.get("connections_checked"):
+        p["connections_checked_at"] = NOW.isoformat()
     save(args.home, "contacts.json", cts)
     cos = companies(args.home, cts)
     at_cap = sorted(e["name"] for e in cos.values() if e["contacted"] >= st["max_per_company"])
     save(args.home, "leads.json", leads)
     save(args.home, "pacing.json", p)
     return emit({"recorded": len(res.get("contacts") or []), "sent": sent, "quotas": quotas(p, st),
-                 "companies_at_cap": at_cap})
+                 "deferred_to_next_day": held, "accepted_now": accepted, "companies_at_cap": at_cap})
 
 
 def cmd_mark(args) -> int:
@@ -478,9 +644,79 @@ def cmd_mark(args) -> int:
     if args.note:
         leads[who]["note"] = args.note
     if args.status == "replied":
-        leads[who]["replied_at"] = NOW.isoformat()
+        add_event(leads[who], "replied", NOW.isoformat(), args.note or "")
     save(args.home, "leads.json", leads)
     return emit({"marked": who, "status": args.status})
+
+
+def cmd_outcome(args) -> int:
+    """What a contacted recruiter did next, from the sender's acceptance check, linkedin-inbox, or the user."""
+    leads = load(args.home, "leads.json", {})
+    key = find_lead(leads, args.profile or "", args.name or "")
+    if not key:
+        return emit({"lead": False, "reason": "not a recruiter-outreach lead; nothing recorded"})
+    lead = leads[key]
+    changed = add_event(lead, args.event, args.at or NOW.isoformat(), args.note or "")
+    save(args.home, "leads.json", leads)
+    return emit({"lead": True, "who": key, "name": lead.get("name", ""), "source": lead_source(lead),
+                 "event": args.event, "changed": changed, "outcome": lead.get("outcome")})
+
+
+# ----------------------------------------------------------------- learning
+
+LEGACY_CTA = "call (asked for a call, before 2026-10-12)"
+MIN_SAMPLE = 5  # rates over fewer contacted leads than this are noise
+
+
+def query_report(home: str, st: dict, leads: dict, top: int = 25) -> dict:
+    """Funnel per search, per avenue and per closing style: found -> qualified -> contacted -> accepted -> replied
+    -> positive. Each lead counts once, under the search that first found it."""
+    runs = load(home, "discovery-runs.json", {})
+    by_src: dict = {}
+    by_av: dict = {}
+    by_cta: dict = {}
+    for v in leads.values():
+        src = lead_source(v) or "unattributed"
+        o, ct = v.get("outcome") or {}, v.get("contact") or {}
+        sent = bool(ct) or v.get("status") in ("contacted", "replied")
+        row = Counter(found=1, relevant=int(not v.get("irrelevant")), qualified=int((v.get("score") or 0) >= st["min_score"]),
+                      score=v.get("score") or 0, contacted=int(sent), connects=int(ct.get("channel") == "connect"),
+                      accepted=int(bool(o.get("accepted_at"))), replied=int(bool(o.get("replied_at") or v.get("replied_at"))),
+                      positive=int(bool(o.get("positive_at") or o.get("call_at"))), declined=int(bool(o.get("declined_at"))))
+        by_src.setdefault(src, Counter()).update(row)
+        by_av.setdefault(avenue(src), Counter()).update(row)
+        if sent:
+            by_cta.setdefault(ct.get("cta") or LEGACY_CTA, Counter()).update(row)
+
+    def pct(a, b):
+        return round(100 * a / b) if b else None
+
+    def rows(table):
+        out = []
+        for k, c in table.items():
+            out.append({"key": k, "avenue": avenue(k), "found": c["found"], "qualified": c["qualified"],
+                        "avg_score": round(c["score"] / c["found"]) if c["found"] else 0, "contacted": c["contacted"],
+                        "accepted": c["accepted"], "replied": c["replied"], "positive": c["positive"], "declined": c["declined"],
+                        "qualified_pct": pct(c["qualified"], c["found"]), "accept_pct": pct(c["accepted"], c["connects"]),
+                        "reply_pct": pct(c["replied"], c["contacted"]), "small_sample": c["contacted"] < MIN_SAMPLE,
+                        **({"last_run": runs[k][:10]} if k in runs else {})})
+        return sorted(out, key=lambda r: (-r["positive"], -r["replied"], -r["accepted"], -r["qualified"], -r["found"], r["key"]))
+
+    # a snowball search runs as 'people:<company> recruiter' but its leads are filed under 'snowball:<company>'
+    dead = sorted(k for k in runs if k not in by_src
+                  and not (k.startswith("people:") and source_key("snowball:" + k[7:]) in by_src))
+    return {"built": NOW.strftime("%Y-%m-%d %H:%M UTC"), "min_score": st["min_score"],
+            "note": f"Each lead counts once, under the search that first found it. accept_pct is over connection requests, "
+                    f"reply_pct over everyone contacted; rows with fewer than {MIN_SAMPLE} contacted are small samples.",
+            "by_avenue": rows(by_av), "by_cta": rows(by_cta), "queries": rows(by_src)[:top],
+            "searches_total": len(by_src), "ran_without_leads": len(dead), "ran_without_leads_sample": dead[:40]}
+
+
+def cmd_queries(args) -> int:
+    st = settings(args.home)
+    report = query_report(args.home, st, load(args.home, "leads.json", {}), args.top)
+    save(args.home, "queries.json", report)
+    return emit(report)
 
 
 def cmd_import_contacts(args) -> int:
@@ -511,7 +747,10 @@ def cmd_dashboard(args) -> int:
                        "evidence": (v.get("evidence") or [])[:4], "recent_roles": (v.get("recent_roles") or [])[:3],
                        "status": v.get("status", "new"), "skipReason": v.get("skip_reason", ""),
                        "contact": v.get("contact"), "foundAt": (v.get("found_at") or "")[:10],
-                       "repliedAt": (v.get("replied_at") or "")[:10]} for v in rows]}
+                       "source": lead_source(v), "outcome": {k: (x or "")[:10] for k, x in (v.get("outcome") or {}).items()
+                                                             if k.endswith("_at")},
+                       "repliedAt": (v.get("replied_at") or "")[:10]} for v in rows],
+            "queries": query_report(args.home, st, leads, 15)}
     save(args.home, "dashboard.json", data)
     return emit({"leads": len(rows), "by_status": dict(Counter(v["status"] for v in rows)),
                  "file": enrich.host_path(rc_dir(args.home) / "dashboard.json")})
@@ -558,6 +797,10 @@ def main() -> int:
     p = sub.add_parser("mark"); p.add_argument("--profile", required=True)
     p.add_argument("--status", required=True, choices=["replied", "skipped", "contacted", "new"]); p.add_argument("--note")
     p.set_defaults(fn=cmd_mark)
+    p = sub.add_parser("outcome"); p.add_argument("--profile", default=""); p.add_argument("--name", default="")
+    p.add_argument("--event", required=True, choices=list(EVENTS)); p.add_argument("--note"); p.add_argument("--at", default="")
+    p.set_defaults(fn=cmd_outcome)
+    p = sub.add_parser("queries"); p.add_argument("--top", type=int, default=25); p.set_defaults(fn=cmd_queries)
     p = sub.add_parser("import-contacts"); p.add_argument("--file", required=True); p.set_defaults(fn=cmd_import_contacts)
     sub.add_parser("dashboard").set_defaults(fn=cmd_dashboard)
     sub.add_parser("status").set_defaults(fn=cmd_status)
