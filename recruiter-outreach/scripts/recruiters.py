@@ -115,7 +115,8 @@ _CO_SUFFIX = re.compile(r"\b(inc|llc|ltd|ltda|limited|corp|corporation|co|compan
 _CO_TRAIL = {"systems", "system", "technologies", "technology", "tech", "solutions", "labs", "consulting", "software",
              "digital", "services", "staffing", "recruitment", "recruiting", "talent", "global", "international",
              "latam", "brasil", "brazil", "usa", "us"}
-_CO_NOISE = {"", "unknown", "na", "n/a", "none", "self", "freelance", "independent", "selfemployed"}
+_CO_NOISE = {"", "unknown", "na", "n/a", "none", "self", "freelance", "independent", "selfemployed",
+             "notstated", "notspecified", "notlisted", "undisclosed", "confidential", "unclear"}
 
 
 def company_key(name: str) -> str:
