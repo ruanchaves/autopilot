@@ -10,6 +10,8 @@ Load the Chrome tools with one ToolSearch call: `select:mcp__claude-in-chrome__t
 
 Read `fit-rubric.md` once for the facts. The pitch is `candidate.pitch`, which you rephrase for each person and never paste as-is; `candidate.location_pitch` is the logistics line, and `candidate.stories` and `candidate.stack` are the proof points to pick from. **Never state pay, a pay range, or that pay is negotiable.** That belongs in the screening call.
 
+**Pitch for the roles that pay the target.** The recruiters who quoted the target pay described roles as ownership: "owns the AI system end to end", "founding", "applied research", "take over the founder's technical work". Lower-paid ones described staffing: "an AI Engineer for our US client", hourly contracts. So lead with an ownership proof point the resume supports (an agent or RAG system taken from prototype to production, a system owned end to end) rather than a list of tools, and keep contract terms out of the first line: contractor or EOR belongs in the logistics line of an InMail or message, never in the connection note's opening or close. Hourly contracting is what the low-paying vendors sell.
+
 ## Before the first send: who accepted
 
 When `accept_check` is not null, some earlier connection requests haven't been seen accepted yet. Before sending anything, open `https://www.linkedin.com/mynetwork/invite-connect/connections/` (sorted by "Recently added", the default) and collect every connection whose "Connected ..." date is on or after `accept_check.since`, scrolling until you pass that date. Put them in the result as `new_connections`, each `{"name", "profile_url"}`, and set `"connections_checked": true`. Only set it when you really reached `since`. This is read-only: don't message anyone from this page. It is how the user learns which searches find recruiters who accept.
@@ -41,7 +43,7 @@ The first message never asks for a call. A yes/no question like "Worth a call?" 
 The call comes after they answer, and linkedin-inbox handles that conversation.
 
 Each task carries a `cta`, the closing style for that lead. The styles are rotated across leads so `recruiters queries` can compare which one earns more replies. Use the one you are given, and record it as `cta` in the result.
-- **`open`**: availability, with no question. Name the kind of role so it isn't generic. "I'm open to new remote AI engineering roles, contract or EOR, and glad to be on your radar." In Portuguese: "Estou aberto a novas vagas remotas de AI Engineer e fico à disposição." In Spanish: "Estoy abierto a nuevas posiciones remotas de AI Engineer y quedo atento."
+- **`open`**: availability, with no question. Name the kind of role so it isn't generic. "I'm open to senior remote AI engineering roles where I'd own the system end to end, and glad to be on your radar." In Portuguese: "Estou aberto a novas vagas remotas de AI Engineer e fico à disposição." In Spanish: "Estoy abierto a nuevas posiciones remotas de AI Engineer y quedo atento."
 - **`cv`**: the cheapest possible yes, in text. "Happy to share my CV here if it's useful." / "Se fizer sentido, te envio meu CV por aqui." / "Si te sirve, te comparto mi CV por aquí."
 
 Neither style ends in a question that can be answered "no", and neither mentions a call, a chat or a meeting. If a lead has no `cta`, use `open`.

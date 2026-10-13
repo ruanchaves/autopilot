@@ -11,7 +11,11 @@ Separate from job-autopilot: nothing here depends on an application.
     recruiters.py record        --result FILE               # outreach result: contacts, counters, credits
     recruiters.py mark          --profile URL --status replied|skipped|contacted [--note TEXT]
     recruiters.py outcome       --profile URL | --name NAME --event accepted|replied|positive|call|declined [--note TEXT]
-    recruiters.py queries       [--top 25]                  # which searches found the recruiters who accept and reply
+    recruiters.py outcome       --profile URL | --name NAME --event quoted --usd N [--company C]   # a pay quote
+    recruiters.py queries       [--top 25]                  # which searches found recruiters quoting the target pay
+    recruiters.py ceilings      [--set COMPANY --usd N]     # highest pay each company ever quoted; under the floor = gated
+    recruiters.py import-quotes --file FILE                 # backfill pay quotes collected from the inbox
+    recruiters.py network-rank  [--file network_queue.json] # 1st-degree queue: funded-client recruiters first
     recruiters.py import-contacts --file FILE               # seed contacts from job-autopilot's contacts.json
 A run is done only when `status` says done: connection requests and InMails for the day are all used, and every
 contactable 1st-degree lead has had its plain message. Messages to 1st-degree connections never count toward the
@@ -25,6 +29,7 @@ Everything else lives in <home>/recruiters/:
     leads.json      every recruiter found: profile, signals, evidence, score, status, the search that found
                     them (source, sources) and what they did after contact (outcome)
     contacts.json   everyone ever contacted (seeded from autopilot), with the exact message sent
+    pay_ceilings.json  the highest monthly USD pay each company or agency ever quoted (the pay gate)
     pacing.json     today's counters, last-send times, InMail credits last seen, last acceptance check
     queries.json    the last `queries` report (also embedded in dashboard.json)
     work/<date>/    discovery and outreach result files
@@ -88,7 +93,7 @@ DEFAULT_SETTINGS = {
     "message_per_day": None,   # plain messages to 1st-degree connections: None = no daily cap, 0 = none at all;
                                # they never count toward connect_per_day
     "gap_seconds": {"connect": 90, "inmail": 120, "message": 60},
-    "min_score": 45,           # leads below this are not contacted
+    "min_score": 55,           # leads below this are not contacted
     "max_per_company": 3,      # people ever contacted at one company or agency (companies.json keeps the count)
     "stale_days": 60,          # a lead's signals are re-probed after this many days
     "people_queries": [],      # from config.yaml recruiter_outreach.people_queries
@@ -105,8 +110,9 @@ def settings(home: str) -> dict:
     cfg = userconfig.load()
     s = dict(DEFAULT_SETTINGS)
     s.update(cfg.get("recruiter_outreach") or {})
-    s.update(target_role=(cfg.get("role") or {}).get("title", ""), pay_target_usd_month=userconfig.pay().get("target_usd_month", 0),
-             banned_companies=userconfig.banned_companies())
+    pay = userconfig.pay()
+    s.update(target_role=(cfg.get("role") or {}).get("title", ""), pay_target_usd_month=pay.get("target_usd_month", 0),
+             pay_floor_usd_month=pay.get("skip_below_usd_month", 0), banned_companies=userconfig.banned_companies())
     return s
 
 
@@ -240,17 +246,22 @@ def cta_for(key: str, styles: list) -> str:
 
 
 STAGES = ("accepted", "replied", "positive", "call")  # each stage implies the ones before it
-EVENTS = STAGES + ("declined",)
+# `quoted`: the recruiter stated the pay of a role (monthly USD in `quoted_usd_month`, the highest quote kept).
+# It is the outcome this skill optimises for: recruiters quoting the target or more, not recruiters who reply.
+EVENTS = STAGES + ("declined", "quoted")
 
 
-def add_event(lead: dict, event: str, at: str, note: str = "") -> bool:
+def add_event(lead: dict, event: str, at: str, note: str = "", usd: int = 0) -> bool:
     """Record an outcome event on a lead; the earliest time wins. A later stage implies the earlier ones (a reply
     means the request was accepted), except that InMails and messages to 1st-degree leads have no request to accept.
     Returns True when anything changed."""
     out = lead.setdefault("outcome", {})
-    implied = list(STAGES[:STAGES.index(event) + 1]) if event in STAGES else ["accepted", "replied", "declined"]
-    is_connect = (lead.get("contact") or {}).get("channel") == "connect"
+    implied = list(STAGES[:STAGES.index(event) + 1]) if event in STAGES else ["accepted", "replied", event]
     changed = False
+    if event == "quoted" and usd and usd > (out.get("quoted_usd_month") or 0):
+        out["quoted_usd_month"] = int(usd)
+        changed = True
+    is_connect = (lead.get("contact") or {}).get("channel") == "connect"
     for e in implied:
         if e == "accepted" and e != event and not is_connect:
             continue
@@ -287,34 +298,98 @@ def find_lead(leads: dict, profile: str = "", name: str = "") -> str:
 
 
 # ---------------------------------------------------------------- scoring
-# Four questions, in the user's words: is the recruiter explicitly hiring in LATAM and/or
-# worldwide? active on LinkedIn? posting roles aligned with the target role? posting roles
-# aligned with the target pay? A recruiter who answers yes to all four scores near 100.
+# Five questions: is the recruiter explicitly hiring in the candidate's region and/or worldwide? active on
+# LinkedIn? posting roles aligned with the target role? posting roles aligned with the target pay? recruiting for
+# clients that pay at that level (funded product companies, boutique search) rather than staff augmentation?
+# The fifth question, the pay-ceiling gate and the reweighting come from a study of 354 inbox threads in which
+# 120 recruiters quoted pay: region predicted nothing about pay, the client behind the recruiter did
+# (references/pay-tier-research.md).
 
-SCOPE = {"latam": 35, "worldwide": 35, "nearshore": 32, "remote_unclear": 15, "unknown": 5, "local_only": 0}
+SCOPE = {"latam": 30, "worldwide": 30, "nearshore": 15, "remote_unclear": 12, "unknown": 4, "local_only": 0}
 PAY = {"at_or_above": 20, "near": 8, "unknown": 5, "below": 0}
+TIER = {"funded_product": 20, "boutique_search": 20, "unclear": 8, "staff_aug": 0}
+PARTS_MAX = {"scope": 30, "active": 10, "role": 20, "pay": 20, "tier": 20}
+
+# Fallback for leads probed before client_tier and the vendor/platform flags existed: read the headline, company
+# and evidence. An explicit signal from discovery always wins over these patterns.
+_VENDOR = re.compile(r"\b(c2c|corp[- ]to[- ]corp|w2|bench\s*sale|us it (staffing|recruit)|it staffing|"
+                     r"staffing solutions|vendor management|h1b|implementation partner)\b", re.I)
+_PLATFORM = re.compile(r"\b(annotation|data labell?ing|rlhf|task creator|ai trainer|ai training|freelance tasks|"
+                       r"expert network|honorarium)\b", re.I)
+_STAFF_AUG = re.compile(r"\b(nearshore|near-shore|staff augmentation|staffing|outsourc\w*|offshore|software factory|"
+                        r"talent as a service|dedicated teams?|delivery manager|account manager)\b", re.I)
+_PREMIUM = re.compile(r"\b(y ?combinator|yc ?[ws]\d{2}|\byc\b|series [abc]\b|seed[- ]stage|founding (engineer|team|ai)|"
+                      r"vc[- ]backed|venture[- ]backed|venture capital|portfolio compan\w+|talent partner at [a-z ]*(ventures|capital|partners)|"
+                      r"executive search|ai talent search|startups?\b)", re.I)
 
 
-def score_parts(sig: dict) -> dict:
-    scope = SCOPE.get(sig.get("hiring_scope") or "unknown", 5)
+def lead_text(lead: dict) -> str:
+    return " ".join([lead.get("headline") or "", lead.get("company") or ""] + list(lead.get("evidence") or []))
+
+
+def infer_tier(lead: dict) -> str:
+    """client_tier from text, for leads the discovery subagent probed before the signal existed."""
+    t = lead_text(lead)
+    if _VENDOR.search(t) or _STAFF_AUG.search(t):
+        return "staff_aug"
+    return "boutique_search" if _PREMIUM.search(t) else "unclear"
+
+
+def score_parts(sig: dict, lead: dict | None = None) -> dict:
+    lead = lead or {}
+    scope = SCOPE.get(sig.get("hiring_scope") or "unknown", 4)
     days = sig.get("last_activity_days")
-    active = 3 if days is None else 20 if days <= 7 else 14 if days <= 30 else 7 if days <= 90 else 0
+    active = 2 if days is None else 10 if days <= 7 else 7 if days <= 30 else 4 if days <= 90 else 0
     role_n = int(sig.get("role_posts_90d") or 0)
     adj_n = int(sig.get("adjacent_posts_90d") or 0)
-    role = 25 if role_n >= 2 else 16 if role_n == 1 else 6 if adj_n else 0
-    pay = PAY.get(sig.get("pay_signal") or "unknown", 5)
-    penalty = -15 if sig.get("local_rate_shop") else 0
-    return {"scope": scope, "active": active, "role": role, "pay": pay, "penalty": penalty}
+    role = 20 if role_n >= 2 else 13 if role_n == 1 else 5 if adj_n else 0
+    pay_sig = sig.get("pay_signal") or "unknown"
+    if pay_sig == "near" and sig.get("pay_basis") == "hourly":
+        pay_sig = "below"  # every hourly quote seen sat at or under the 8k band; an hourly 'near' is not near
+    pay = PAY.get(pay_sig, 5)
+    tier = TIER.get(sig.get("client_tier") or infer_tier(lead), 8)
+    text = lead_text(lead)
+    vendor = sig["volume_vendor"] if "volume_vendor" in sig else bool(_VENDOR.search(text))
+    platform = sig["task_platform"] if "task_platform" in sig else bool(_PLATFORM.search(text))
+    penalty = (-15 if sig.get("local_rate_shop") else 0) + (-20 if vendor else 0) + (-20 if platform else 0)
+    return {"scope": scope, "active": active, "role": role, "pay": pay, "tier": tier, "penalty": penalty}
 
 
 def total(parts: dict) -> int:
     return max(0, min(100, sum(parts.values())))
 
 
-def rescore(lead: dict) -> dict:
-    parts = score_parts(lead.get("signals") or {})
+def ceilings(home: str) -> dict:
+    """pay_ceilings.json: the highest monthly USD pay each company or agency has ever quoted the candidate."""
+    return load(home, "pay_ceilings.json", {})
+
+
+def score_ctx(home: str, st: dict | None = None) -> dict:
+    st = st or settings(home)
+    return {"ceilings": ceilings(home), "min_score": st["min_score"], "floor": st["pay_floor_usd_month"],
+            "target": st["pay_target_usd_month"]}
+
+
+def rescore(lead: dict, ctx: dict | None = None) -> dict:
+    """Score a lead. With `ctx` (score_ctx), a company whose known pay ceiling is under the pay floor caps the lead
+    just below min_score, and one whose ceiling reaches the target counts as posting target pay."""
+    ctx = ctx or {}
+    sig = dict(lead.get("signals") or {})
+    ceil = (ctx.get("ceilings") or {}).get(company_key(lead.get("company", "")))
+    best = (lead.get("outcome") or {}).get("quoted_usd_month") or 0
+    known = max(best, (ceil or {}).get("max_usd_month") or 0) if (ceil or best) else None
+    lead.pop("gate", None)
+    if known is not None and ctx.get("target") and known >= ctx["target"]:
+        sig["pay_signal"] = "at_or_above"
+    elif known is not None and ctx.get("floor") and known < ctx["floor"]:
+        sig["pay_signal"] = "below"
+    parts = score_parts(sig, lead)
     lead["parts"] = parts
-    lead["score"] = 0 if lead.get("irrelevant") else total(parts)
+    score = 0 if lead.get("irrelevant") else total(parts)
+    if known is not None and ctx.get("floor") and known < ctx["floor"] and score >= ctx.get("min_score", 0):
+        score = max(0, ctx["min_score"] - 1)
+        lead["gate"] = f"pay ceiling ${known:,}/month < floor ${ctx['floor']:,}"
+    lead["score"] = score
     return lead
 
 
@@ -347,6 +422,19 @@ def first_degree(v: dict) -> bool:
     return str(v.get("degree") or "").strip().lower().startswith("1")
 
 
+def vc_funds() -> list:
+    """The VC and accelerator portfolios job-source-sweep already reads (Getro, Consider, YC). Their talent partners
+    recruit only for funded portfolio companies."""
+    cat = enrich.read_json(SWEEP.parent / "sources.json", {})
+    out = []
+    for s in cat.get("http") or []:
+        if str(s.get("id", "")).startswith(("getro_", "consider_", "yc")):
+            name = re.sub(r"\s+portfolio$", "", s.get("label", ""), flags=re.I).replace("YC Work at a Startup", "Y Combinator")
+            if name and name not in out:
+                out.append(name)
+    return out
+
+
 def cmd_discover_plan(args) -> int:
     st = settings(args.home)
     leads = load(args.home, "leads.json", {})
@@ -363,21 +451,47 @@ def cmd_discover_plan(args) -> int:
     # phrasings already run this week whose deeper result pages haven't been read yet
     deeper = [{"kind": k.split(":", 1)[0], "query": k.split(":", 1)[1], "start_page": depth.get(k, 2) + 1}
               for k, at in runs.items() if at >= cutoff and depth.get(k, 2) < MAX_PAGES]
-    # employers and agencies of good leads: their colleagues recruit for the same roles
+    # employers and agencies of leads proven to place at the target pay (a quote, a ceiling, or posted pay at or above
+    # it): their colleagues recruit for the same clients. Snowballing from any high scorer used to pull in whole
+    # staff-augmentation agencies whose ceiling sits under the floor.
+    ceil = ceilings(args.home)
+    target = st["pay_target_usd_month"]
+
+    def proven(v: dict) -> bool:
+        c = ceil.get(company_key(v.get("company", ""))) or {}
+        return ((v.get("outcome") or {}).get("quoted_usd_month") or 0) >= target or c.get("max_usd_month", 0) >= target \
+            or (v.get("signals") or {}).get("pay_signal") == "at_or_above"
+
     snowball = []
     for v in sorted(leads.values(), key=lambda v: -v["score"]):
         c = (v.get("company") or "").strip()
-        if v["score"] >= st["min_score"] and c and c.lower() != "unknown" and not is_banned(c, st) and c not in snowball:
+        if c and c.lower() != "unknown" and not is_banned(c, st) and c not in snowball and not v.get("gate") \
+                and not v.get("irrelevant") and (v.get("parts") or {}).get("tier", 8) > 0 and proven(v):
             snowball.append(c)
+    # agencies that quoted the target pay to the candidate directly (inbound recruiters are often not leads at all)
+    for e in sorted(ceil.values(), key=lambda e: -e["max_usd_month"]):
+        if e["max_usd_month"] >= target and not is_banned(e["name"], st) \
+                and company_key(e["name"]) not in {company_key(c) for c in snowball}:
+            snowball.insert(0, e["name"])
     cand = userconfig.snapshot()
+    year = target * 12
     seeds = {"role_terms": [st["target_role"]] + list(cand.get("core_areas") or []),
              "region_terms": [cand.get("country"), cand.get("region")] + list(cand.get("region_aliases") or [])
                              + [t for t in st["required_terms"] if t not in (cand.get("region_aliases") or [])],
              "recruiter_nouns": ["recruiter", "technical recruiter", "talent partner", "talent acquisition",
-                                 "sourcer", "headhunter", "hiring", "we're hiring"],
+                                 "sourcer", "headhunter", "hiring", "we're hiring", "executive search", "AI talent search",
+                                 "talent partner (VC fund)", "founding engineer recruiter"],
+             # who the role is for: recruiters naming funded product companies quoted the target pay; the ones naming
+             # "a US client" or a consultancy did not (references/pay-tier-research.md)
+             "client_terms": ["YC", "Y Combinator", "Series A", "Series B", "seed", "VC-backed", "founding", "startup",
+                              "AI-native", "applied research"],
              "languages": [x for x in ["English", cand.get("native_language")] if x],
-             "pay_terms": ["USD", "contractor", "B2B", f"${st['pay_target_usd_month'] // 1000}k"],
-             "hashtags": ["#hiring", f"#{(cand.get('region') or '').lower()}", "#remotework", "#" + squash(st["target_role"])]}
+             "language_rule": "English first; at most one native-language phrasing per pass (native-language recruiters "
+                              "quoted local-currency pay well under the floor)",
+             "pay_terms": ["USD", f"${year // 1000}k", f"${round(year * 1.25 / 1000)}k", f"${year // 1000}k-${round(year * 1.5 / 1000)}k",
+                           f"${target // 1000}k/month", "equity", "full-time"],
+             "hashtags": ["#hiring", f"#{(cand.get('region') or '').lower()}", "#remotework", "#" + squash(st["target_role"]),
+                          "#foundingengineer", "#startupjobs"]}
     max_leads = args.max_leads or max(30, needed * 2)
     week = [k for k, at in runs.items() if at >= cutoff]
     required = [{"term": t, "run_this_week": sum(t.lower() in k.lower() for k in week),
@@ -388,6 +502,8 @@ def cmd_discover_plan(args) -> int:
                  "required_terms": required,
                  "needed": needed, "contactable_now": have, "quotas": q, "max_leads": max_leads,
                  "queries_tried": sorted(runs), "deeper": deeper[:12], "snowball_companies": snowball[:15],
+                 "vc_funds": vc_funds(), "pay_floor_usd_month": st["pay_floor_usd_month"],
+                 "known_low_ceiling": sorted(e["name"] for e in ceil.values() if e["max_usd_month"] < st["pay_floor_usd_month"]),
                  "seeds": seeds, "known_profiles": sorted(leads), "reprobe": reprobe,
                  "target_role": st["target_role"], "pay_target_usd_month": st["pay_target_usd_month"],
                  "banned_companies": st["banned_companies"], "candidate": cand,
@@ -409,6 +525,7 @@ def cmd_ingest(args) -> int:
         if (pages.get(k) or 0) > depth.get(k, 0):
             depth[k] = int(pages[k])
     added = updated = banned = 0
+    ctx = score_ctx(args.home, st)
     for L in res.get("leads") or []:
         key = norm_profile(L.get("profile_url", ""))
         if not key.startswith("linkedin.com/in/"):
@@ -435,7 +552,7 @@ def cmd_ingest(args) -> int:
         if entry["irrelevant"] and entry["status"] == "new":
             entry["status"] = "skipped"
             entry["skip_reason"] = L.get("irrelevant_reason", "not a relevant recruiter")
-        rescore(entry)
+        rescore(entry, ctx)
         leads[key] = entry
         added += cur is None
         updated += cur is not None
@@ -458,14 +575,22 @@ def cmd_ingest(args) -> int:
 
 
 def cmd_score(args) -> int:
+    st = settings(args.home)
     leads = load(args.home, "leads.json", {})
+    ctx = score_ctx(args.home, st)
+    before = {k: (v.get("score") or 0) >= st["min_score"] for k, v in leads.items() if v.get("status") == "new"}
     for v in leads.values():
-        rescore(v)
+        rescore(v, ctx)
         if not v.get("source") and lead_source(v):
             v["source"] = lead_source(v)
             v.setdefault("sources", [v["source"]])
     save(args.home, "leads.json", leads)
-    return emit({"rescored": len(leads), "by_status": dict(Counter(v["status"] for v in leads.values()))})
+    after = {k: leads[k]["score"] >= st["min_score"] for k in before}
+    return emit({"rescored": len(leads), "by_status": dict(Counter(v["status"] for v in leads.values())),
+                 "pile_before": sum(before.values()), "pile_after": sum(after.values()),
+                 "dropped_from_pile": sorted(leads[k]["name"] for k in before if before[k] and not after[k])[:40],
+                 "joined_pile": sorted(leads[k]["name"] for k in before if after[k] and not before[k])[:40],
+                 "gated": sum(1 for v in leads.values() if v.get("gate"))})
 
 
 # ---------------------------------------------------------------- outreach
@@ -684,17 +809,131 @@ def cmd_mark(args) -> int:
     return emit({"marked": who, "status": args.status})
 
 
+def raise_ceiling(home: str, company: str, usd: int, at: str = "", note: str = "") -> dict | None:
+    """Add a pay quote to pay_ceilings.json. A company's ceiling is the highest monthly USD it ever quoted, so one
+    $12k role lifts an agency out of the gate however many $5k roles it also offered."""
+    k = company_key(company)
+    if not k or not usd:
+        return None
+    data = ceilings(home)
+    e = data.setdefault(k, {"name": company.strip(), "max_usd_month": 0, "quotes": []})
+    q = {"usd_month": int(usd), "at": (at or NOW.isoformat())[:10], "note": note}
+    if q not in e["quotes"]:
+        e["quotes"].append(q)
+    e["max_usd_month"] = max(x["usd_month"] for x in e["quotes"])
+    save(home, "pay_ceilings.json", data)
+    return {"company": e["name"], "key": k, "max_usd_month": e["max_usd_month"], "quotes": len(e["quotes"])}
+
+
+def any_lead(leads: dict, profile: str = "", name: str = "") -> str:
+    """find_lead, widened to uncontacted leads (an inbound recruiter may already be in the pile)."""
+    key = find_lead(leads, profile, name)
+    if key:
+        return key
+    n = _plain(name)
+    hits = [k for k, v in leads.items() if n and _plain(v.get("name", "")) == n]
+    return hits[0] if len(hits) == 1 else ""
+
+
 def cmd_outcome(args) -> int:
-    """What a contacted recruiter did next, from the sender's acceptance check, linkedin-inbox, or the user."""
+    """What a contacted recruiter did next, from the sender's acceptance check, linkedin-inbox, or the user.
+    `--event quoted --usd N [--company C]` also raises C's pay ceiling, even for a recruiter this skill never
+    contacted, so inbound quotes teach the gate too."""
+    if args.event == "quoted" and not args.usd:
+        return emit({"error": "--event quoted needs --usd <monthly USD>"})
     leads = load(args.home, "leads.json", {})
-    key = find_lead(leads, args.profile or "", args.name or "")
-    if not key:
-        return emit({"lead": False, "reason": "not a recruiter-outreach lead; nothing recorded"})
-    lead = leads[key]
-    changed = add_event(lead, args.event, args.at or NOW.isoformat(), args.note or "")
+    at = args.at or NOW.isoformat()
+    key = (any_lead if args.event == "quoted" else find_lead)(leads, args.profile or "", args.name or "")
+    lead = leads.get(key)
+    company = args.company or (lead or {}).get("company", "")
+    ceiling = raise_ceiling(args.home, company, args.usd, at, f'{args.name or key}: {args.note or ""}'.strip(": ")) \
+        if args.event == "quoted" else None
+    if not lead:
+        return emit({"lead": False, "reason": "not a recruiter-outreach lead; no lead outcome recorded",
+                     **({"ceiling": ceiling} if ceiling else {})})
+    changed = add_event(lead, args.event, at, args.note or "", args.usd or 0)
+    if args.event == "quoted":
+        rescore(lead, score_ctx(args.home))
     save(args.home, "leads.json", leads)
     return emit({"lead": True, "who": key, "name": lead.get("name", ""), "source": lead_source(lead),
-                 "event": args.event, "changed": changed, "outcome": lead.get("outcome")})
+                 "event": args.event, "changed": changed, "outcome": lead.get("outcome"),
+                 **({"ceiling": ceiling} if ceiling else {})})
+
+
+TIER_ORDER = {"funded_product": 0, "boutique_search": 0, "unclear": 1, "staff_aug": 2}
+
+
+def cmd_network_rank(args) -> int:
+    """Reorder the pending part of a 1st-degree messaging queue (<home>/recruiters/<file>, {"queue": [...],
+    "done": [...]}) so recruiters for funded product companies and boutique search firms go first, unclear ones
+    next, and staff augmentation, US-IT vendors, task platforms and companies with a known pay ceiling under the
+    floor last. LinkedIn rate-limits messaging per account, so the order decides who is reached at all."""
+    st = settings(args.home)
+    path = rc_dir(args.home) / args.file
+    data = enrich.read_json(path, None)
+    if not data or "queue" not in data:
+        return emit({"error": f"no queue in {path}"})
+    leads = load(args.home, "leads.json", {})
+    ceil = ceilings(args.home)
+    done = set(data.get("done") or [])
+    pending = [e for e in data["queue"] if e.get("key") not in done]
+    for e in pending:
+        lead = leads.get(e.get("key"), {})
+        probe = {"headline": e.get("headline", ""), "company": lead.get("company", ""), "evidence": lead.get("evidence") or []}
+        sig = lead.get("signals") or {}
+        tier = sig.get("client_tier") or infer_tier(probe)
+        known = (ceil.get(company_key(lead.get("company", ""))) or {}).get("max_usd_month")
+        quoted = (lead.get("outcome") or {}).get("quoted_usd_month")
+        low = any(x is not None and x < st["pay_floor_usd_month"] for x in (known, quoted)) \
+            or bool(_VENDOR.search(lead_text(probe)) or _PLATFORM.search(lead_text(probe)))
+        e["tier"] = "low_ceiling" if low else tier
+        e["tier_rank"] = 3 if low else TIER_ORDER.get(tier, 1)
+    pending.sort(key=lambda e: (e["tier_rank"], -(e.get("prio") or 0)))
+    data["queue"] = [e for e in data["queue"] if e.get("key") in done] + pending
+    data["ranked_by"] = f"client tier, then prio ({TODAY}; recruiters network-rank)"
+    enrich.write_json(path, data, indent=1)
+    return emit({"pending": len(pending), "done": len(done), "by_tier": dict(Counter(e["tier"] for e in pending)),
+                 "next": [f'{e["tier"]} {e["name"]} - {e.get("headline", "")[:60]}' for e in pending[:10]]})
+
+
+def cmd_ceilings(args) -> int:
+    """List pay ceilings, or add one quote by hand (`--set COMPANY --usd N`)."""
+    st = settings(args.home)
+    if args.set:
+        res = raise_ceiling(args.home, args.set, args.usd, args.at or "", args.note or "")
+        if res is None:
+            return emit({"error": "need a known company name and --usd"})
+    data = ceilings(args.home)
+    rows = sorted(data.values(), key=lambda e: -e["max_usd_month"])
+    return emit({"floor": st["pay_floor_usd_month"], "target": st["pay_target_usd_month"], "companies": len(rows),
+                 "gated": [e["name"] for e in rows if e["max_usd_month"] < st["pay_floor_usd_month"]],
+                 "at_target": [e["name"] for e in rows if e["max_usd_month"] >= st["pay_target_usd_month"]],
+                 "rows": [{"company": e["name"], "max_usd_month": e["max_usd_month"], "quotes": len(e["quotes"])} for e in rows]})
+
+
+def cmd_import_quotes(args) -> int:
+    """Backfill pay quotes collected from the inbox: a JSON list of {name, profile_url?, company?, usd_month, at?,
+    note?}. Raises company ceilings, records `quoted` on matching leads, then rescores every lead."""
+    rows = load_result(args.file)
+    rows = rows.get("quotes", []) if isinstance(rows, dict) else rows
+    leads = load(args.home, "leads.json", {})
+    n_ceil = n_lead = 0
+    for r in rows:
+        usd = int(r.get("usd_month") or 0)
+        if not usd:
+            continue
+        at = r.get("at") or NOW.isoformat()
+        key = any_lead(leads, r.get("profile_url", ""), r.get("name", ""))
+        company = r.get("company") or (leads.get(key) or {}).get("company", "")
+        n_ceil += bool(raise_ceiling(args.home, company, usd, at, f'{r.get("name", "")}: {r.get("note", "")}'.strip(": ")))
+        if key:
+            n_lead += add_event(leads[key], "quoted", at, r.get("note", ""), usd)
+    ctx = score_ctx(args.home)
+    for v in leads.values():
+        rescore(v, ctx)
+    save(args.home, "leads.json", leads)
+    return emit({"quotes": len(rows), "ceilings_updated": n_ceil, "leads_updated": n_lead,
+                 "companies_known": len(ctx["ceilings"]), "gated_leads": sum(1 for v in leads.values() if v.get("gate"))})
 
 
 # ----------------------------------------------------------------- learning
@@ -717,7 +956,9 @@ def query_report(home: str, st: dict, leads: dict, top: int = 25) -> dict:
         row = Counter(found=1, relevant=int(not v.get("irrelevant")), qualified=int((v.get("score") or 0) >= st["min_score"]),
                       score=v.get("score") or 0, contacted=int(sent), connects=int(ct.get("channel") == "connect"),
                       accepted=int(bool(o.get("accepted_at"))), replied=int(bool(o.get("replied_at") or v.get("replied_at"))),
-                      positive=int(bool(o.get("positive_at") or o.get("call_at"))), declined=int(bool(o.get("declined_at"))))
+                      positive=int(bool(o.get("positive_at") or o.get("call_at"))), declined=int(bool(o.get("declined_at"))),
+                      quoted=int(bool(o.get("quoted_at"))),
+                      quoted_target=int((o.get("quoted_usd_month") or 0) >= (st["pay_target_usd_month"] or 1)))
         by_src.setdefault(src, Counter()).update(row)
         by_av.setdefault(avenue(src), Counter()).update(row)
         if sent:
@@ -732,17 +973,23 @@ def query_report(home: str, st: dict, leads: dict, top: int = 25) -> dict:
             out.append({"key": k, "avenue": avenue(k), "found": c["found"], "qualified": c["qualified"],
                         "avg_score": round(c["score"] / c["found"]) if c["found"] else 0, "contacted": c["contacted"],
                         "accepted": c["accepted"], "replied": c["replied"], "positive": c["positive"], "declined": c["declined"],
+                        "quoted": c["quoted"], "quoted_target": c["quoted_target"],
                         "qualified_pct": pct(c["qualified"], c["found"]), "accept_pct": pct(c["accepted"], c["connects"]),
-                        "reply_pct": pct(c["replied"], c["contacted"]), "small_sample": c["contacted"] < MIN_SAMPLE,
+                        "reply_pct": pct(c["replied"], c["contacted"]),
+                        "quoted_target_pct": pct(c["quoted_target"], c["quoted"]), "small_sample": c["contacted"] < MIN_SAMPLE,
                         **({"last_run": runs[k][:10]} if k in runs else {})})
-        return sorted(out, key=lambda r: (-r["positive"], -r["replied"], -r["accepted"], -r["qualified"], -r["found"], r["key"]))
+        # the goal is recruiters with roles at the target pay, so a search that found one outranks any reply count
+        return sorted(out, key=lambda r: (-r["quoted_target"], -r["positive"], -r["replied"], -r["accepted"], -r["qualified"],
+                                          -r["found"], r["key"]))
 
     # a snowball search runs as 'people:<company> recruiter' but its leads are filed under 'snowball:<company>'
     dead = sorted(k for k in runs if k not in by_src
                   and not (k.startswith("people:") and source_key("snowball:" + k[7:]) in by_src))
     return {"built": NOW.strftime("%Y-%m-%d %H:%M UTC"), "min_score": st["min_score"],
-            "note": f"Each lead counts once, under the search that first found it. accept_pct is over connection requests, "
-                    f"reply_pct over everyone contacted; rows with fewer than {MIN_SAMPLE} contacted are small samples.",
+            "note": f"Each lead counts once, under the search that first found it. Rows are ranked by quoted_target, the "
+                    f"recruiters who quoted ${st['pay_target_usd_month']:,}/month or more (quoted_target_pct is over everyone "
+                    f"who quoted any pay). accept_pct is over connection requests, reply_pct over everyone contacted; rows "
+                    f"with fewer than {MIN_SAMPLE} contacted are small samples.",
             "by_avenue": rows(by_av), "by_cta": rows(by_cta), "queries": rows(by_src)[:top],
             "searches_total": len(by_src), "ran_without_leads": len(dead), "ran_without_leads_sample": dead[:40]}
 
@@ -776,9 +1023,11 @@ def cmd_dashboard(args) -> int:
     p = pacing(args.home)
     rows = sorted(leads.values(), key=lambda v: (-(v.get("score") or 0), v.get("found_at", "")))
     data = {"built": NOW.strftime("%Y-%m-%d %H:%M UTC"), "quotas": quotas(p, st), "min_score": st["min_score"],
+            "parts_max": PARTS_MAX,
             "leads": [{"name": v.get("name", ""), "headline": v.get("headline", ""), "company": v.get("company", ""),
                        "location": v.get("location", ""), "profile_url": v.get("profile_url", ""), "degree": v.get("degree", ""),
                        "score": v.get("score", 0), "parts": v.get("parts") or {}, "signals": v.get("signals") or {},
+                       "gate": v.get("gate", ""),
                        "evidence": (v.get("evidence") or [])[:4], "recent_roles": (v.get("recent_roles") or [])[:3],
                        "status": v.get("status", "new"), "skipReason": v.get("skip_reason", ""),
                        "contact": v.get("contact"), "foundAt": (v.get("found_at") or "")[:10],
@@ -837,7 +1086,13 @@ def main() -> int:
     p.set_defaults(fn=cmd_mark)
     p = sub.add_parser("outcome"); p.add_argument("--profile", default=""); p.add_argument("--name", default="")
     p.add_argument("--event", required=True, choices=list(EVENTS)); p.add_argument("--note"); p.add_argument("--at", default="")
+    p.add_argument("--usd", type=int, default=0, help="with --event quoted: the quoted pay in USD per month")
+    p.add_argument("--company", default="", help="with --event quoted: the agency or employer the quote belongs to")
     p.set_defaults(fn=cmd_outcome)
+    p = sub.add_parser("ceilings"); p.add_argument("--set", default="", metavar="COMPANY"); p.add_argument("--usd", type=int, default=0)
+    p.add_argument("--note", default=""); p.add_argument("--at", default=""); p.set_defaults(fn=cmd_ceilings)
+    p = sub.add_parser("import-quotes"); p.add_argument("--file", required=True); p.set_defaults(fn=cmd_import_quotes)
+    p = sub.add_parser("network-rank"); p.add_argument("--file", default="network_queue.json"); p.set_defaults(fn=cmd_network_rank)
     p = sub.add_parser("queries"); p.add_argument("--top", type=int, default=25); p.set_defaults(fn=cmd_queries)
     p = sub.add_parser("import-contacts"); p.add_argument("--file", required=True); p.set_defaults(fn=cmd_import_contacts)
     sub.add_parser("dashboard").set_defaults(fn=cmd_dashboard)

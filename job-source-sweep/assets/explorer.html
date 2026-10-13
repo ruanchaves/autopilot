@@ -1044,19 +1044,23 @@ const LEAD_ST = { new: ["To contact", "weak"], contacted: ["Contacted", "good"],
 const SCOPE = { latam: `Hires in ${REGION}`, worldwide: "Hires worldwide", nearshore: "Nearshore agency", remote_unclear: "Remote, region unstated",
                 local_only: "Local only", unknown: "Scope unknown" };
 const PAYSIG = { at_or_above: "pay ≥ target", near: "pay near target", below: "pay below target", unknown: "no pay posted" };
-const LEAD_PARTS = [["scope", `${REGION} / worldwide`, 35], ["active", "Active", 20], ["role", "Role posts", 25], ["pay", "Pay posts", 20]];
+const LEAD_PARTS = [["scope", `${REGION} / worldwide`], ["active", "Active"], ["role", "Role posts"], ["pay", "Pay posts"], ["tier", "Client tier"]];
+const PARTS_MAX = { scope: 30, active: 10, role: 20, pay: 20, tier: 20 };  // overridden by dashboard.json parts_max
+const TIERSIG = { funded_product: "recruits for funded product companies", boutique_search: "boutique search firm",
+                  staff_aug: "staff augmentation / vendor", unclear: "" };
 const OUTCOME = [["accepted_at", "Accepted", "good"], ["replied_at", "Replied", "good"], ["positive_at", "Interested", "good"],
-                 ["call_at", "Call booked", "good"], ["declined_at", "Declined", "bad"]];
+                 ["call_at", "Call booked", "good"], ["quoted_at", "Quoted pay", "good"], ["declined_at", "Declined", "bad"]];
 const CTA = { open: "Close: open to new roles", cv: "Close: offers the CV" };
 // Funnel per search, avenue and closing style, from `recruiters queries` (each lead counts under the search that found it first)
 function searchReport() {
   const Q = RC && RC.queries;
   if (!Q) return "";
   const pc = v => v == null ? "" : ` (${v}%)`;
-  const tbl = (rows, head) => `<table><thead><tr><th>${head}</th><th>Found</th><th>Qualified</th><th>Contacted</th><th>Accepted</th><th>Replied</th><th>Interested</th></tr></thead><tbody>${
+  const tbl = (rows, head) => `<table><thead><tr><th>${head}</th><th>Found</th><th>Qualified</th><th>Contacted</th><th>Accepted</th><th>Replied</th><th>Interested</th><th>Quoted pay</th><th>Quoted ≥ target</th></tr></thead><tbody>${
     rows.map(r => `<tr><td>${esc(r.key)}${r.small_sample && r.contacted ? ' <span class="tag">small sample</span>' : ""}</td><td>${r.found}</td>` +
       `<td>${r.qualified}${pc(r.qualified_pct)}</td><td>${r.contacted}</td><td>${r.accepted}${pc(r.accept_pct)}</td>` +
-      `<td>${r.replied}${pc(r.reply_pct)}</td><td>${r.positive}</td></tr>`).join("") || '<tr><td colspan="7" class="empty">Nothing yet.</td></tr>'}</tbody></table>`;
+      `<td>${r.replied}${pc(r.reply_pct)}</td><td>${r.positive}</td><td>${r.quoted ?? 0}</td><td>${r.quoted_target ?? 0}${pc(r.quoted_target_pct)}</td></tr>`).join("") ||
+      '<tr><td colspan="9" class="empty">Nothing yet.</td></tr>'}</tbody></table>`;
   return `<details class="review" style="padding:12px 14px"><summary>Which searches work (as of ${esc(Q.built)})</summary>
     <p class="note">${esc(Q.note)} ${Q.ran_without_leads} phrasings ran without producing a lead.</p>
     <p class="q">By avenue</p>${tbl(Q.by_avenue || [], "Avenue")}<p class="q">By closing style</p>${tbl(Q.by_cta || [], "Close")}
@@ -1077,16 +1081,20 @@ function renderOutreach() {
   const q = (RC && RC.quotas) || {}, f = k => q[k] ? `${q[k].used}/${q[k].cap}` : "–";
   document.getElementById("auto-count").innerHTML = `<b>${rows.length}</b> recruiter leads`;
   document.getElementById("auto-note").textContent = RC
-    ? `Recruiter outreach, a pipeline of its own (as of ${RC.built}). Each lead is scored on four questions: explicitly hiring in ${REGION} or worldwide, active on LinkedIn, posting roles like yours, posting pay like your target. ` +
+    ? `Recruiter outreach, a pipeline of its own (as of ${RC.built}). Each lead is scored on five questions: explicitly hiring in ${REGION} or worldwide, active on LinkedIn, posting roles like yours, posting pay like your target, and recruiting for clients that pay it (funded product companies and boutique search, not staff augmentation). A company whose highest quoted pay is under your floor is held below the contact line. ` +
       `Today (UTC): connection requests ${f("connect")}, InMails ${f("inmail")}, messages ${f("message")}` +
       (q.inmail_credits_hint != null ? `; InMail credits last seen: ${q.inmail_credits_hint}` : "") +
       ". Every message below is the exact text sent. Current employers are never contacted, and nobody is contacted twice."
     : "No recruiter outreach yet. Run the recruiter-outreach skill to discover and rank recruiters.";
   const body = rows.map(c => {
     const [label, cls] = LEAD_ST[c.status] || [c.status, "none"], p = c.parts || {}, s = c.signals || {};
-    const parts = LEAD_PARTS.map(([k, l, m]) => `<span>${l} <b>${Math.round(p[k] ?? 0)}</b>/${m}</span>`).join("") + (p.penalty ? `<span>Local-rate shop <b>${p.penalty}</b></span>` : "");
+    const mx = (RC && RC.parts_max) || PARTS_MAX;
+    const parts = LEAD_PARTS.filter(([k]) => k in p).map(([k, l]) => `<span>${l} <b>${Math.round(p[k] ?? 0)}</b>/${mx[k] ?? ""}</span>`).join("") +
+      (p.penalty ? `<span>Penalties <b>${p.penalty}</b></span>` : "");
     const facts = [SCOPE[s.hiring_scope] || "", s.last_activity_days != null ? `active ${s.last_activity_days}d ago` : "no recent activity",
-                   `${s.role_posts_90d || 0} matching role post${s.role_posts_90d === 1 ? "" : "s"} / 90d`, PAYSIG[s.pay_signal] || ""].filter(Boolean);
+                   `${s.role_posts_90d || 0} matching role post${s.role_posts_90d === 1 ? "" : "s"} / 90d`, PAYSIG[s.pay_signal] || "",
+                   TIERSIG[s.client_tier] || "", s.volume_vendor ? "US-IT vendor" : "", s.task_platform ? "task platform" : "",
+                   c.gate ? `held: ${c.gate}` : ""].filter(Boolean);
     const roles = (c.recent_roles || []).map(r => `<li>${r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.title)}</a>` : esc(r.title)}${[r.region, r.pay, r.posted].filter(Boolean).map(x => ` · ${esc(x)}`).join("")}</li>`).join("");
     const ct = c.contact;
     return `<tr>

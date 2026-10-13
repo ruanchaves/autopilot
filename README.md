@@ -220,9 +220,9 @@ A pipeline of its own, not tied to applications. It builds a database of recruit
 ```mermaid
 flowchart TD
     status["recruiters status<br/>needed = connects left + InMail credits left<br/>contactable_now = uncontacted leads ≥ min_score<br/>at companies under max_per_company"] --> enough{"contactable_now<br/>≥ needed?"}
-    enough -- no --> dplan["discover-plan<br/>configured phrasings not run this week,<br/>exhausted?, queries_tried, deeper pages,<br/>snowball_companies, seeds"]
+    enough -- no --> dplan["discover-plan<br/>configured phrasings not run this week,<br/>exhausted?, queries_tried, deeper pages,<br/>snowball_companies (proven target pay), vc_funds,<br/>known_low_ceiling, seeds"]
     dplan --> invent["Invent the round's queries<br/>new phrasings (role × region × recruiter noun × pay × language),<br/>deeper result pages, '&lt;agency&gt; recruiter', hashtags,<br/>job-post authors, reposters and commenters"]
-    invent --> disc["parallel Chrome subagents · references/discover.md<br/>people search + post search → probe each profile and activity page<br/>→ hiring_scope, last_activity_days, role_posts_90d, pay_signal, vibe, evidence"]
+    invent --> disc["parallel Chrome subagents · references/discover.md<br/>people search + post search → probe each profile and activity page<br/>→ hiring_scope, last_activity_days, role_posts_90d, pay_signal, client_tier, vibe, evidence"]
     disc --> ingest["ingest --result<br/>score each lead, remember the search that found it,<br/>record phrasings and page depth, check required terms"]
     ingest --> status
     enough -- yes --> plan["plan<br/>ranked pile cut to today's budget,<br/>1st-degree first within a band,<br/>company cap applied"]
@@ -233,23 +233,26 @@ flowchart TD
     done -- yes --> report["queries → dashboard → explorer Outreach view → report"]
 ```
 
-**Scoring** answers four questions about each recruiter, from their profile and recent posts. Scores are computed on ingest and recomputed by `recruiters score` after a settings change.
+**Scoring** answers five questions about each recruiter, from their profile and recent posts. Scores are computed on ingest and recomputed by `recruiters score` after a settings or ceiling change. The weights were set from an inbox study in which 120 recruiters quoted pay: region predicted nothing about pay, but the client behind the recruiter predicted almost all of it ([recruiter-outreach/references/pay-tier-research.md](recruiter-outreach/references/pay-tier-research.md)).
 
 | Question | Signal | Points |
 |---|---|---|
-| Explicitly hiring in my region, or worldwide? | `hiring_scope`: region or worldwide 35, nearshore 32, remote with region unstated 15, unknown 5, local-only 0 | 35 |
-| Active on LinkedIn? | `last_activity_days`: ≤7 → 20, ≤30 → 14, ≤90 → 7, older 0 | 20 |
-| Posting roles like mine? | `role_posts_90d`: 2+ → 25, 1 → 16, adjacent only → 6 | 25 |
-| Posting pay like my target? | `pay_signal`: at or above 20, within 20% below 8, no pay posted 5, below 0 | 20 |
-| | `local_rate_shop` (regional staffing at local rates) | −15 |
+| Explicitly hiring in my region, or worldwide? | `hiring_scope`: region or worldwide 30, nearshore 15, remote with region unstated 12, unknown 4, local-only 0 | 30 |
+| Active on LinkedIn? | `last_activity_days`: ≤7 → 10, ≤30 → 7, ≤90 → 4, older 0 | 10 |
+| Posting roles like mine? | `role_posts_90d`: 2+ → 20, 1 → 13, adjacent only → 5 | 20 |
+| Posting pay like my target? | `pay_signal`: at or above 20, within 20% below 8 (hourly: below), no pay posted 5, below 0 | 20 |
+| Recruiting for clients that pay it? | `client_tier`: funded product company or boutique search 20, unclear 8, staff augmentation / outsourcing / talent platform 0 | 20 |
+| | `local_rate_shop` −15, `volume_vendor` (C2C/W2 US-IT vendors) −20, `task_platform` (annotation and AI-training gigs) −20 | |
+
+**The pay gate.** `pay_ceilings.json` keeps the highest monthly pay each company or agency ever quoted you. A lead at a company whose ceiling is under `pay.skip_below_usd_month` is held just below `min_score`, whatever else it scores. The linkedin-inbox skill records every pay quote it sees (`recruiters outcome --event quoted --usd N --company C`), so the gate learns from inbound recruiters too.
 
 **Channels and limits.** 1st-degree connections get a plain message (no quota). Otherwise a connection request with a note under 300 characters, until `connect_per_day` is used; then InMail while the compose window shows credits (Follow-only profiles get an InMail even earlier). `check` runs before every send and refuses anyone already contacted, anyone at a company that already has `max_per_company` people contacted, and anything over the day's cap or inside the minimum gap. Sending is deliberately single-threaded, because the counters are plain files and a sent message cannot be taken back.
 
 **Messages** are written per recruiter from their evidence, in their language and register: one clause on why them (their post, in their words), one line on the candidate (role, years, one proof point), and a close that leaves the door open. The first message never asks for a call. A yes/no call request asks a stranger for calendar time before they know there is a fit, so it is easy to ignore and gives recruiters who screen by text no way to answer. Instead each lead gets one of the `cta_styles`: `open` says the candidate is open to new roles of this kind, and `cv` offers to share the CV in the chat. Never pay, never "I came across your profile", never a second message to someone who has not replied. Replies are handled by a separate inbox skill.
 
-**Learning which searches work.** Every lead remembers the search that first found it (`source`) and every later one (`sources`). Outcomes come back from three places: the sender reads your recently added connections before each run (accepted requests), the linkedin-inbox skill runs `recruiters outcome` for each recruiter who writes back (replied, interested, call booked, declined), and you can run it yourself. `recruiters queries` joins them into a funnel per search, per avenue and per closing style: found, qualified, contacted, accepted, replied, interested. The run report recommends adding the searches that convert to `config.yaml` and retiring the ones that don't, and the explorer's Outreach view shows the same table. `required_terms` (for example `nearshore`) are words every discovery pass must search with, so a known-good angle is never dropped.
+**Learning which searches work.** Every lead remembers the search that first found it (`source`) and every later one (`sources`). Outcomes come back from three places: the sender reads your recently added connections before each run (accepted requests), the linkedin-inbox skill runs `recruiters outcome` for each recruiter who writes back (replied, interested, call booked, declined), and you can run it yourself. `recruiters queries` joins them into a funnel per search, per avenue and per closing style: found, qualified, contacted, accepted, replied, interested, quoted pay, quoted the target or more. Searches are ranked by the last of these, since the goal is recruiters with roles at your target pay, not replies. The run report recommends adding the searches that convert to `config.yaml` and retiring the ones that don't, and the explorer's Outreach view shows the same table. `required_terms` (for example `nearshore`) are words every discovery pass must search with, so a known-good angle is never dropped.
 
-**Memory.** `leads.json` (every recruiter, signals, evidence, score, status, the message sent, the searches that found them and what they did next), `queries.json` (the last search funnel report), `contacts.json` (everyone ever contacted, any channel), `companies.json` (people contacted per company or agency), `pacing.json` (today's counters and credits), `discovery-runs.json` and `discovery-depth.json` (which phrasings ran when, and how deep).
+**Memory.** `leads.json` (every recruiter, signals, evidence, score, status, the message sent, the searches that found them and what they did next), `queries.json` (the last search funnel report), `contacts.json` (everyone ever contacted, any channel), `companies.json` (people contacted per company or agency), `pay_ceilings.json` (the highest pay each company ever quoted you), `pacing.json` (today's counters and credits), `discovery-runs.json` and `discovery-depth.json` (which phrasings ran when, and how deep).
 
 ## The role explorer
 
