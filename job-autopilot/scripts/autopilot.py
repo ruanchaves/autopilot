@@ -107,7 +107,7 @@ DEFAULT_SETTINGS = {
     # filled in from config.yaml by settings(): banned_companies (current employers/clients, never
     # applied to), pay_target_usd_month / pay_skip_below_usd_month (pay section), and the tracker
     # section (applika_enabled, rejection_cooldown_days, rejection_neutral_feedback,
-    # rejection_ignore_companies)
+    # rejection_ignore_companies, company_cooldown_days)
 }
 
 
@@ -134,7 +134,8 @@ def settings(home: str) -> dict:
              pay_target_usd_month=p.get("target_usd_month", 10000), pay_skip_below_usd_month=p.get("skip_below_usd_month", 0),
              applika_enabled=t.get("enabled", True), rejection_cooldown_days=t.get("rejection_cooldown_days", 0),
              rejection_neutral_feedback=t.get("rejection_neutral_feedback") or [],
-             rejection_ignore_companies=t.get("rejection_ignore_companies") or [])
+             rejection_ignore_companies=t.get("rejection_ignore_companies") or [],
+             company_cooldown_days=t.get("company_cooldown_days", 0))
     return s
 
 
@@ -262,20 +263,35 @@ def cmd_score_queue(args) -> int:
     rejected = {k for k, v in load_decisions(args.decisions).items() if v == "rejected"}
     ledger = load(args.home, "ledger.json", {})
     st = settings(args.home)
-    existing, applika_err = applika_list(args.home)
+    # applika is checked before any role is considered: roles already in it, and companies applied
+    # to within company_cooldown_days or that rejected the user recently, are never scored
+    existing, applika_err = applika_list(args.home, refresh=True)
     rej = recent_rejections(existing, st)
-    rejected_company = 0
+    apps = recent_applications(existing, st)
+    rejected_company = applied_company = in_applika = 0
     entries = []
     for r in roles:
         e = ledger.get(r["id"], {})
         if r["id"] in rejected or e.get("status") in FINAL:
             continue
+        base = {**e, "id": r["id"], "key": r["key"], "title": r["title"], "company": r["company"],
+                "url": r["url"], "location": r["location"], "attempts": e.get("attempts", [])}
+        m = applika_exact(existing, {**r, **e})
+        if m:  # applied before, outside this skill
+            ledger[r["id"]] = {**base, "status": "applied", "applied_at": m.get("application_date"),
+                               "applika": {"id": m.get("id"), "note": "already in applika"},
+                               "detail": "Already in applika"}
+            in_applika += 1
+            continue
         rj = rejection_for(rej, r["company"])
         if rj and e.get("override") != "apply":
-            ledger[r["id"]] = {**e, "id": r["id"], "key": r["key"], "title": r["title"], "company": r["company"],
-                               "url": r["url"], "location": r["location"], "attempts": e.get("attempts", []),
-                               "status": "skipped", "detail": rejection_detail(rj)}
+            ledger[r["id"]] = {**base, "status": "skipped", "detail": rejection_detail(rj)}
             rejected_company += 1
+            continue
+        ap = rejection_for(apps, r["company"])
+        if ap and untouched(e) and e.get("override") != "apply":
+            ledger[r["id"]] = {**base, "status": "skipped", "detail": application_detail(ap)}
+            applied_company += 1
             continue
         if scores.get(r["key"], {}).get("rubric") == rubric:
             continue
@@ -295,10 +311,12 @@ def cmd_score_queue(args) -> int:
            "banned_companies": settings(args.home)["banned_companies"],
            "pay_target_usd_month": settings(args.home)["pay_target_usd_month"]}
     enrich.write_json(out / "score_context.json", ctx)
-    if rejected_company:
+    if rejected_company or applied_company or in_applika:
         save(args.home, "ledger.json", ledger)
     return emit({"pending": len(entries), "skipped_rejected_company": rejected_company,
-                 "rejection_cooldown_days": st["rejection_cooldown_days"], "applika_error": applika_err,
+                 "skipped_applied_company": applied_company, "skipped_in_applika": in_applika,
+                 "rejection_cooldown_days": st["rejection_cooldown_days"],
+                 "company_cooldown_days": st["company_cooldown_days"], "applika_error": applika_err,
                  "context": enrich.host_path(out / "score_context.json"),
                  "batches": enrich.write_batches(out, "score", entries, args.batch_size)})
 
@@ -405,20 +423,52 @@ def recent_rejections(existing: list | None, st: dict) -> dict[str, dict]:
             date = fb.get("date") or x.get("application_date") or ""
         if date < cutoff:
             continue
-        key = js.company_key(x.get("company_name", ""))
-        if not key or key in ignore:
-            continue
-        cur = out.get(key)
-        if not cur or date > cur["date"]:
-            rec = {"company": x.get("company_name"), "role": x.get("role"), "date": date,
-                   "feedback": fb_name, "applika_id": x.get("id")}
-            out[key] = rec
-            # "RYZ Labs" in applika vs "RyzLabs" on a board: company_key strips "Labs" from the
-            # first but not the second, so also index the squashed raw name and squashed key
-            for alt in (squash(x.get("company_name", "")), squash(key)):
-                if len(alt) >= 4:
-                    out["~" + alt] = rec
+        index_company(out, ignore, x, {"company": x.get("company_name"), "role": x.get("role"), "date": date,
+                                       "feedback": fb_name, "applika_id": x.get("id")})
     return out
+
+
+def index_company(out: dict[str, dict], ignore: set[str], x: dict, rec: dict) -> None:
+    """Keep the newest record per company key of an applika application x."""
+    key = js.company_key(x.get("company_name", ""))
+    if not key or key in ignore:
+        return
+    cur = out.get(key)
+    if not cur or rec["date"] > cur["date"]:
+        out[key] = rec
+        # "RYZ Labs" in applika vs "RyzLabs" on a board: company_key strips "Labs" from the
+        # first but not the second, so also index the squashed raw name and squashed key
+        for alt in (squash(x.get("company_name", "")), squash(key)):
+            if len(alt) >= 4:
+                out["~" + alt] = rec
+
+
+def recent_applications(existing: list | None, st: dict) -> dict[str, dict]:
+    """Companies with any applika application dated within company_cooldown_days, by company key,
+    whatever became of it (open, denied, offer). The user doesn't apply to a company twice in that
+    window, so every role there is skipped before it is scored."""
+    days = int(st.get("company_cooldown_days") or 0)
+    if days <= 0:
+        return {}
+    cutoff = (NOW - timedelta(days=days)).strftime("%Y-%m-%d")
+    ignore = {js.company_key(n) for n in st.get("rejection_ignore_companies") or []}
+    out: dict[str, dict] = {}
+    for x in existing or []:
+        date = x.get("application_date") or (x.get("created_at") or "")[:10]
+        if not date or date < cutoff:
+            continue
+        index_company(out, ignore, x, {"company": x.get("company_name"), "role": x.get("role"), "date": date,
+                                       "applika_id": x.get("id")})
+    return out
+
+
+def application_detail(a: dict) -> str:
+    return f"Already applied to {a.get('company')} on {a.get('date')} ({a.get('role')}); one application per company per cooldown"
+
+
+def untouched(e: dict) -> bool:
+    """No form has been filled for this role yet, so skipping it throws no work away."""
+    return e.get("status") not in FINAL | {"filled", "failed_submit"} and not is_ready(e)
 
 
 def rejection_for(rej: dict[str, dict], company: str) -> dict | None:
@@ -514,8 +564,10 @@ def cmd_queue(args) -> int:
     b = bank(args.home)
     st = settings(args.home)
     rej = recent_rejections(existing, st)
+    apps = recent_applications(existing, st)
     q, skipped = [], {"rejected": 0, "final": 0, "banned": 0, "rejected_company": 0, "in_applika": 0,
-                      "not_worth_applying": 0, "needs_you": 0, "waiting_answers": 0, "load_retries": 0}
+                      "applied_company": 0, "not_worth_applying": 0, "needs_you": 0, "waiting_answers": 0,
+                      "load_retries": 0}
     for r in roles:
         e = ledger.get(r["id"], {})
         status = e.get("status")
@@ -537,6 +589,11 @@ def cmd_queue(args) -> int:
                                    "applika": {"id": m.get("id"), "note": "already in applika"},
                                    "detail": "Already in applika"}
                 skipped["in_applika"] += 1
+                continue
+            ap = rejection_for(apps, r["company"])
+            if ap and untouched(e) and e.get("override") != "apply":
+                ledger[r["id"]] = {**e, **base, "status": "skipped", "detail": application_detail(ap)}
+                skipped["applied_company"] += 1
                 continue
             sp = parts.get(r["key"]) or {}
             if e.get("override") == "skip":  # the user overrode the model on the dashboard
@@ -581,6 +638,7 @@ def cmd_queue(args) -> int:
     return emit({"queued": len(q), "unscored": sum(1 for x in q if x["score"] is None), "skipped": skipped,
                  "by_source": dict(by_source.most_common()),
                  "rejected_companies": sorted({v["company"] for v in rej.values()}),
+                 "applied_companies": len({v["applika_id"] for v in apps.values()}),
                  "applika_error": applika_err,
                  "top": [f'{x["score"]} {x["title"]} @ {x["company"]} [{x["source"]}]' for x in q[:12]]})
 
@@ -740,9 +798,15 @@ def cmd_next(args) -> int:
     if not tailor and not base_pdf:
         return emit({"done": True, "reason": "autopilot.tailor is false but resume.pdf is not set in config.yaml"})
     index = {} if tailor else enrich.read_json(js.fix_path(args.home) / "jds" / "index.json", {})
+    apps = recent_applications(applika_list(args.home)[0], st)
     for r in load(args.home, "queue.json", []):
         e = ledger.get(r["id"], {})
         if e.get("status") not in ("queued", "failed_load", "deferred", None):
+            continue
+        ap = rejection_for(apps, r["company"])
+        if ap and e.get("override") != "apply":  # registered in applika after the queue was built
+            ledger[r["id"]] = {**e, "status": "skipped", "detail": application_detail(ap)}
+            save(args.home, "ledger.json", ledger)
             continue
         # claimed by a fill subagent that is still running (parallel fills call `next` repeatedly)
         if e.get("filling_since") and e["filling_since"] > (NOW - timedelta(minutes=30)).isoformat():
@@ -1111,6 +1175,8 @@ def cmd_applika_sync(args) -> int:
         done.append(f'{e.get("company")}: registered')
     if not args.dry_run:
         save(args.home, "ledger.json", ledger)
+        if done:  # `next` reads the cached list to skip companies applied to since the queue was built
+            applika_list(args.home, refresh=True)
     return emit({"registered": len(done), "done": done, "errors": errors})
 
 

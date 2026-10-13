@@ -97,7 +97,7 @@ Claude links the three skill folders into `~/.claude/skills`, finds a Python 3.1
 | `role` | `title`, `profile` (a `profiles/<slug>.json` with the search patterns) | sweep, recruiter matching |
 | `pay` | `target_usd_month`, `skip_below_usd_month`, `ask_usd_month`, `free_text_answer` | ranking, skips, form answers, recruiter pay signal |
 | `banned_companies` | current employers and clients | never applied to, never contacted |
-| `tracker` | `enabled`, `rejection_cooldown_days`, `rejection_neutral_feedback`, `rejection_ignore_companies` | applika registration and rejection cooldowns |
+| `tracker` | `enabled`, `company_cooldown_days`, `rejection_cooldown_days`, `rejection_neutral_feedback`, `rejection_ignore_companies` | applika registration, the one-application-per-company cooldown and rejection cooldowns |
 | `sweep` | `days`, `mode` (`quick`/`standard`/`full`), `explorer` (`full`/`table`/`off`), `max_new_roles`, `remote_only`, `report_rows`, `country_check`, `country_check_limit`, `skip_tasks`, `skip_sources`, `skip_hosts` | job-source-sweep |
 | `autopilot` | `channels`, `max_minutes`, `max_ready`, `auto_submit`, `cover_letter` (`required`/`always`/`never`), `max_load_retries`, `tailor`, `tailor_ahead`, `per_company_per_run` | job-autopilot |
 | `recruiter_outreach` | `connect_per_day`, `inmail_per_day`, `message_per_day`, `min_score`, `max_per_company`, `stale_days`, `gap_seconds`, `people_queries`, `post_queries`, `required_terms`, `cta_styles` | recruiter-outreach |
@@ -288,6 +288,7 @@ The main conversation never drives the browser itself. Long browser sessions in 
 | Applications are never submitted unless `autopilot.auto_submit` is true | `references/apply.md`, the fill loop, and the `applied` status needing a confirmation |
 | Nothing is registered in applika until you mark it Submitted | `applika-sync` reads only `applied` roles with a `submitted_by` |
 | `banned_companies` are never applied to or contacted | `queue`, `plan`, `ingest`, `check` |
+| A company with any applika application in the last `company_cooldown_days` is not applied to again | `score-queue`, `queue` and `next` through applika |
 | A company that rejected you is not applied to again for `rejection_cooldown_days` | `score-queue` and `queue` through applika |
 | Roles explicitly requiring an `excluded_contract_types` contract, on-site work, or another location are skipped | scoring subagent, `queue` |
 | Nobody is contacted twice; no follow-ups to unanswered messages | `check`, `contacts.json`, `references/message.md` |
