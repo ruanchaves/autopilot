@@ -16,6 +16,7 @@ Separate from job-autopilot: nothing here depends on an application.
     recruiters.py ceilings      [--set COMPANY --usd N]     # highest pay each company ever quoted; under the floor = gated
     recruiters.py import-quotes --file FILE                 # backfill pay quotes collected from the inbox
     recruiters.py network-rank  [--file network_queue.json] # 1st-degree queue: funded-client recruiters first
+    recruiters.py targets       [--top 20]                  # company lane: funded companies hiring the role, best first
     recruiters.py import-contacts --file FILE               # seed contacts from job-autopilot's contacts.json
 A run is done only when `status` says done: connection requests and InMails for the day are all used, and every
 contactable 1st-degree lead has had its plain message. Messages to 1st-degree connections never count toward the
@@ -100,6 +101,13 @@ DEFAULT_SETTINGS = {
     "post_queries": [],
     "required_terms": [],      # words every discovery pass must search with (e.g. "nearshore"); ingest warns when missing
     "cta_styles": ["open", "cv"],  # how first-touch messages close; rotated per lead, compared by `recruiters queries`
+    # the company lane: in-house recruiters and hiring managers at funded companies hiring for the target role,
+    # found company-first from job-source-sweep's roles (references/pay-tier-research.md, "Company lane")
+    "company_lane_share": 0.25,       # share of the day's connection requests + InMails reserved for the lane
+    "company_lane_batches": 14,       # sweep batches (run dates) the company targets are read from
+    "company_lane_per_round": 8,      # companies handed to discovery per round
+    "company_lane_cooldown_days": 30,  # a company searched in the lane is not searched again for this long
+    "company_lane_title_terms": [],   # posting-title words that count as the target role (default: role.title's words)
     # filled in from config.yaml by settings(): target_role, pay_target_usd_month, banned_companies
 }
 
@@ -422,6 +430,133 @@ def first_degree(v: dict) -> bool:
     return str(v.get("degree") or "").strip().lower().startswith("1")
 
 
+# ----------------------------------------------------------- company lane
+# Recruiters were a proxy: every $10k+ quote traced back to a funded product company. The company lane goes to
+# those companies directly. Targets come from job-source-sweep's roles (VC/YC portfolio boards, startup boards,
+# posted pay at the target); discovery finds each target's in-house recruiter and the hiring manager (founder,
+# CTO, head of AI). They share the pile, the caps and the scoring with recruiters, and a fixed share of the daily
+# budget is reserved for them so the two lanes can be compared on `quoted_target`.
+
+LEAD_TYPES = ("recruiter", "in_house", "hiring_manager")
+
+
+def title_re(st: dict) -> re.Pattern:
+    """Posting titles that count as the target role: company_lane_title_terms from config.yaml, or else the words
+    of role.title."""
+    terms = [t for t in (st.get("company_lane_title_terms") or []) if t] or \
+        [w for w in re.split(r"\W+", st["target_role"]) if len(w) > 1 and w.lower() not in ("engineer", "senior", "staff")]
+    return re.compile(r"\b(" + "|".join(re.escape(t) for t in terms) + r")\b", re.I) if terms else re.compile(".")
+FUNDED_SRC = re.compile(r"portfolio|work at a startup|y ?combinator", re.I)
+STARTUP_SRC = re.compile(r"wellfound|who is hiring", re.I)
+# talent marketplaces and staffing names that show up as the "company" of a posting; their roles are not a hiring
+# company's own
+NOT_EMPLOYER = re.compile(r"\b(jobgether|toptal|turing|andela|crossover|arc\.dev|braintrust|micro1|strider|mercor|"
+                          r"index\.dev|outlier|remotasks|data ?annotation|bairesdev|deel|remote\.com|jobright|"
+                          r"dailyremote|himalayas|remote ?rocketship|lupa|hired|confidential)\b", re.I)
+
+
+def lead_type(v: dict) -> str:
+    t = (v or {}).get("lead_type") or "recruiter"
+    return t if t in LEAD_TYPES else "recruiter"
+
+
+def in_lane(v: dict) -> bool:
+    return lead_type(v) != "recruiter"
+
+
+def lane_quota(needed: int, st: dict) -> int:
+    """Connection requests + InMails reserved for the company lane today (backfilled by recruiters if unused)."""
+    share = float(st.get("company_lane_share") or 0)
+    return min(needed, math.ceil(needed * share)) if share > 0 else 0
+
+
+def applied_companies(home: str) -> dict:
+    """company key -> what job-autopilot did there: an application (applied) or a filled form waiting (filled)."""
+    out: dict = {}
+    for e in enrich.read_json(js.fix_path(home) / "autopilot" / "ledger.json", {}).values():
+        if e.get("status") not in ("applied", "filled"):
+            continue
+        k = company_key(e.get("company", ""))
+        if k and (k not in out or e.get("status") == "applied"):
+            out[k] = {"status": e["status"], "title": e.get("title", ""), "at": (e.get("applied_at") or e.get("updated") or "")[:10]}
+    return out
+
+
+def company_targets(home: str, st: dict, runs: dict | None = None, for_plan: bool = False) -> list:
+    """Companies worth reaching directly, best first: they posted the target role recently, the role is open to the
+    candidate's region or doesn't say, and either posted pay reaches the target or the posting came from a VC/YC
+    portfolio or startup board with no pay under the floor. Staffing names, marketplaces, banned companies, known
+    low ceilings and companies searched within company_lane_cooldown_days are left out. `for_plan` keeps
+    companies already searched or at the company cap, for looking up a planned lead's roles."""
+    hp = js.fix_path(home)
+    try:
+        roles = enrich.collect_roles(home, None, enrich.run_dates(home, int(st["company_lane_batches"])))
+    except SystemExit:
+        return []
+    cls = enrich.read_json(hp / "classifications.json", {})
+    scores = enrich.read_json(hp / "autopilot" / "scores.json", {})
+    ceil, applied = ceilings(home), applied_companies(home)
+    floor, target = st["pay_floor_usd_month"], st["pay_target_usd_month"]
+    runs = runs if runs is not None else load(home, "discovery-runs.json", {})
+    cool = (NOW - timedelta(days=int(st["company_lane_cooldown_days"]))).isoformat()
+    worked = set() if for_plan else \
+        {company_key(k.split(":", 1)[1]) for k, at in runs.items() if k.startswith("company:") and at >= cool}
+    cos = companies(home)
+    role_title = title_re(st)
+    out: dict = {}
+    for r in roles:
+        name = (r.get("company") or "").strip()
+        k = company_key(name)
+        if not k or k in worked or is_banned(name, st) or NOT_EMPLOYER.search(name) or _STAFF_AUG.search(name) \
+                or _VENDOR.search(name) or (ceil.get(k) or {}).get("max_usd_month", floor) < floor:
+            continue
+        sc = scores.get(r["key"]) or {}
+        elig = ((cls.get(r["key"]) or {}).get("elig") or {}).get("category")
+        hi = sc.get("pay_max") or sc.get("pay_min")
+        if sc.get("apply") is False or elig == 3 or (hi and hi < floor):
+            continue
+        if not role_title.search(r.get("title") or "") and int(sc.get("core") or 0) < 20:
+            continue  # the sweep's profile also catches general engineering roles; the lane is for the target role
+        funded = any(FUNDED_SRC.search(s) for s in r.get("sources") or [])
+        startup = any(STARTUP_SRC.search(s) for s in r.get("sources") or [])
+        if not (hi and hi >= target) and not funded and not startup:
+            continue
+        t = out.setdefault(k, {"company": name, "roles": [], "pay_max_usd_month": 0, "funded_source": False,
+                               "startup_source": False, "open_to_region": False, "best_fit": 0, "latest": "",
+                               "sources": [], "applied": applied.get(k),
+                               "room": company_room(home, st, name, cos)[0]})
+        label = enrich.ELIG_LABEL.get(elig, "unclassified")
+        dup = next((x for x in t["roles"] if x["title"].strip().lower() == (r["title"] or "").strip().lower()), None)
+        if dup:  # one role posted on several boards: keep one entry, with the most informative eligibility and pay
+            if dup["eligibility"] in ("unclassified", "none") and label == "open":
+                dup.update(eligibility=label, url=r["url"])
+            dup["pay_usd_month"] = dup["pay_usd_month"] or (round(hi) if hi else None)
+        else:
+            t["roles"].append({"title": r["title"], "url": r["url"], "posted": (r.get("posted_iso") or "")[:10],
+                               "pay_usd_month": round(hi) if hi else None, "eligibility": label})
+        t["pay_max_usd_month"] = max(t["pay_max_usd_month"], round(hi or 0))
+        t["funded_source"] |= funded
+        t["startup_source"] |= startup
+        t["open_to_region"] |= elig == 1
+        t["best_fit"] = max(t["best_fit"], int(sc.get("core") or 0))
+        t["latest"] = max(t["latest"], r.get("posted_iso") or "")
+        t["sources"] = sorted(set(t["sources"]) | set(r.get("sources") or []))
+    ranked = sorted((t for t in out.values() if for_plan or t["room"] > 0), key=lambda t: t["latest"], reverse=True)  # newest first...
+    # ...within each band (sort is stable). A role that says it is open to the candidate's region comes first: a US
+    # salary on a posting that states no region is often US-only in practice, so posted pay ranks second.
+    ranked.sort(key=lambda t: (not t["open_to_region"], t["pay_max_usd_month"] < target, not t["funded_source"],
+                               -t["best_fit"]))
+    region = userconfig.snapshot().get("region") or "your region"
+    for t in ranked:
+        t["roles"] = sorted(t["roles"], key=lambda x: x["posted"], reverse=True)[:3]
+        t["why"] = ", ".join(x for x in [f"posted pay ${t['pay_max_usd_month']:,}/mo" if t["pay_max_usd_month"] >= target else "",
+                                         "VC/YC portfolio board" if t["funded_source"] else "",
+                                         "startup board" if t["startup_source"] and not t["funded_source"] else "",
+                                         f"open to {region}" if t["open_to_region"] else ""] if x)
+        t.pop("room", None)
+    return ranked
+
+
 def vc_funds() -> list:
     """The VC and accelerator portfolios job-source-sweep already reads (Getro, Consider, YC). Their talent partners
     recruit only for funded portfolio companies."""
@@ -433,6 +568,15 @@ def vc_funds() -> list:
             if name and name not in out:
                 out.append(name)
     return out
+
+
+def cmd_targets(args) -> int:
+    """The company lane's target list, for a look before a run."""
+    st = settings(args.home)
+    t = company_targets(args.home, st)
+    return emit({"targets": len(t), "with_target_pay": sum(x["pay_max_usd_month"] >= st["pay_target_usd_month"] for x in t),
+                 "from_vc_or_yc_boards": sum(x["funded_source"] for x in t), "applied_by_autopilot": sum(bool(x["applied"]) for x in t),
+                 "top": t[:args.top]})
 
 
 def cmd_discover_plan(args) -> int:
@@ -447,7 +591,11 @@ def cmd_discover_plan(args) -> int:
     reprobe = [{"profile_url": v["profile_url"], "name": v.get("name"), "probed_at": v.get("probed_at")}
                for v in leads.values() if (v.get("probed_at") or "") < stale and v.get("status") == "new"][:10]
     needed, q = need(args.home, st)
-    have = sum(not first_degree(v) for v in contactable(leads, st, args.home))
+    pile = contactable(leads, st, args.home)
+    have = sum(not first_degree(v) for v in pile)
+    lane_q = lane_quota(needed, st)
+    lane_have = sum(in_lane(v) and not first_degree(v) for v in pile)
+    targets = company_targets(args.home, st, runs) if lane_q > lane_have else []
     # phrasings already run this week whose deeper result pages haven't been read yet
     deeper = [{"kind": k.split(":", 1)[0], "query": k.split(":", 1)[1], "start_page": depth.get(k, 2) + 1}
               for k, at in runs.items() if at >= cutoff and depth.get(k, 2) < MAX_PAGES]
@@ -503,6 +651,11 @@ def cmd_discover_plan(args) -> int:
                  "needed": needed, "contactable_now": have, "quotas": q, "max_leads": max_leads,
                  "queries_tried": sorted(runs), "deeper": deeper[:12], "snowball_companies": snowball[:15],
                  "vc_funds": vc_funds(), "pay_floor_usd_month": st["pay_floor_usd_month"],
+                 "company_lane": {"quota": lane_q, "contactable_now": lane_have, "short_by": max(0, lane_q - lane_have),
+                                  "targets_available": len(targets),
+                                  "rule": "when short_by > 0, one discovery subagent works company_targets "
+                                          "(references/discover.md, Company lane) alongside the recruiter avenues"},
+                 "company_targets": targets[:int(st["company_lane_per_round"])],
                  "known_low_ceiling": sorted(e["name"] for e in ceil.values() if e["max_usd_month"] < st["pay_floor_usd_month"]),
                  "seeds": seeds, "known_profiles": sorted(leads), "reprobe": reprobe,
                  "target_role": st["target_role"], "pay_target_usd_month": st["pay_target_usd_month"],
@@ -521,6 +674,8 @@ def cmd_ingest(args) -> int:
         runs["people:" + q] = NOW.isoformat()
     for q in res.get("post_queries_run") or []:
         runs["posts:" + q] = NOW.isoformat()
+    for c in res.get("companies_run") or []:  # the company lane: a target is searched once per cooldown
+        runs["company:" + c] = NOW.isoformat()
     for k in list(runs):
         if (pages.get(k) or 0) > depth.get(k, 0):
             depth[k] = int(pages[k])
@@ -546,6 +701,7 @@ def cmd_ingest(args) -> int:
                  "language": L.get("language", "en"), "signals": L.get("signals") or {},
                  "evidence": L.get("evidence") or [], "recent_roles": L.get("recent_roles") or [],
                  "vibe": L.get("vibe", ""), "irrelevant": bool(L.get("irrelevant")),
+                 "lead_type": L.get("lead_type") if L.get("lead_type") in LEAD_TYPES else lead_type(cur or {}),
                  "found_via": (cur or {}).get("found_via") or L.get("found_via", ""),
                  "source": first or src, "sources": seen,
                  "probed_at": NOW.isoformat()}
@@ -567,6 +723,8 @@ def cmd_ingest(args) -> int:
     unattributed = sum(1 for L in res.get("leads") or [] if not source_key(L.get("found_via", "")))
     return emit({"added": added, "updated": updated, "skipped_banned": banned, "leads_total": len(leads),
                  "contactable_now": sum(not first_degree(v) for v in ranked),
+                 "company_lane_contactable": sum(in_lane(v) and not first_degree(v) for v in ranked),
+                 "company_lane_quota": lane_quota(needed, st),
                  "first_degree_pending": sum(first_degree(v) for v in ranked) if st["message_per_day"] != 0 else 0,
                  "needed": needed, "required_terms_used": used,
                  **({"required_terms_missing": missing} if missing else {}),
@@ -639,34 +797,68 @@ def cmd_plan(args) -> int:
     # two separate budgets: connection requests + InMails (`needed`) for everyone else, and plain messages for
     # 1st-degree connections, which spend no connection request (message_per_day None = no cap)
     msg_left = q["message"]["left"]
+    # the company lane gets lane_q of the connection + InMail slots first; whatever either lane can't fill is
+    # backfilled from the other, so the day's budget is never left unspent for the sake of the split
+    lane_q = lane_quota(needed, st)
     # at most max_per_company people per employer/agency, counting everyone contacted before today
     room: dict = {}
-    chosen = []
-    n_first = n_other = 0
-    for v in pile:
-        if first_degree(v):
-            if msg_left is not None and n_first >= msg_left:
-                continue
-        elif n_other >= needed:
-            continue
+    chosen, seen = [], set()
+    n = {"first": 0, "lane": 0, "rec": 0}
+
+    def take(v: dict) -> bool:
         left, k = company_room(args.home, st, v.get("company", ""), cos)
         if k:
             left = room.setdefault(k, left)
         if left <= 0:
             capped.append(f'{v["name"]} ({v.get("company", "")})')
-            continue
+            return False
         if k:
             room[k] -= 1
         chosen.append(v)
-        n_first += first_degree(v)
-        n_other += not first_degree(v)
-        if len(chosen) >= args.n:
-            break
+        return True
+
+    for backfill in (False, True):
+        for v in pile:
+            key = v.get("profile_url")
+            if key in seen or len(chosen) >= args.n:
+                continue
+            if first_degree(v):
+                if backfill or (msg_left is not None and n["first"] >= msg_left):
+                    continue
+                slot = "first"
+            elif n["lane"] + n["rec"] >= needed:
+                continue
+            elif backfill:
+                slot = "lane" if in_lane(v) else "rec"
+            elif in_lane(v):
+                if n["lane"] >= lane_q:
+                    continue
+                slot = "lane"
+            else:
+                if n["rec"] >= needed - lane_q:
+                    continue
+                slot = "rec"
+            seen.add(key)
+            if take(v):
+                n[slot] += 1
+    capped = sorted(set(capped))
+    n_first, n_other = n["first"], n["lane"] + n["rec"]
+    # what the company lane tasks need to write a role-specific note: the company's open roles, and whether
+    # job-autopilot applied there
+    lane_on = any(in_lane(v) for v in chosen)
+    info = {company_key(t["company"]): t for t in company_targets(args.home, st, for_plan=True)} if lane_on else {}
+    applied = applied_companies(args.home) if lane_on else {}
     styles = list(st["cta_styles"] or [])
-    tasks = [{**{k: v.get(k) for k in ("profile_url", "name", "headline", "company", "location", "degree", "language",
-                                       "score", "parts", "signals", "evidence", "recent_roles", "vibe")},
-              "cta": cta_for(norm_profile(v.get("profile_url", "")), styles)}
-             for v in chosen]
+    tasks = []
+    for v in chosen:
+        t = {**{k: v.get(k) for k in ("profile_url", "name", "headline", "company", "location", "degree", "language",
+                                      "score", "parts", "signals", "evidence", "recent_roles", "vibe")},
+             "lead_type": lead_type(v), "cta": cta_for(norm_profile(v.get("profile_url", "")), styles)}
+        if in_lane(v):
+            c = info.get(company_key(v.get("company", ""))) or {}
+            t.update(company_roles=c.get("roles") or v.get("recent_roles") or [],
+                     applied=c.get("applied") or applied.get(company_key(v.get("company", ""))))
+        tasks.append(t)
     # connection requests not yet seen accepted: the sender reads "Recently added" connections back to `since`
     awaiting = [v for v in leads.values() if (v.get("contact") or {}).get("channel") == "connect"
                 and not (v.get("outcome") or {}).get("accepted_at")]
@@ -675,6 +867,8 @@ def cmd_plan(args) -> int:
     out = work_dir(args.home)
     return emit({"quotas": q, "needed": needed, "pile": len(pile) - len(capped), "short_by": max(0, needed - n_other),
                  "first_degree_tasks": n_first,
+                 "company_lane": {"quota": lane_q, "planned": n["lane"], "recruiters_planned": n["rec"],
+                                  "short_by": max(0, lane_q - n["lane"])},
                  "cta_styles": styles, "accept_check": accept_check,
                  "max_per_company": st["max_per_company"], "held_by_company_cap": capped, "tasks": tasks,
                  "order": "1st-degree leads get a plain message whatever the connection budget says (it never counts toward it); "
@@ -757,7 +951,7 @@ def cmd_record(args) -> int:
         lead = leads.get(who)
         entry = {**{k: c.get(k, "") for k in ("name", "headline", "company", "profile_url", "channel", "subject",
                                               "message", "status", "detail", "cta")},
-                 "source": lead_source(lead), "purpose": "recruiter", "at": NOW.isoformat()}
+                 "source": lead_source(lead), "purpose": lead_type(lead or c), "at": NOW.isoformat()}
         if cts.get(who, {}).get("status") == "sent" and entry["status"] != "sent":
             continue
         cts[who] = entry
@@ -949,6 +1143,7 @@ def query_report(home: str, st: dict, leads: dict, top: int = 25) -> dict:
     by_src: dict = {}
     by_av: dict = {}
     by_cta: dict = {}
+    by_type: dict = {}
     for v in leads.values():
         src = lead_source(v) or "unattributed"
         o, ct = v.get("outcome") or {}, v.get("contact") or {}
@@ -961,6 +1156,7 @@ def query_report(home: str, st: dict, leads: dict, top: int = 25) -> dict:
                       quoted_target=int((o.get("quoted_usd_month") or 0) >= (st["pay_target_usd_month"] or 1)))
         by_src.setdefault(src, Counter()).update(row)
         by_av.setdefault(avenue(src), Counter()).update(row)
+        by_type.setdefault(lead_type(v), Counter()).update(row)
         if sent:
             by_cta.setdefault(ct.get("cta") or LEGACY_CTA, Counter()).update(row)
 
@@ -991,6 +1187,8 @@ def query_report(home: str, st: dict, leads: dict, top: int = 25) -> dict:
                     f"who quoted any pay). accept_pct is over connection requests, reply_pct over everyone contacted; rows "
                     f"with fewer than {MIN_SAMPLE} contacted are small samples.",
             "by_avenue": rows(by_av), "by_cta": rows(by_cta), "queries": rows(by_src)[:top],
+            # the company-lane experiment: recruiters vs in-house recruiters vs hiring managers on the same outcomes
+            "by_lead_type": rows(by_type),
             "searches_total": len(by_src), "ran_without_leads": len(dead), "ran_without_leads_sample": dead[:40]}
 
 
@@ -1027,7 +1225,7 @@ def cmd_dashboard(args) -> int:
             "leads": [{"name": v.get("name", ""), "headline": v.get("headline", ""), "company": v.get("company", ""),
                        "location": v.get("location", ""), "profile_url": v.get("profile_url", ""), "degree": v.get("degree", ""),
                        "score": v.get("score", 0), "parts": v.get("parts") or {}, "signals": v.get("signals") or {},
-                       "gate": v.get("gate", ""),
+                       "gate": v.get("gate", ""), "leadType": lead_type(v),
                        "evidence": (v.get("evidence") or [])[:4], "recent_roles": (v.get("recent_roles") or [])[:3],
                        "status": v.get("status", "new"), "skipReason": v.get("skip_reason", ""),
                        "contact": v.get("contact"), "foundAt": (v.get("found_at") or "")[:10],
@@ -1050,8 +1248,12 @@ def cmd_status(args) -> int:
     first = sum(first_degree(v) for v in new) if q["message"]["cap"] != 0 else 0
     cos = companies(args.home)
     at_cap = sorted(e["name"] for e in cos.values() if e["contacted"] >= st["max_per_company"])
+    lane_q = lane_quota(needed, st)
+    lane_have = sum(in_lane(v) and not first_degree(v) for v in new)
     return emit({"leads": len(leads), "by_status": dict(Counter(v["status"] for v in leads.values())),
                  "contactable_now": sum(not first_degree(v) for v in new), "first_degree_pending": first,
+                 "by_lead_type": dict(Counter(lead_type(v) for v in leads.values())),
+                 "company_lane": {"quota": lane_q, "contactable_now": lane_have, "short_by": max(0, lane_q - lane_have)},
                  "needed": needed, "done": needed == 0 and first == 0,
                  "companies_contacted": len(cos), "companies_at_cap": at_cap, "max_per_company": st["max_per_company"],
                  "quotas": q, "inmail_credits": p.get("inmail_credits"), "contacts": len(contacted(args.home)),
@@ -1093,6 +1295,7 @@ def main() -> int:
     p.add_argument("--note", default=""); p.add_argument("--at", default=""); p.set_defaults(fn=cmd_ceilings)
     p = sub.add_parser("import-quotes"); p.add_argument("--file", required=True); p.set_defaults(fn=cmd_import_quotes)
     p = sub.add_parser("network-rank"); p.add_argument("--file", default="network_queue.json"); p.set_defaults(fn=cmd_network_rank)
+    p = sub.add_parser("targets"); p.add_argument("--top", type=int, default=20); p.set_defaults(fn=cmd_targets)
     p = sub.add_parser("queries"); p.add_argument("--top", type=int, default=25); p.set_defaults(fn=cmd_queries)
     p = sub.add_parser("import-contacts"); p.add_argument("--file", required=True); p.set_defaults(fn=cmd_import_contacts)
     sub.add_parser("dashboard").set_defaults(fn=cmd_dashboard)

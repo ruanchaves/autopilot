@@ -1051,6 +1051,7 @@ const TIERSIG = { funded_product: "recruits for funded product companies", bouti
 const OUTCOME = [["accepted_at", "Accepted", "good"], ["replied_at", "Replied", "good"], ["positive_at", "Interested", "good"],
                  ["call_at", "Call booked", "good"], ["quoted_at", "Quoted pay", "good"], ["declined_at", "Declined", "bad"]];
 const CTA = { open: "Close: open to new roles", cv: "Close: offers the CV" };
+const LEAD_TYPE = { in_house: "In-house recruiter", hiring_manager: "Hiring manager" };  // recruiters carry no tag
 // Funnel per search, avenue and closing style, from `recruiters queries` (each lead counts under the search that found it first)
 function searchReport() {
   const Q = RC && RC.queries;
@@ -1063,6 +1064,7 @@ function searchReport() {
       '<tr><td colspan="9" class="empty">Nothing yet.</td></tr>'}</tbody></table>`;
   return `<details class="review" style="padding:12px 14px"><summary>Which searches work (as of ${esc(Q.built)})</summary>
     <p class="note">${esc(Q.note)} ${Q.ran_without_leads} phrasings ran without producing a lead.</p>
+    <p class="q">By lead type (recruiters vs the company lane)</p>${tbl(Q.by_lead_type || [], "Lead type")}
     <p class="q">By avenue</p>${tbl(Q.by_avenue || [], "Avenue")}<p class="q">By closing style</p>${tbl(Q.by_cta || [], "Close")}
     <p class="q">Top searches</p>${tbl(Q.queries || [], "Search")}</details>`;
 }
@@ -1099,7 +1101,7 @@ function renderOutreach() {
     const ct = c.contact;
     return `<tr>
       <td class="c-role" data-label="Recruiter"><div class="cell role"><a href="${esc(c.profile_url)}" target="_blank" rel="noopener">${esc(c.name || c.profile_url)}</a>
-        <span class="company">${esc(c.company || "")}${c.degree ? ` · ${esc(c.degree)}` : ""}</span>
+        <span class="company">${esc(c.company || "")}${c.degree ? ` · ${esc(c.degree)}` : ""}${LEAD_TYPE[c.leadType] ? ` <span class="tag">${LEAD_TYPE[c.leadType]}</span>` : ""}</span>
         <div class="meta"><span>${esc(trunc(c.headline || "", 110))}</span>${c.location ? `<span>${esc(c.location)}</span>` : ""}</div>
         ${c.source ? `<p class="note">Found via ${esc(c.source)}</p>` : ""}</div></td>
       <td data-label="Score"><div class="cell"><span class="score">${c.score}</span><div class="parts">${parts}</div>
