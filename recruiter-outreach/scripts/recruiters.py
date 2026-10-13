@@ -613,7 +613,8 @@ def cmd_discover_plan(args) -> int:
     snowball = []
     for v in sorted(leads.values(), key=lambda v: -v["score"]):
         c = (v.get("company") or "").strip()
-        if c and c.lower() != "unknown" and not is_banned(c, st) and c not in snowball and not v.get("gate") \
+        if c and company_key(c) and not is_banned(c, st) and company_key(c) not in {company_key(x) for x in snowball} \
+                and not v.get("gate") \
                 and not v.get("irrelevant") and (v.get("parts") or {}).get("tier", 8) > 0 and proven(v):
             snowball.append(c)
     # agencies that quoted the target pay to the candidate directly (inbound recruiters are often not leads at all)
