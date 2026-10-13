@@ -26,7 +26,20 @@ Your prompt says which of these to use. `max_leads` is the target for the whole 
 1. People search `<company> talent acquisition`, `<company> recruiter` and `<company> technical recruiter`. Keep the person whose current position is at that company and recruits engineers: `lead_type: "in_house"`.
 2. People search `<company> head of AI`, `<company> CTO`, `<company> engineering manager machine learning`, and for a startup under ~100 people `<company> founder`. Keep the one person most likely to own the posted role: the head of AI or ML, else the engineering manager of the team in the posting, else the CTO, and a founder only at a small startup. Mark them `lead_type: "hiring_manager"`. Skip VPs and C-levels at companies of thousands, who never read cold notes about one opening.
 3. At most two people per company: one in-house recruiter and one hiring manager. The company cap (`max_per_company`) counts them with everyone else contacted there.
-4. Probe each like any lead, but take the role signals from the company's posting, not the person's own posts. `role_posts_90d` is the number of the target's matching open roles. `hiring_scope` comes from the posting's eligibility: `latam` when it is `open`, `remote_unclear` when it says nothing. `pay_signal` and `pay_basis` come from the posted pay. `client_tier` is `funded_product` (that's why it's a target). `last_activity_days`, `degree`, `vibe` and `language` come from the person. Put the posting in `recent_roles` and quote it in `evidence`.
+4. Probe each like any lead, but take the role signals from the company's posting, not the person's own posts. `role_posts_90d` is the number of the target's matching open roles. `hiring_scope` comes from the posting's eligibility: `latam` when it is `open`, `remote_unclear` when it says nothing or is `nearby` (posted in another country of the candidate's region). `pay_signal` and `pay_basis` come from the posted pay. `client_tier` is `funded_product` (that's why it's a target). `last_activity_days`, `degree`, `vibe` and `language` come from the person. Put the posting in `recent_roles` and quote it in `evidence`, along with the target's `funding` when it has one.
+
+   Lane leads are scored mostly on the person: 60 of their 100 points come from three person signals, so get these right.
+   - **`role_owner`**:
+     - `direct`: owns the posted role. That means heading the AI/ML team or managing the posting's team, being CTO or founder at a company under about 100 people, or being an in-house recruiter whose headline or posts show they hire engineering or AI.
+     - `adjacent`: could pass it on, such as an engineering leader of another team or a generalist talent acquisition person.
+     - `distant`: an executive at a large company, an HR generalist, or a non-engineering recruiter.
+   - **`hiring_voice`**: what the person's own posts say about hiring in the last 90 days.
+     - `role`: they posted about this role or team.
+     - `general`: they posted about hiring at the company.
+     - `none`: they posted nothing about hiring.
+   - **`last_activity_days`**: from the person's activity page, as for any lead.
+
+   Quote what decided `role_owner` in `evidence`, for example "Headline: 'Head of ML, Acme'" or "Post 2026-10-02: 'We're hiring our first applied AI engineers'".
 5. `found_via` is `company:<company name exactly as given>`, and the company goes in `companies_run`, even when nobody fitting was found, so it isn't searched again for a month.
 
 **Known low ceilings.** `known_low_ceiling` lists companies and agencies whose highest pay ever quoted to the candidate is under `pay_floor_usd_month`. Don't spend probes on their recruiters: skip them in search results. Ingest holds them below the contact line anyway.
@@ -88,7 +101,9 @@ Write `result` with the Write tool at the exact path you were given (a WSL pytho
             "also_found_via": [],
             "signals": {"hiring_scope": "latam", "last_activity_days": 3, "role_posts_90d": 2, "adjacent_posts_90d": 1,
                         "pay_signal": "at_or_above", "pay_basis": "annual", "client_tier": "boutique_search",
-                        "volume_vendor": false, "task_platform": false, "local_rate_shop": false},
+                        "volume_vendor": false, "task_platform": false, "local_rate_shop": false,
+                        "role_owner": "company lane only: direct | adjacent | distant",
+                        "hiring_voice": "company lane only: role | general | none"},
             "recent_roles": [{"title": "Senior AI Engineer", "region": "LATAM", "pay": "$130-160k/yr", "posted": "2026-10-06", "url": "..."}],
             "evidence": ["Headline: 'Placing LATAM engineers with VC-backed US startups'", "Post 2026-10-06: 'Hiring Senior AI Engineer for a Series A health-AI startup, remote LATAM, $130-160k'"],
             "vibe": "short posts, bullet lists, no emoji", "irrelevant": false}]}

@@ -60,9 +60,42 @@ Under $7k (about 100 recruiters):
 
 **Evidence against.** Before job-autopilot stopped contacting people on LinkedIn, it sent "I applied for X" notes to hiring-side people. In the inbox those got polite acknowledgments (a thumbs-up, "the team will reach out", a wrong-company redirect) and no pay conversation. Those were follow-ups to applications, not introductions, so they may have been the wrong message, but the data does not show hiring managers converting better than good recruiters. That is why the lane is an experiment with a fixed budget share, not a replacement.
 
-**How it works.** `company_targets` keeps companies that posted a role matching `company_lane_title_terms`, that aren't marked closed to the candidate's region, and whose posted pay reaches the target or whose posting came from a VC/YC portfolio or startup board with no pay under the floor. Staffing names, marketplaces, banned companies and known low ceilings are excluded. The list is ranked by open-to-region first, because a US salary on a posting that states no region is often US-only in practice, then posted pay, then the funded source, then fit. Discovery finds at most an in-house recruiter and a hiring manager per company, scored with the same rubric (role, scope and pay read from the posting; `client_tier: funded_product`). `plan` reserves `company_lane_share` (25%) of the connection and InMail slots and backfills any unused slots from the other lane. Lane tasks carry the company's open roles and whether job-autopilot applied there. Hiring managers get an engineer-to-engineer note naming the role, with the same rules: no pay, no call request, English.
+**How it works.** `company_targets` keeps companies that posted a role matching `company_lane_title_terms`, that aren't marked closed to the candidate's region, and whose posted pay reaches the target or whose posting came from a VC/YC portfolio or startup board with no pay under the floor. Staffing names, marketplaces, banned companies and known low ceilings are excluded. The list is ranked by open-to-region first, because a US salary on a posting that states no region is often US-only in practice, then posted pay, then the funded source, then fit. Discovery finds at most an in-house recruiter and a hiring manager per company, at first scored with the same rubric (role, scope and pay read from the posting; `client_tier: funded_product`), now with the lane rubric below. `plan` reserves `company_lane_share` (25%) of the connection and InMail slots and backfills any unused slots from the other lane. Lane tasks carry the company's open roles and whether job-autopilot applied there. Hiring managers get an engineer-to-engineer note naming the role, with the same rules: no pay, no call request, English.
 
 **The test.** `recruiters queries` reports `by_lead_type`. After two or three weeks, compare the lane's `quoted_target` and `positive` rates per contacted lead with recruiters'. A hiring manager may say "let's talk" without quoting a number, so `positive` counts too. Raise `company_lane_share` if the lane wins, and set it to 0 if after about 30 contacted lane leads it does no better than recruiters.
+
+## Company lane, second version (same evening)
+
+The first lane run (10 of the day's 20 connection requests) showed two flaws, and the user asked for both fixes. They also asked that the new source go beyond VC portfolio lists to recent funding news.
+
+**1. Lane scores measured the posting, not the person.** Every lane signal except activity came from the company's posting, and `client_tier` was `funded_product` by construction, so every lane lead scored 64-92 whoever they were. A dormant talent-acquisition generalist and a head of ML who had just posted about the role scored alike, and the scores couldn't be compared with recruiter scores either.
+
+**Fix: a lane rubric.**
+- The company is worth 40, from its posting: region 15, pay 15 (8 when it's funded but posts no pay), a matching open role 10.
+- The person is worth 60: `role_owner` 30, activity 15, `hiring_voice` 15.
+
+`role_owner` asks whether this person owns the posted role. An open-door note works when the reader can act on it. A head of ML or a founder at a small startup can; an executive at a large company or an HR generalist usually can't. `hiring_voice` asks whether their own posts talk about hiring. It is the lane's version of "posting roles like yours", which predicted recruiter quality in the study.
+
+A lane lead whose company has no matching open role is held below the line, because the lane exists to reach companies with an open role. Lane leads have their own contact line (`company_lane_min_score`). `plan` already filled each lane's slots from its own leads, so the two scales never compete for a slot.
+
+Rescoring the 21 lane leads gave 38-80, ordered by how close each person sits to the role. An active AI recruiter at a company with no matching open role would have qualified on the person alone; the gate holds them. A "Head of … AI" at a company with an open role rose above the line.
+
+**2. The lane could only see what the job sweep saw.** By the end of the run the LATAM-open startup targets were used up. Three US-pay targets with no stated region (Fal, Exa, Postman) all turned out to be onsite, and the sweep's eligibility labels couldn't tell.
+
+**Fix: a funded-company registry with its own research and board reading.**
+- A research subagent works on the open web, not LinkedIn, so it costs no LinkedIn rate limit. It reads:
+  - funding news: TechCrunch, Crunchbase News, Axios Pro Rata, press-release wires, and Sifted and Tech.eu for Europe
+  - LATAM startup press (LatamList, Contxto, LAVCA): LATAM-founded startups with US money are the likeliest to hire in the region and pay in USD
+  - VC portfolio pages beyond the ones the sweep reads
+  - accelerator batches (YC directory, a16z speedrun, AI Grant and others)
+  - AI company lists
+- For each company it records the rounds and the ATS board.
+- `refresh-boards` then reads those Ashby, Greenhouse, Lever and Workable boards through their public APIs on every run. It labels each matching posting from its own location and workplace fields: open to the region, unclear, US-only, other region, or onsite. That is the check the Fal/Exa/Postman targets lacked.
+- A funded company without a matching role stays on the watch list, so it becomes a target the day it posts one. LinkedIn-side discovery isn't needed to notice that.
+
+Funding is a good proxy for pay. The study's target-pay quotes all came from funded product companies, and a recent round is when a startup hires.
+
+**How to judge it.** `recruiters queries` now also reports `by_lane_origin`: lane leads whose company came from the sweep, from the registry, or from both. These are judged on the same `quoted_target` and `positive` outcomes as before.
 
 ## Caveats
 

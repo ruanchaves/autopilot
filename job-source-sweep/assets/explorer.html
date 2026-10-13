@@ -1046,6 +1046,12 @@ const SCOPE = { latam: `Hires in ${REGION}`, worldwide: "Hires worldwide", nears
 const PAYSIG = { at_or_above: "pay ≥ target", near: "pay near target", below: "pay below target", unknown: "no pay posted" };
 const LEAD_PARTS = [["scope", `${REGION} / worldwide`], ["active", "Active"], ["role", "Role posts"], ["pay", "Pay posts"], ["tier", "Client tier"]];
 const PARTS_MAX = { scope: 30, active: 10, role: 20, pay: 20, tier: 20 };  // overridden by dashboard.json parts_max
+// company-lane leads: the company 40 (from its posting), the person 60 (owns the role, active, posts about hiring)
+const LEAD_PARTS_LANE = [["region", "Posting open to region"], ["pay", "Pay / funding"], ["role", "Open role"], ["owner", "Owns the role"],
+                         ["active", "Active"], ["voice", "Posts about hiring"]];
+const PARTS_MAX_LANE = { region: 15, pay: 15, role: 10, owner: 30, active: 15, voice: 15 };  // overridden by parts_max_lane
+const OWNERSIG = { direct: "owns the role", adjacent: "near the role", distant: "far from the role" };
+const VOICESIG = { role: "posts about this role", general: "posts about hiring", none: "no hiring posts" };
 const TIERSIG = { funded_product: "recruits for funded product companies", boutique_search: "boutique search firm",
                   staff_aug: "staff augmentation / vendor", unclear: "" };
 const OUTCOME = [["accepted_at", "Accepted", "good"], ["replied_at", "Replied", "good"], ["positive_at", "Interested", "good"],
@@ -1070,30 +1076,34 @@ function searchReport() {
 }
 function renderOutreach() {
   const leads = RC ? RC.leads || [] : [], minScore = RC ? RC.min_score || 0 : 0;
+  const isLane = c => c.rubric === "lane", lineOf = c => isLane(c) ? (RC.min_score_lane ?? minScore) : minScore;
   const all = leads.filter(c => matchQ(c.name, (c.company || "") + " " + (c.headline || "")));
-  const tests = { all: () => true, pile: c => c.status === "new" && c.score >= minScore, contacted: c => c.status === "contacted",
+  const tests = { all: () => true, pile: c => c.status === "new" && c.score >= lineOf(c), lane: isLane, contacted: c => c.status === "contacted",
                   accepted: c => !!(c.outcome && c.outcome.accepted_at), replied: c => c.status === "replied",
-                  low: c => c.status === "new" && c.score < minScore, skipped: c => c.status === "skipped" };
+                  low: c => c.status === "new" && c.score < lineOf(c), skipped: c => c.status === "skipped" };
   if (!tests[auto.chip]) auto.chip = "all";
   chipBar([["all", "All leads", all.length], ["pile", "Ranked pile (to contact)", all.filter(tests.pile).length],
-           ["contacted", "Contacted", all.filter(tests.contacted).length], ["accepted", "Accepted", all.filter(tests.accepted).length],
+           ["contacted", "Contacted", all.filter(tests.contacted).length], ["accepted", "Accepted", all.filter(tests.accepted).length], ["lane", "Company lane", all.filter(tests.lane).length],
            ["replied", "Replied", all.filter(tests.replied).length],
            ["low", `Below ${minScore}`, all.filter(tests.low).length], ["skipped", "Skipped", all.filter(tests.skipped).length]]);
   const rows = all.filter(tests[auto.chip]).sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
   const q = (RC && RC.quotas) || {}, f = k => q[k] ? `${q[k].used}/${q[k].cap}` : "–";
   document.getElementById("auto-count").innerHTML = `<b>${rows.length}</b> recruiter leads`;
   document.getElementById("auto-note").textContent = RC
-    ? `Recruiter outreach, a pipeline of its own (as of ${RC.built}). Each lead is scored on five questions: explicitly hiring in ${REGION} or worldwide, active on LinkedIn, posting roles like yours, posting pay like your target, and recruiting for clients that pay it (funded product companies and boutique search, not staff augmentation). A company whose highest quoted pay is under your floor is held below the contact line. ` +
+    ? `Recruiter outreach, a pipeline of its own (as of ${RC.built}). Each lead is scored on five questions: explicitly hiring in ${REGION} or worldwide, active on LinkedIn, posting roles like yours, posting pay like your target, and recruiting for clients that pay it (funded product companies and boutique search, not staff augmentation). A company whose highest quoted pay is under your floor is held below the contact line. Company-lane leads (in-house recruiters and hiring managers at funded companies hiring your role, from the sweep and from funding news) have their own rubric: the company 40, the person 60 (owns the role, active, posts about hiring)${RC.funded ? `; ${RC.funded.registry} funded companies on the watch list, ${RC.funded.with_role} with a matching role` : ""}. ` +
       `Today (UTC): connection requests ${f("connect")}, InMails ${f("inmail")}, messages ${f("message")}` +
       (q.inmail_credits_hint != null ? `; InMail credits last seen: ${q.inmail_credits_hint}` : "") +
       ". Every message below is the exact text sent. Current employers are never contacted, and nobody is contacted twice."
     : "No recruiter outreach yet. Run the recruiter-outreach skill to discover and rank recruiters.";
   const body = rows.map(c => {
     const [label, cls] = LEAD_ST[c.status] || [c.status, "none"], p = c.parts || {}, s = c.signals || {};
-    const mx = (RC && RC.parts_max) || PARTS_MAX;
-    const parts = LEAD_PARTS.filter(([k]) => k in p).map(([k, l]) => `<span>${l} <b>${Math.round(p[k] ?? 0)}</b>/${mx[k] ?? ""}</span>`).join("") +
+    const lane = isLane(c), mx = lane ? (RC.parts_max_lane || PARTS_MAX_LANE) : (RC.parts_max || PARTS_MAX);
+    const parts = (lane ? LEAD_PARTS_LANE : LEAD_PARTS).filter(([k]) => k in p).map(([k, l]) => `<span>${l} <b>${Math.round(p[k] ?? 0)}</b>/${mx[k] ?? ""}</span>`).join("") +
       (p.penalty ? `<span>Penalties <b>${p.penalty}</b></span>` : "");
-    const facts = [SCOPE[s.hiring_scope] || "", s.last_activity_days != null ? `active ${s.last_activity_days}d ago` : "no recent activity",
+    const facts = lane ? [OWNERSIG[s.role_owner] || "", VOICESIG[s.hiring_voice] || "",
+                          s.last_activity_days != null ? `active ${s.last_activity_days}d ago` : "no recent activity",
+                          SCOPE[s.hiring_scope] || "", PAYSIG[s.pay_signal] || "", c.laneOrigin ? `company from ${c.laneOrigin}` : "",
+                          c.gate ? `held: ${c.gate}` : ""].filter(Boolean) : [SCOPE[s.hiring_scope] || "", s.last_activity_days != null ? `active ${s.last_activity_days}d ago` : "no recent activity",
                    `${s.role_posts_90d || 0} matching role post${s.role_posts_90d === 1 ? "" : "s"} / 90d`, PAYSIG[s.pay_signal] || "",
                    TIERSIG[s.client_tier] || "", s.volume_vendor ? "US-IT vendor" : "", s.task_platform ? "task platform" : "",
                    c.gate ? `held: ${c.gate}` : ""].filter(Boolean);
