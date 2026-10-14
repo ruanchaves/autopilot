@@ -1,6 +1,6 @@
 ---
 name: job-source-sweep
-description: Sweep ~80 job sources for fresh postings of the role in the repo's config.yaml (or any title the user names). Covers remote-job feeds and APIs (Himalayas, Remote OK, Jobgether, Working Nomads, Remotive, We Work Remotely, NoDesk, Cryptocurrency Jobs), Hacker News "Who is hiring" threads, Y Combinator's Work at a Startup jobs, twelve Getro VC portfolio networks (General Catalyst, Khosla, Accel, Menlo, Insight and seven European funds) and five Consider boards (Sequoia, Lightspeed, First Round, Bessemer, Founderful), plus browser passes over LinkedIn Jobs and posts, Remote Rocketship, Wellfound, and Google site: sweeps of 19 ATS platforms and 15 job boards. Produces a deduplicated, date-filtered table with new-since-last-run markers. Reads companies' own Ashby/Greenhouse/Lever/Workable boards through their APIs. Can also check each company for engineers working there from the user's country or region (Google site:linkedin.com/in searches, never LinkedIn search), caching the verdicts. After the sweep it can enrich every role: fetch the job description, classify location eligibility (the user's country and region) from the JD text, and rate fit against the user's resume (all personal settings come from the repo's config.yaml). It then publishes a filterable role explorer page (an Artifact) that is republished to the same link on every run. On first use it runs an interactive setup (role, age window, depth, platforms to skip, a cap on how many roles to collect, and the country check), and it reruns setup when asked to "set up" or "reconfigure". Use it to search, sweep or prospect job boards for a role, to country-verify the companies found, to classify or rate the roles found, to rebuild the role explorer, or to change the sweep's saved preferences. It does not apply or do outreach.
+description: Sweep ~80 job sources for fresh postings of the role in the repo's config.yaml (or any title the user names). Covers remote-job feeds and APIs (Himalayas, Remote OK, Jobgether, Working Nomads, Remotive, We Work Remotely, NoDesk, Cryptocurrency Jobs), Hacker News "Who is hiring" threads, Y Combinator's Work at a Startup jobs, twelve Getro VC portfolio networks (General Catalyst, Khosla, Accel, Menlo, Insight and seven European funds) and five Consider boards (Sequoia, Lightspeed, First Round, Bessemer, Founderful), plus browser passes over LinkedIn Jobs and posts, Remote Rocketship, Wellfound, and Google site: sweeps of 19 ATS platforms and 15 job boards. Produces a deduplicated, date-filtered table with new-since-last-run markers. Reads companies' own Ashby/Greenhouse/Lever/Workable boards through their APIs. Can also check each company for engineers working there from the user's country or region (search-engine site:linkedin.com/in queries through the ddgs library, judged by a subagent; never LinkedIn search), caching the verdicts. After the sweep it can enrich every role: fetch the job description, classify location eligibility (the user's country and region) from the JD text, and rate fit against the user's resume (all personal settings come from the repo's config.yaml). It then publishes a filterable role explorer page (an Artifact) that is republished to the same link on every run. On first use it runs an interactive setup (role, age window, depth, platforms to skip, a cap on how many roles to collect, and the country check), and it reruns setup when asked to "set up" or "reconfigure". Use it to search, sweep or prospect job boards for a role, to country-verify the companies found, to classify or rate the roles found, to rebuild the role explorer, or to change the sweep's saved preferences. It does not apply or do outreach.
 ---
 
 # Job source sweep
@@ -14,7 +14,12 @@ Files in the skill folder (shared, role-neutral; don't put personal settings her
 - `sources.json`: the sources. Edit it only to add or remove a source.
 - `profiles/<slug>.json`: bundled example role profiles. `_template.json` documents every field.
 - `scripts/jobsweep.py`: the `config`, `plan`, `http`, `merge`, `test-match` and `verify-queue` commands.
-- `scripts/companies.py`: company facts shared with job-autopilot and recruiter-outreach: the `boards`, `people-queue` and `people-ingest` commands, ATS board readers, posting-region labels, employer-type patterns, and the people-check cache.
+- `scripts/companies.py`: company facts shared with job-autopilot and recruiter-outreach. It holds:
+  - the `boards`, `people-queue`, `people-ingest`, `search`, `people-harvest` and `people-harvest-ingest` commands;
+  - the search layer (`Searcher`);
+  - the ATS board readers, posting-region labels and employer-type patterns;
+  - the people-check cache.
+- `scripts/serp_helper.py`: one ddgs search, run inside the search virtualenv (`search.python` in config.yaml).
 - `scripts/enrich.py`: the step 8 commands `jds`, `enrich-queue` and `explorer`, registered on `jobsweep.py`.
 - `assets/explorer.html`: the role explorer page template.
 - `references/`: subagent instructions for the browser lane, the country hiring check, JD eligibility and resume fit.
@@ -26,6 +31,8 @@ Per-user files, in `<home>` (default `~/jobsweep`, or `$JOBSWEEP_HOME`):
 - `runs/`, `history/`: sweep output (each run also writes `funnel.json`: per source, what was fetched and what each filter removed) and the seen-before history.
 - `people_checks.json`: the people-check verdicts per company. `verdicts.json` is the older country-check cache, no longer written.
 - `boards.json`: companies' ATS boards and their postings, read by the `company_boards` source.
+- `serp_cache/`, `search_state.json`, `region_employers.json`: the search layer's raw results and engine suspensions,
+  and the weekly employer harvest (`jobsweep people-harvest`, judged with `references/people-harvest.md`).
 - `jds/`, `classifications.json`, `fit-rubric.md`: the step 8 caches. They are keyed by normalised URL, so a role seen again on a later day is never fetched, classified or rated twice.
 - `runs/<date>-explore/`: that day's batches, `roles.json`/`roles.csv` and `explorer.html`.
 
@@ -180,7 +187,14 @@ elsewhere in its region, or elsewhere outside the US? It is the only accepted ev
 the US. A posting's location label, in the JD or the ATS field, is written by automated systems and is often wrong
 (user rule 2026-10-14).
 
-**How it's searched:** Google `site:linkedin.com/in` queries, with Yahoo when Google blocks. **Never LinkedIn's own search**, which rate-limits the
+**How it's searched:** a script runs the searches through the search layer (`scripts/companies.py`, `Searcher`).
+- **Engines:** the ddgs library's Yahoo engine (Bing's index), with `search:` settings in config.yaml.
+- **Queries:** profile-country subdomains such as `site:br.linkedin.com/in engineer "Company"`. The subdomain proves
+  the country.
+- **Judging:** a subagent judges the results without a browser (`references/people-judge.md`), rejecting namesakes.
+- **Fallback:** what it can't settle goes to Google and Yahoo in Chrome (`references/people-check.md`).
+
+**Never LinkedIn's own search**, which rate-limits the
 user's account fast.
 
 **When it runs:** when `sweep.country_check` is `always`, or when the user asks ("verify Brazil", "check which hire
@@ -189,11 +203,17 @@ filter. Inside /job-autopilot this step is skipped: the autopilot runs the same 
 most for its target.
 
 1. After the final merge, run `jobsweep verify-queue --profile <slug> --days <N> --limit <country_check_limit> [--all]`.
-   - It lists companies from **new** rows that have no fresh verdict, busiest first, in batches of 10.
+   - It fetches the search results for companies from **new** rows that have no fresh verdict, busiest first, and
+     writes judge batches of 25.
+   - **Judge them first:** one parallel subagent per batch, no browser, with the prompt "Read
+     `<skill>/references/people-judge.md` and follow it exactly. Batch file: `<batch>`. Output file: `<out>`.
+     country: `<country>`, region: `<region>`."
+   - **Then the Chrome fallback** (step 3 below) runs for the companies marked `needs_google`. Get its batch with
+     `jobsweep people-queue --mode chrome`.
    - A positive verdict stays fresh for 90 days, "none" for 30.
    - `--all` also includes rows seen in earlier runs.
 2. If the queue is empty, say so and skip to step 4.
-3. Run the batches **one at a time**, never in parallel, as Chrome subagents (`general-purpose`, `model: "sonnet"`).
+3. **The Chrome fallback:** run its batches **one at a time**, never in parallel, as Chrome subagents (`general-purpose`, `model: "sonnet"`).
    - **Prompt:** "Read `<skill>/references/people-check.md` and follow it. Batch file: `<batch>`. Output file:
      `<out>`. country: `<country>`, region: `<region>`."
    - **Why one at a time:** Google and Yahoo are the engines whose snippets show where people live. In the 2026-10-14 tests

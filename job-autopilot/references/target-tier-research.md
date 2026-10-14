@@ -70,6 +70,55 @@ Verdicts stay fresh for 90 days when engineers were found and 30 days for "none"
 - Sales and go-to-market staff: ElevenLabs' Brazil and Mexico profiles were mostly sales. Companies often open a
   country with sales first, so only engineering titles count.
 
+## Searching at scale: the search layer (approved 2026-10-14, second plan)
+
+The Chrome-only check capped tier A at about 20 companies a run. Research and tests on 2026-10-14:
+
+**Options compared:**
+- **ddgs** (github.com/deedy5/ddgs, MIT): a keyless metasearch library over about 10 engines, with fallback, proxy
+  support and a REST server. It is the one adopted.
+- **SearXNG:** needs Docker, and from a single IP its Google and Brave connections get suspended (a CAPTCHA suspends
+  an engine for 24 h by default).
+- **CrossLinked:** the same `site:linkedin.com` technique; a penetration-testing tool, unmaintained since November
+  2024.
+- **Google Custom Search API:** closed to new customers, shutting down 2027-01-01.
+- **Brave API:** credits only, card required.
+- **Serper, Exa, Tavily:** need an account; not adopted.
+
+**Tests from WSL:**
+- **Which engines answer a script:** in practice only ddgs's Yahoo engine, which is Bing's index. The first tests
+  seemed to show Bing and Yandex answering with the same results. In fact ddgs 9.16.0 has no "bing" or "yandex" text
+  engine, and asking for one silently runs "auto", which picks engines at random. That surfaced when a "bing" query
+  failed against startpage.com. The helper now refuses engines ddgs doesn't have. Google, Brave, DuckDuckGo, Mojeek
+  and Startpage returned nothing.
+- **Throughput:** 30 queries in a row, no block, about 1.2 s each.
+- **Coverage:** 22 of 30 companies had LinkedIn results; the 8 empties are gaps in Bing's index (Constructor.io,
+  which Google found).
+
+**The first ramp step through the full pipeline** (25 companies): 101 queries, 0 errors, 0 suspensions, canary ok,
+8.5 minutes.
+- **The "retry on Yahoo" in this step was an artifact:** the "bing" queries ran through "auto", so a retry on Yahoo
+  recovered 11 of 32 empties. With Yahoo as the only engine, an empty result is accepted after one query.
+- **Second ramp step:** see below.
+
+**Query design:**
+- **The country is the URL:** `site:br.linkedin.com/in engineer "Company"` returns only profiles registered in Brazil.
+- **One query for the rest of LATAM:** `(site:mx… OR site:ar… OR site:co… OR site:cl… OR site:pe… OR site:uy…)`.
+- **One company per query:** grouping several companies with OR returned unrelated profiles.
+- **Snippets:** Bing's snippets carry LinkedIn's "Experiência: <current employer> · Localidade: <city>" line.
+
+**Namesakes are the main risk to precision.** "Neon" matched a Brazilian fintech, "Octane" two different companies,
+and "AZX" mostly AZX Lab, a Brazilian dev shop. So:
+- **A subagent judges every result set** against what we know about the company (type, HQ, description, website,
+  the role), and marks what it can't settle `needs_google`.
+- **Only judged verdicts count toward tiers** (`method` `search-v2` or `chrome-v2`). The 10 Chrome-era verdicts wait
+  for `people-queue --recheck`.
+- **One-word names never stop early,** and the judge needs a second clue for them.
+
+**The harvest yields little:** reading employers off `site:br.linkedin.com/in "AI Engineer"` gave about 15 employers
+per 60 profiles. It runs weekly as a side source for funding research (`region_employers.json`) and never writes
+verdicts.
+
 ## The pay estimate (B5)
 
 Each role gets a pay tier: `posted_target`, `posted_near`, `posted_below`, `likely_target`, `unclear` or

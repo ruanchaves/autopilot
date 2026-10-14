@@ -14,7 +14,8 @@ the subagent clicks Submit itself and records `applied` with the confirmation it
     autopilot.py company-queue [--batch-size 40] [--batches 14] [--backtest]   # company-type batches (references/company-type.md)
     autopilot.py company-ingest
     autopilot.py paytier-backtest                                 # how well the pay estimate predicts posted pay
-    autopilot.py people-queue  [--limit N]                        # people-check batches, target-pay companies first
+    autopilot.py people-queue  [--limit N] [--mode search|chrome] [--recheck]   # people check: search + judge
+                                                                  # batches, or the Chrome fallback
     autopilot.py people-ingest
     autopilot.py queue         [--batches 14] [--decisions DIR]   # tiers A/B/C, round-robin across sources inside each
     autopilot.py run-report    [--published-url URL]              # this run's report page (assets/run-report.html)
@@ -120,9 +121,9 @@ DEFAULT_SETTINGS = {
     "cover_letter": "required",
     # target tiers (target.py): "prefer" queues tier A, then B, then C; "only" leaves tier C out of the queue
     "target_mode": "prefer",
-    # companies the people check looks at per run. Google, the one engine whose results show where people
-    # live, blocked after ~13 searches in the 2026-10-14 test, so a run checks few companies, best first.
-    "people_check_limit": 20,
+    # companies the people check looks at per run, best first. Searches go through the search layer (ddgs,
+    # companies.Searcher; job-source-sweep search.* settings cap the queries); Chrome is only the fallback.
+    "people_check_limit": 100,
     # filled in from config.yaml by settings(): banned_companies (current employers/clients, never
     # applied to), pay_target_usd_month / pay_skip_below_usd_month (pay section), and the tracker
     # section (applika_enabled, rejection_cooldown_days, rejection_neutral_feedback,
@@ -279,7 +280,9 @@ def evaluate(home: str, roles: list[dict], st: dict | None = None) -> dict[str, 
         cat = (cache.get(r["key"], {}).get("elig") or {}).get("category")
         pt = tg.pay_tier(r, sp, ctx)
         pv = ctx["people"].get(co.key_of(r.get("company", ""))) or {}
-        people = pv.get("level")
+        # only verdicts judged with the company's context count (co.METHODS); an older one, which may be a namesake
+        # (AZX Lab for AZX), waits for its re-check (people-queue --recheck)
+        people = pv.get("level") if pv.get("method") in co.METHODS else None
         ok, why, evidence = apply_decision(sp, st, pt, people) if sp else (True, "", "")
         tier = tg.tier_of(pt["tier"], people)
         if why == "location_overridden" and tier == "A":
@@ -1540,7 +1543,15 @@ def cmd_people_queue(args) -> int:
         wanted.append({"company": r["company"], "why": f'{v["pay"]["tier"]}: {r["title"]}',
                        "_rank": (rank.get(v["pay"]["tier"], 5), -(v["score"] or 0))})
     wanted.sort(key=lambda w: w["_rank"])
-    res = co.people_queue(args.home, wanted, args.limit or int(st["people_check_limit"]), work_dir(args.home))
+    limit = args.limit or (int(st["people_check_limit"]) if args.mode == "search" else 10)
+    res = co.people_queue(args.home, wanted, limit, work_dir(args.home), mode=args.mode, recheck=args.recheck)
+    if res.get("search"):
+        s_ = res["search"]
+        log(args.home, [{"step": "search", "role": "", "title": "", "company": "", "outcome": "stats",
+                         "reason": s_.get("halted") or "ok",
+                         "evidence": json.dumps({k: s_.get(k) for k in ("queries", "cache_hits", "by_engine", "empty", "errors",
+                                                                          "suspended", "halted", "canary")}),
+                         "by": "search layer"}])
     return emit(res)
 
 
@@ -1552,9 +1563,9 @@ def cmd_people_ingest(args) -> int:
     for f in files:
         for d in enrich.read_jsonl(f):
             v = cache.get(d.get("key") or co.key_of(d.get("company", "")))
-            if v and v.get("checked") == TODAY:
+            if v and v.get("checked") == TODAY and (v.get("level") or v.get("status")):
                 ev_ = (v.get("evidence") or [{}])[0]
-                logged.append(rec("people check", {"company": v.get("company", "")}, v["level"], v.get("engine", ""),
+                logged.append(rec("people check", {"company": v.get("company", "")}, v.get("level") or v.get("status", ""), v.get("engine", ""),
                                   " | ".join(x for x in [ev_.get("title", ""), ev_.get("location", ""), ev_.get("url", "")] if x)
                                   or v.get("detail", ""), "people-check subagent"))
     log(args.home, logged)
@@ -1606,6 +1617,8 @@ def main() -> int:
     sub.add_parser("company-ingest").set_defaults(fn=cmd_company_ingest)
     sub.add_parser("paytier-backtest").set_defaults(fn=cmd_paytier_backtest)
     p = sub.add_parser("people-queue"); p.add_argument("--limit", type=int, default=0); p.add_argument("--batches", type=int, default=14)
+    p.add_argument("--mode", choices=["search", "chrome"], default="search")
+    p.add_argument("--recheck", action="store_true", help="also re-check verdicts made before the judged method")
     p.set_defaults(fn=cmd_people_queue)
     sub.add_parser("people-ingest").set_defaults(fn=cmd_people_ingest)
     p = sub.add_parser("run-report"); p.add_argument("--run"); p.add_argument("--batches", type=int, default=14)

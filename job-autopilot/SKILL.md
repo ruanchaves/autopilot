@@ -1,6 +1,6 @@
 ---
 name: job-autopilot
-description: Job hunting on autopilot, up to the Submit button. Runs the full /job-source-sweep, gives every role a 0-100 global fit score, estimates its pay when none is posted, checks via Google site:linkedin.com searches whether the company has engineers in the user's country or region, and queues tier A (target pay + engineers there) first, decides liberally which roles are worth applying to (skipping only clear mismatches, explicit location/citizenship exclusions, non-remote roles and excluded contract types), then works down the ranking - tailoring the resume for each role with /tailor-resume (automatic mode, JD-specific summary), filling the application completely through the company ATS form, LinkedIn Easy Apply or an email draft, drafting and attaching a short cover letter when the form requires one, and STOPPING before Submit with the tab left open for the user. By default it never submits; config.yaml autopilot.auto_submit: true lets it click Submit itself. It answers every form question from the resume and context, marking estimates for the user to confirm, keeps every answer so a question is asked only once, and asks the user only the few things it can't estimate (IDs, authorisation, documents). The user reviews each filled form on the role explorer's Autopilot tab, submits it, and marks it Submitted; only then is it registered in applika via WSL. Each run ends with a report artifact explaining every decision: sources and queries, why each role was selected or rejected, posting ages. It paces work per site, records every outcome, and never applies to the user's current employers (banned_companies in the repo's config.yaml, where every personal setting lives). It does no LinkedIn outreach; that is the separate /recruiter-outreach skill. On first use it runs an interactive setup (submit policy, cover letters, channels, tracker, caps) and reruns it on "set up" or "reconfigure". Use when the user wants to sweep and prepare applications automatically, continue or resume the apply loop, retry failed applications, confirm which filled applications they submitted, or see which applications are ready, submitted or failed.
+description: Job hunting on autopilot, up to the Submit button. Runs the full /job-source-sweep, gives every role a 0-100 global fit score, estimates its pay when none is posted, checks via search-engine site:linkedin.com searches (never LinkedIn search) whether the company has engineers in the user's country or region, and queues tier A (target pay + engineers there) first, decides liberally which roles are worth applying to (skipping only clear mismatches, explicit location/citizenship exclusions, non-remote roles and excluded contract types), then works down the ranking - tailoring the resume for each role with /tailor-resume (automatic mode, JD-specific summary), filling the application completely through the company ATS form, LinkedIn Easy Apply or an email draft, drafting and attaching a short cover letter when the form requires one, and STOPPING before Submit with the tab left open for the user. By default it never submits; config.yaml autopilot.auto_submit: true lets it click Submit itself. It answers every form question from the resume and context, marking estimates for the user to confirm, keeps every answer so a question is asked only once, and asks the user only the few things it can't estimate (IDs, authorisation, documents). The user reviews each filled form on the role explorer's Autopilot tab, submits it, and marks it Submitted; only then is it registered in applika via WSL. Each run ends with a report artifact explaining every decision: sources and queries, why each role was selected or rejected, posting ages. It paces work per site, records every outcome, and never applies to the user's current employers (banned_companies in the repo's config.yaml, where every personal setting lives). It does no LinkedIn outreach; that is the separate /recruiter-outreach skill. On first use it runs an interactive setup (submit policy, cover letters, channels, tracker, caps) and reruns it on "set up" or "reconfigure". Use when the user wants to sweep and prepare applications automatically, continue or resume the apply loop, retry failed applications, confirm which filled applications they submitted, or see which applications are ready, submitted or failed.
 ---
 
 # Job autopilot
@@ -35,7 +35,7 @@ This skill runs job-source-sweep, ranks everything it finds, and prepares applic
 | `autopilot.auto_submit` | `false` (default): fill and stop in front of Submit; the user submits and confirms. `true`: the subagent clicks Submit itself, records the confirmation it saw, and those applications are registered in applika without a confirmation step. |
 | `autopilot.cover_letter` | `required`: write one when the form requires it or the posting asks for one. `always`: wherever a form accepts one. `target`: `always` for tier A roles, `required` for the rest. `never`. |
 | `autopilot.target_mode` | `prefer` (default): the queue takes tier A first, then B, then C. `only`: tier C roles are left out of the queue (they still show on the dashboard and in the run report). |
-| `autopilot.people_check_limit` | Companies the people check looks at per run (default 20, best candidates first). Google and Yahoo are the engines whose results show where people live. Google blocks after about a dozen searches in a burst, and Yahoo takes over. |
+| `autopilot.people_check_limit` | Companies the people check looks at per run (default 100, best candidates first). Their searches go through the search layer (`search:` in config.yaml: the ddgs library in its own virtualenv, `max_queries_per_run` 300). Only companies it can't settle go to Chrome. |
 | `autopilot.max_load_retries` | Type-3 failures before a role is given up. |
 | `autopilot.tailor_ahead` | Tailored CVs kept ready ahead of the fill loop. |
 | `autopilot.tailor` | `true`: tailor the resume per role with the tailor-resume skill. `false`: skip tailoring and upload `resume.pdf` as-is (set by first-run setup when the skill isn't installed). |
@@ -98,17 +98,32 @@ Invoke the **job-source-sweep** skill and follow it through step 8e: HTTP lane, 
    - **What it records:** one judgement per company, cached for good: funded startup, product company, big company,
      staffing firm, consultancy, marketplace, task platform or local employer.
    - **When there is nothing to do:** on a normal day only the new companies are pending, usually one or two batches.
-5. **People check.** Run `autopilot people-queue`. It lists up to `people_check_limit` companies that have no fresh
-   verdict, ordered by pay: roles posting the target first, then those likely at it, then the best score.
-   - **The subagent:** launch **one** Chrome subagent per batch, **one batch at a time**, never in parallel, since
-     the batches share the search engines and one IP. Use `general-purpose`, `model: "sonnet"`, and the prompt: "Read
-     `<repo>/job-source-sweep/references/people-check.md` and follow it. Batch file: `<batch>`. Output file: `<out>`.
-     country: `<country>`, region: `<region>`."
-   - **Afterwards:** run `autopilot people-ingest`.
-   - **When every engine blocks:** if the subagent reports Google and Yahoo both blocked, don't start another batch this run. The rest
-     stays queued for the next run.
-   - **Never LinkedIn search:** the check runs on search engines only, never LinkedIn's own search (user rule
-     2026-10-14).
+5. **People check.** Searching is done by a script; a subagent judges what it found. Chrome is only the fallback.
+   Never use LinkedIn's own search (user rule 2026-10-14).
+   1. **Fetch.** Run `autopilot people-queue` in the background (`run_in_background`). It takes about 5 seconds per
+      query, so 100 companies take up to about 35 minutes. It:
+      - takes up to `people_check_limit` companies (100) with no fresh verdict, ordered by pay: roles posting the
+        target first, then those likely at it, then the best score;
+      - fetches each company's search results through the search layer (`companies.Searcher`: ddgs's Yahoo engine,
+        Bing's index, paced, cached for 30 days, capped by `search.max_queries_per_run`);
+      - writes judge batches of 25.
+
+      Use `--recheck` once to re-judge verdicts made before this method. Until then they don't count toward tiers.
+      If its output says the canary failed or the search halted, the engines are blocking: judge what was fetched,
+      and let the Chrome fallback take the top companies.
+   2. **Judge.** Launch one subagent per batch, **in parallel**, with no browser (`general-purpose`,
+      `model: "sonnet"`).
+      - **Prompt:** "Read `<repo>/job-source-sweep/references/people-judge.md` and follow it exactly. Batch file:
+        `<batch>`. Output file: `<out>`. country: `<country>`, region: `<region>`."
+      - **What the judge does:** rejects namesakes using what we know about each company (AZX Lab is not AZX). It
+        marks what it can't settle as `needs_google`.
+   3. Run `autopilot people-ingest`.
+   4. **Chrome fallback.** Run `autopilot people-queue --mode chrome`, which takes at most 10 companies marked
+      `needs_google`, mostly where Bing had no LinkedIn results. Run its batch with **one** Chrome subagent:
+      - **Prompt:** "Read `<repo>/job-source-sweep/references/people-check.md` and follow it. Batch file: `<batch>`.
+        Output file: `<out>`. country: `<country>`, region: `<region>`."
+      - **When both engines block:** if that subagent reports Google and Yahoo blocked, stop. The rest stays queued.
+      - **Afterwards:** run `autopilot people-ingest` again.
 6. Run `autopilot queue --decisions <decisions dir>`.
 
 **Tiers (`target.py`).** The user's goal is roles paying at least `pay.target_usd_month` at companies that really

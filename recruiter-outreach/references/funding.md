@@ -19,6 +19,7 @@ From your prompt:
   `already_targets` (the job sweep already found them hiring: skip them), `queries_tried` (searches run in the last
   three weeks: don't repeat one), `recheck` (registry companies to look at again).
 - **Funds:** `vc_funds`, the portfolios the job sweep already reads.
+- **Region employers:** `region_employers`, the employers of engineers in the candidate's country (avenue 6).
 - **Search terms:** `seeds` (the months in the window, role terms, title terms, region terms).
 - **The candidate:** `candidate`, `target_role`, `pay_target_usd_month`, `pay_floor_usd_month`.
 - **Excluded:** `banned_companies` (never), `known_low_ceiling` (companies that quoted under the floor: skip them).
@@ -60,16 +61,13 @@ Use at least four of these avenues per pass, always including avenue 6, and spre
 6. **Where engineers in the candidate's region already work.** A company that employs AI engineers in the
    candidate's country is the strongest sign it hires there. Postings' location labels are often wrong (user rule
    2026-10-14).
-   - **Queries:** WebSearch for profiles, such as `"AI engineer" OR "machine learning engineer" Brazil
-     site:linkedin.com/in`, with the region's other countries in place of Brazil, and with "LLM" or "GenAI" in
-     place of the titles.
-   - **Reading the results:** read the raw result titles ("Name - Title - Company"). Never trust the prose summary.
-   - **What to keep:** collect the current employers that are funded product companies headquartered outside the
-     region (US or European startups with a team in the region), then check their funding and board as for any
-     other company.
-   - **What to record:** `found_via: people:<query>`, plus `people_evidence`: the profile URL and title that showed
-     it.
-   - **Never use LinkedIn's own search.**
+   - **The starting list:** `region_employers` in your inputs, the current employers that job-source-sweep's weekly
+     harvest read off profiles registered in the candidate's country.
+   - **What to keep:** the funded product companies headquartered outside the region, such as US or European
+     startups with a team there.
+   - **What to check:** their funding and their careers board, as for any other company.
+   - **What to record:** `found_via: people:<employer>`.
+   - **Don't search for profiles yourself.** The harvest already did that. Never use LinkedIn's own search.
 
 Write each search into `queries_run` exactly as you ran it. Searches that gave nothing go into `dead_queries` too.
 
@@ -124,7 +122,7 @@ Skip these:
    - `remote_policy`: remote-first, remote-friendly, hybrid or onsite
 4. **Record the rounds** in `funding`: round, `amount_usd` (a number), `date` (YYYY-MM-DD), lead `investors`,
    `source_url`.
-5. **Record `found_via`:** `news:<search as run>`, `portfolio:<fund>`, `batch:<name>`, `list:<name>`, `people:<search as run>`, or `recheck`.
+5. **Record `found_via`:** `news:<search as run>`, `portfolio:<fund>`, `batch:<name>`, `list:<name>`, `people:<employer>`, or `recheck`.
 
 For each company in `recheck`, read the careers page again and report its `roles`, plus `ats` if it now has a board.
 

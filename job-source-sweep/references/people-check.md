@@ -1,4 +1,18 @@
-# People check
+# People check: the Chrome fallback
+
+**This is the fallback path.** The people check normally runs without a browser:
+1. A script fetches search results through the search layer (`scripts/companies.py`, ddgs).
+2. A subagent judges them (`references/people-judge.md`).
+
+You get only the companies that path couldn't settle (`status: needs_google`):
+- Bing had nothing for them (it holds fewer LinkedIn profiles than Google);
+- or the results were namesakes or unclear.
+
+Each batch entry carries:
+- `context`: what we know about the company;
+- `ambiguous_name`;
+- `search_said`: why the search path gave up.
+
 
 One question per company: **do engineers who work there live outside the US, and where?** It is the only evidence
 the skills accept that a company really hires outside the US. A posting's location label, in the JD or in the ATS
@@ -9,7 +23,7 @@ result.** LinkedIn search rate-limits the user's account fast, and that account 
 ## Inputs
 
 From your prompt:
-- a **batch file**: a JSON list of `{company, key, why, queries: [{q, urls: {google, yahoo}}]}`;
+- a **batch file**: a JSON list of `{company, key, why, context, ambiguous_name, search_said, queries: [{q, urls: {google, yahoo}}]}`;
 - an **output file** (`people_out_*.jsonl`);
 - `country` and `region`: the candidate's country (for example Brazil) and wider region (for example LATAM).
 
@@ -94,9 +108,11 @@ If the snippet returns nothing on a page that clearly has results, read it with 
    - The company named only as a tool or skill ("Jenkins | GitLab | Kubernetes").
    - A past employer ("ex-Acme", "former", "Previously").
    - A same-named different company. "Sierra Studio" the Brazilian dev shop isn't Sierra the AI company, and a
-     "Monte Carlo" with no data-observability context is unknown.
+     "Monte Carlo" with no data-observability context is unknown. "AZX Lab", a Brazilian dev shop, isn't AZX the US
+     AI firm.
 
-   When unsure, it doesn't count.
+   Compare every result with `context` and `why`. For an `ambiguous_name`, require a second clue: the website domain,
+   a product or field word matching `context`, or the full legal name. When unsure, it doesn't count.
 3. **Located outside the US**, by one of:
    - the location the snippet states ("Location: São Paulo", "Localidade: Rio de Janeiro", "São Paulo, Brazil ·");
    - the country subdomain of the profile URL (`br.`, `mx.`, `ar.`, `co.`, `cl.`, `pe.`, `uy.` and so on).
@@ -119,7 +135,8 @@ Append one line per company to the output file as soon as it is settled, with `p
 WSL on this machine), or with a quoted heredoc:
 
 ```json
-{"key": "<key>", "company": "Acme", "level": "brazil", "status": "complete", "engine": "google | yahoo | websearch", "checked": "YYYY-MM-DD",
+{"key": "<key>", "company": "Acme", "level": "brazil", "status": "complete", "method": "chrome-v2", "engine": "google | yahoo | websearch", "checked": "YYYY-MM-DD",
+ "same_company": "one line: why these profiles are this company, not a namesake",
  "queries_run": ["engineer \"Acme\" Brazil site:linkedin.com/in"],
  "evidence": [{"title": "Jane Roe - Senior ML Engineer - Acme | LinkedIn", "url": "https://br.linkedin.com/in/janeroe",
                "snippet": "Senior ML Engineer at Acme · Location: São Paulo, Brazil", "location": "São Paulo, Brazil",

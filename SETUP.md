@@ -15,6 +15,16 @@ If `~/.claude/skills/<name>` already exists and is a real folder with its own fi
 
 Try in order and keep the first that reports Python 3.11 or newer: `python3 --version`, `python --version`, `py -3 --version`, `wsl.exe -e python3 --version`. Then check PyYAML with the same interpreter: `<python> -c "import yaml"`. If it is missing, say so and run `<python> -m pip install pyyaml` (inside WSL when the runner is `wsl`). If no interpreter works, tell the user they need Python 3.11+ with PyYAML, or WSL on Windows, and stop.
 
+Then set up the search virtualenv for the people check, with the same runner (inside WSL when it is `wsl`):
+
+```
+python3 -m venv --without-pip ~/.venvs/search && curl -sS https://bootstrap.pypa.io/get-pip.py | ~/.venvs/search/bin/python
+~/.venvs/search/bin/python -m pip install ddgs==9.16.0 pyyaml
+```
+
+Check it with `jobsweep search 'site:br.linkedin.com/in engineer "Stripe"' --no-cache`. It should print LinkedIn
+results. If it can't be installed, the people check falls back to Chrome (`references/people-check.md`).
+
 Set `python:` in `<repo>/config.yaml` to `python3`, `python`, `py -3` or `wsl`. With `wsl`, every path handed to the scripts takes its `/mnt/<drive>/…` form, and from Git Bash `export MSYS_NO_PATHCONV=1` first.
 
 ## 3. Choose the data folder

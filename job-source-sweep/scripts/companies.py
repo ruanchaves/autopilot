@@ -1,8 +1,11 @@
 """Company facts shared by job-source-sweep, job-autopilot and recruiter-outreach.
 
     jobsweep.py boards        [--max-age-hours 20] [--batches 14]   # find and read companies' ATS job boards
-    jobsweep.py people-queue  [--limit 60] [--companies a,b]        # batches for the people check (references/people-check.md)
+    jobsweep.py people-queue  [--limit N] [--mode search|chrome]    # search + judge batches (people-judge.md), or the
+                                                                    # Chrome fallback (people-check.md)
     jobsweep.py people-ingest [--dir DIR]                           # fold people_out_*.jsonl into people_checks.json
+    jobsweep.py search QUERY  [--no-cache]                          # one query through the search layer
+    jobsweep.py people-harvest [--pages 3] / people-harvest-ingest  # weekly: employers of engineers in the country
 
 What lives here, all in <home>:
 
@@ -26,6 +29,7 @@ search, which rate-limits the account fast (user rule 2026-10-14).
 from __future__ import annotations
 
 import json
+import os
 import re
 import statistics
 import sys
@@ -380,11 +384,188 @@ def median(values: list) -> float | None:
     return statistics.median(values) if values else None
 
 
+# ---------------------------------------------------------------- search layer
+# Every people-check and harvest query goes through Searcher: the ddgs metasearch library (MIT, pinned at
+# DDGS_VERSION, run by serp_helper.py inside the search virtualenv), engines tried in config order with a circuit
+# breaker each, 4-6 s jittered gaps, a per-run query budget, a canary query that tells "no results" from "quietly
+# blocked", and a 30-day cache of raw results in <home>/serp_cache/. Tested 2026-10-14 from WSL: about 130 queries,
+# no block. Only ddgs's Yahoo engine (Bing's index) answers a script: Google, Brave, DuckDuckGo, Mojeek and Startpage
+# returned nothing, and in ddgs 9.16.0 "bing" and "yandex" are disabled (asking for them silently ran "auto"; the
+# helper now refuses them). One working engine, so Chrome stays the fallback (job-autopilot/references/
+# target-tier-research.md).
+
+DDGS_VERSION = "9.16.0"
+SEARCH_DEFAULTS = {"python": "~/.venvs/search/bin/python", "backends": ["yahoo"], "min_gap_seconds": 4,
+                   "jitter_seconds": 2, "max_queries_per_run": 300, "cache_days": 30, "empty_cache_days": 3,
+                   "suspend_hours": 6, "errors_to_suspend": 2, "empty_streak_halt": 8,
+                   "canary": 'site:br.linkedin.com/in engineer "Stripe"'}
+HELPER = Path(__file__).resolve().parent / "serp_helper.py"
+
+
+def search_settings() -> dict:
+    s = dict(SEARCH_DEFAULTS)
+    s.update((userconfig.load().get("search") or {}))
+    return s
+
+
+class Searcher:
+    """Paced, cached, budgeted search with a circuit breaker per engine. One instance per command run."""
+
+    def __init__(self, home: str, budget: int | None = None):
+        import time
+        self.time = time
+        self.home = home
+        self.st = search_settings()
+        hp = js.fix_path(home)
+        self.state_path = hp / "search_state.json"
+        self.state = read_json(self.state_path, {"backends": {}})
+        self.cache_dir = hp / "serp_cache"
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.budget = int(budget if budget is not None else self.st["max_queries_per_run"])
+        self.used = 0
+        self.last = 0.0
+        self.empty_streak = 0
+        self.halted = ""
+        self.stats: dict = {"queries": 0, "cache_hits": 0, "by_engine": {}, "empty": 0, "errors": 0, "suspended": [],
+                            "halted": "", "canary": ""}
+        self.python = str(Path(os.path.expanduser(self.st["python"])))
+
+    # -- engines
+    def _save(self) -> None:
+        write_json(self.state_path, self.state)
+
+    def available(self, be: str) -> bool:
+        return (self.state["backends"].get(be) or {}).get("suspended_until", "") < datetime.now(timezone.utc).isoformat()
+
+    def suspend(self, be: str, why: str) -> None:
+        until = (datetime.now(timezone.utc) + timedelta(hours=float(self.st["suspend_hours"]))).isoformat()
+        self.state["backends"][be] = {"suspended_until": until, "reason": why[:200], "errors": 0}
+        self.stats["suspended"].append(f"{be}: {why[:80]}")
+        self._save()
+
+    def _pace(self) -> None:
+        import random
+        gap = float(self.st["min_gap_seconds"]) + random.random() * float(self.st["jitter_seconds"])
+        wait = self.last + gap - self.time.time()
+        if wait > 0:
+            self.time.sleep(wait)
+        self.last = self.time.time()
+
+    def _run(self, be: str, query: str, page: int) -> dict:
+        import subprocess
+        self._pace()
+        try:
+            r = subprocess.run([self.python, str(HELPER), json.dumps({"query": query, "backend": be, "page": page,
+                                                                       "max_results": 10, "timeout": 10})],
+                               capture_output=True, text=True, timeout=60)
+            return json.loads(r.stdout.strip().splitlines()[-1]) if r.stdout.strip() else \
+                {"kind": "error", "error": (r.stderr or "no output")[-200:]}
+        except Exception as err:  # noqa: BLE001
+            return {"kind": "error", "error": f"{type(err).__name__}: {err}"[:200]}
+
+    # -- cache
+    def _cache_file(self, query: str, page: int) -> Path:
+        import hashlib
+        return self.cache_dir / (hashlib.sha1(f"{query}|{page}".encode()).hexdigest()[:20] + ".json")
+
+    def _cached(self, query: str, page: int) -> dict | None:
+        c = read_json(self._cache_file(query, page), None)
+        if not c:
+            return None
+        days = self.st["cache_days"] if c.get("results") else self.st["empty_cache_days"]
+        return c if c.get("at", "") >= (datetime.now(timezone.utc) - timedelta(days=float(days))).isoformat() else None
+
+    # -- the one entry point
+    def query(self, query: str, page: int = 1, use_cache: bool = True) -> dict:
+        """{"results": [...], "engine": str, "cached": bool, "error": str}. Never raises."""
+        if use_cache:
+            c = self._cached(query, page)
+            if c:
+                self.stats["cache_hits"] += 1
+                return {**c, "cached": True}
+        if self.halted:
+            return {"results": [], "engine": "", "cached": False, "error": self.halted}
+        if self.used >= self.budget:
+            self.halted = f"query budget of {self.budget} used"
+            self.stats["halted"] = self.halted
+            return {"results": [], "engine": "", "cached": False, "error": self.halted}
+        tried, empty_on = [], []
+        for be in self.st["backends"]:
+            if not self.available(be):
+                continue
+            if len(empty_on) >= 2:
+                break  # two engines found nothing: it is a real empty (they share Bing's index)
+            res = self._run(be, query, page)
+            self.used += 1
+            self.stats["queries"] += 1
+            self.stats["by_engine"][be] = self.stats["by_engine"].get(be, 0) + 1
+            tried.append(be)
+            kind = res.get("kind")
+            if kind == "ok":
+                self.empty_streak = 0
+                st = self.state["backends"].setdefault(be, {})
+                st["errors"] = 0
+                out = {"query": query, "page": page, "engine": be, "at": datetime.now(timezone.utc).isoformat(),
+                       "results": res.get("results") or []}
+                write_json(self._cache_file(query, page), out)
+                self._save()
+                return {**out, "cached": False, "error": ""}
+            if kind == "empty":
+                empty_on.append(be)
+                continue
+            if kind == "unavailable":
+                self.suspend(be, res.get("error", "engine not available"))
+                continue
+            self.stats["errors"] += 1
+            st = self.state["backends"].setdefault(be, {})
+            st["errors"] = int(st.get("errors") or 0) + 1
+            if kind == "ratelimit" or st["errors"] >= int(self.st["errors_to_suspend"]):
+                self.suspend(be, f"{kind}: {res.get('error', '')}")
+            self._save()
+        if not tried:
+            self.halted = "every search engine is suspended"
+            self.stats["halted"] = self.halted
+            return {"results": [], "engine": "", "cached": False, "error": self.halted}
+        self.stats["empty"] += 1
+        self.empty_streak += 1
+        if self.empty_streak >= int(self.st["empty_streak_halt"]):
+            # a quiet block looks like "no results" everywhere: confirm with the canary before going on
+            if not self.canary():
+                return {"results": [], "engine": "", "cached": False, "error": self.halted}
+            self.empty_streak = 0
+        out = {"query": query, "page": page, "engine": ",".join(empty_on), "at": datetime.now(timezone.utc).isoformat(),
+               "results": []}
+        if empty_on:
+            write_json(self._cache_file(query, page), out)
+        return {**out, "cached": False, "error": ""}
+
+    def canary(self) -> bool:
+        """A query that always has results. If it comes back empty, the engines are blocking: stop searching."""
+        res = self.query(self.st["canary"], use_cache=False) if not self.halted else {"results": []}
+        ok = bool(res.get("results"))
+        self.stats["canary"] = "ok" if ok else "failed"
+        if not ok:
+            self.halted = "canary query returned nothing: the search engines look blocked"
+            self.stats["halted"] = self.halted
+            for be in self.st["backends"]:
+                if self.available(be):
+                    self.suspend(be, "canary failed")
+        return ok
+
+
 # --------------------------------------------------------------- people check
 
 LEVELS = ("brazil", "latam", "non_us", "none")      # strongest first; "brazil" means candidate.country
 POSITIVE_TTL_DAYS = 90
 NONE_TTL_DAYS = 30
+NEEDS_GOOGLE_DAYS = 7     # a company the search couldn't settle goes to the Chrome fallback for this long
+METHOD = "search-v2"      # verdicts judged with company context (namesakes rejected); older ones are re-checked
+METHODS = {"search-v2", "chrome-v2"}
+COUNTRY_SUBDOMAIN = {"brazil": "br", "mexico": "mx", "argentina": "ar", "colombia": "co", "chile": "cl", "peru": "pe",
+                     "uruguay": "uy", "paraguay": "py", "ecuador": "ec", "bolivia": "bo", "venezuela": "ve",
+                     "costa rica": "cr", "panama": "pa", "guatemala": "gt", "dominican republic": "do",
+                     "portugal": "pt", "spain": "es", "india": "in", "canada": "ca", "united kingdom": "uk"}
+REGION_COUNTRIES = {"latam": ["mexico", "argentina", "colombia", "chile", "peru", "uruguay"]}
 
 
 def people_checks(home: str) -> dict:
@@ -398,13 +579,43 @@ def fresh(v: dict | None) -> bool:
     return (v.get("checked") or "") >= (NOW - timedelta(days=ttl)).strftime("%Y-%m-%d")
 
 
+def needs_google(v: dict | None) -> bool:
+    return bool(v) and v.get("status") == "needs_google" and \
+        (v.get("checked") or "") >= (NOW - timedelta(days=NEEDS_GOOGLE_DAYS)).strftime("%Y-%m-%d")
+
+
 def people_level(cache: dict, company: str) -> str | None:
     """brazil / latam / non_us / none for a checked company (stale verdicts still count until re-checked), else None."""
     v = cache.get(key_of(company))
     return v.get("level") if v and v.get("level") in LEVELS else None
 
 
-def people_queries(company: str, cand: dict | None = None) -> list[str]:
+def ambiguous_name(company: str) -> bool:
+    """One plain word ("Neon", "Octane", "Circle", "Wonderful") or a very short name: search results are full of
+    namesakes, so the judge needs a second clue, and the fetch never stops early."""
+    tokens = re.findall(r"[A-Za-z0-9]+", company or "")
+    return len(tokens) == 1 and (tokens[0].isalpha() or len(tokens[0]) <= 3)
+
+
+def search_queries(company: str, cand: dict | None = None) -> list[dict]:
+    """The script path: the profile-country subdomain is the location evidence (br.linkedin.com = a profile registered
+    in Brazil). Candidate country first, the rest of the region in one OR query, then anywhere."""
+    cand = cand or userconfig.snapshot()
+    own = COUNTRY_SUBDOMAIN.get((cand.get("country") or "").lower(), "")
+    near = [COUNTRY_SUBDOMAIN[c] for c in REGION_COUNTRIES.get((cand.get("region") or "").lower(), [])
+            if COUNTRY_SUBDOMAIN.get(c) and COUNTRY_SUBDOMAIN[c] != own]
+    qs = []
+    if own:
+        qs.append({"level": "brazil", "q": f'site:{own}.linkedin.com/in engineer "{company}"'})
+    if near:
+        sites = " OR ".join(f"site:{c}.linkedin.com/in" for c in near)
+        qs.append({"level": "latam", "q": f'"{company}" engineer ({sites})'})
+    qs.append({"level": "non_us", "q": f'"{company}" engineer site:linkedin.com/in'})
+    return qs
+
+
+def browser_queries(company: str, cand: dict | None = None) -> list[str]:
+    """The Chrome fallback (references/people-check.md): Google first, Yahoo when Google blocks."""
     cand = cand or userconfig.snapshot()
     country = cand.get("country") or "Brazil"
     near = {"latam": "Argentina OR Mexico OR Colombia OR Chile OR Uruguay OR Peru"}.get((cand.get("region") or "").lower(), "")
@@ -416,40 +627,128 @@ def people_queries(company: str, cand: dict | None = None) -> list[str]:
 
 
 def search_urls(query: str) -> dict:
-    q = quote_plus(query)
     # google first, yahoo when Google blocks (2026-10-14 tests: Bing, DuckDuckGo and Brave challenged on the first search)
+    q = quote_plus(query)
     return {"google": f"https://www.google.com/search?q={q}&hl=en", "yahoo": f"https://search.yahoo.com/search?p={q}"}
 
 
-def people_queue(home: str, wanted: list[dict], limit: int, out_dir: Path, batch_size: int = 10) -> dict:
-    """Batch files for the people-check subagents. `wanted`: [{company, why, priority}] in the order to check; companies
-    with a fresh verdict, staffing names and marketplaces are left out."""
+def company_context(home: str) -> dict:
+    """company key -> what we know about it, so the judge can tell it from a namesake."""
+    hp = js.fix_path(home)
+    out: dict[str, dict] = {}
+    for k, t in read_json(hp / "autopilot" / "company_types.json", {}).items():
+        out[k] = {"type": t.get("type", ""), "hq": t.get("hq_country", ""), "about": t.get("evidence", "")}
+    for e in read_json(hp / "recruiters" / "funded_companies.json", {}).values():
+        c = out.setdefault(key_of(e.get("name", "")), {})
+        c.update({k: e[k] for k in ("website", "description", "hq") if e.get(k)})
+    for e in boards(home).values():
+        c = out.setdefault(key_of(e.get("name", "")), {})
+        if e.get("ats"):
+            c["ats_board"] = f'{e["ats"]["kind"]}:{e["ats"]["slug"]}'
+    return out
+
+
+def _candidate_hit(company: str, results: list) -> bool:
+    """A result that names the company as the current employer of an engineer: "@ Acme", "at Acme", "- Acme |" in the
+    title, or LinkedIn's "Experiência: Acme" / "Experience: Acme" line. A bare mention (a past client, a skill) is not
+    enough to stop fetching: the 2026-10-14 judge rejected two early stops made on bare mentions."""
+    name = re.escape((company or "").strip())
+    employer = re.compile(rf"(@\s*{name}\b|\bat\s+{name}\b|-\s*{name}\s*(\||$)|(Experiência|Experience|Experiencia)\s*:\s*{name}\b)", re.I)
+    for r in results:
+        title, body = r.get("title") or "", r.get("body") or ""
+        if "linkedin.com/in" in (r.get("href") or "") and (employer.search(title) or employer.search(body)) \
+                and ENG_TITLE.search(title + " " + body[:160]):
+            return True
+    return False
+
+
+def fetch_company(searcher: "Searcher", company: str, cand: dict) -> dict:
+    """Run the search queries for one company, stopping early when an unambiguous name already shows an engineer at
+    the company in the candidate's country. Returns {serps, fetch} for the judge."""
+    serps, any_results = [], False
+    amb = ambiguous_name(company)
+    for i, q in enumerate(search_queries(company, cand)):
+        res = searcher.query(q["q"])
+        if res.get("error") and not res.get("results"):
+            serps.append({"q": q["q"], "for_level": q["level"], "engine": "", "error": res["error"], "results": []})
+            if searcher.halted:
+                break
+            continue
+        serps.append({"q": q["q"], "for_level": q["level"], "engine": res.get("engine", ""), "cached": res.get("cached", False),
+                      "results": [{k: (r.get(k) or "")[:400] for k in ("title", "href", "body")} for r in res.get("results") or []]})
+        any_results |= bool(res.get("results"))
+        hit = _candidate_hit(company, res.get("results") or [])
+        if hit and not amb and q["level"] in ("brazil", "latam"):
+            break  # the strongest level that matters is already shown; the judge confirms it
+        if q["level"] == "latam" and not amb and any(_candidate_hit(company, s["results"]) for s in serps):
+            break
+    status = "halted" if searcher.halted and len(serps) < 2 else "ok" if any_results else "empty"
+    return {"serps": serps, "fetch": status}
+
+
+def people_queue(home: str, wanted: list[dict], limit: int, out_dir: Path, batch_size: int = 25,
+                 mode: str = "search", recheck: bool = False, budget: int | None = None) -> dict:
+    """Batch files for the people check. `wanted`: [{company, why}] in the order to check.
+
+    mode "search" (default): fetch each company's search results through Searcher and write judge batches
+    (references/people-judge.md, no browser). mode "chrome": the fallback for companies the search couldn't settle
+    (status needs_google in the last NEEDS_GOOGLE_DAYS days), batches for references/people-check.md.
+    recheck: also take companies whose verdict predates the judged method (METHOD), fresh or not."""
     cache = people_checks(home)
     cand = userconfig.snapshot()
+    ctx = company_context(home)
     seen, queue, cached = set(), [], 0
     for w in wanted:
         k = key_of(w.get("company", ""))
         if not k or k in seen or name_type(w["company"]):
             continue
         seen.add(k)
-        if fresh(cache.get(k)):
+        v = cache.get(k)
+        if mode == "chrome":
+            if needs_google(v):
+                queue.append({"company": w["company"], "key": k, "why": w.get("why", ""), "context": ctx.get(k, {}),
+                              "ambiguous_name": ambiguous_name(w["company"]), "search_said": (v or {}).get("detail", ""),
+                              "queries": [{"q": q, "urls": search_urls(q)} for q in browser_queries(w["company"], cand)]})
+            continue
+        if needs_google(v):
+            continue  # waiting for the Chrome fallback
+        if fresh(v) and not (recheck and v.get("method") not in METHODS):
             cached += 1
             continue
-        qs = people_queries(w["company"], cand)
-        queue.append({"company": w["company"], "key": k, "why": w.get("why", ""),
-                      "queries": [{"q": q, "urls": search_urls(q)} for q in qs]})
+        queue.append({"company": w["company"], "key": k, "why": w.get("why", "")})
     todo = queue[:limit]
     out_dir.mkdir(parents=True, exist_ok=True)
-    batches = []
     stamp = NOW.strftime("%H%M")
+    res = {"mode": mode, "queued": len(todo), "left_after_cap": max(0, len(queue) - limit), "fresh_cached": cached,
+           "country": cand.get("country"), "region": cand.get("region"), "batches": []}
+    if mode == "search" and todo:
+        searcher = Searcher(home, budget)
+        if not searcher.canary():
+            res.update(search=searcher.stats, note="search engines look blocked: run the Chrome fallback for the top companies")
+            todo = []
+        fetched = []
+        for e in todo:
+            if searcher.halted:
+                break
+            e.update(fetch_company(searcher, e["company"], cand), ambiguous_name=ambiguous_name(e["company"]),
+                     context=ctx.get(e["key"], {}))
+            fetched.append(e)
+        todo = fetched
+        res["search"] = searcher.stats
+        res["fetched"] = len(fetched)
+        res["not_fetched_this_run"] = len(queue[:limit]) - len(fetched)
+        batch_size = max(batch_size, 1)
+    elif mode == "chrome":
+        batch_size = 10
+    prefix = "people_batch" if mode == "search" else "people_chrome_batch"
     for i in range(0, len(todo), batch_size):
         n = i // batch_size + 1
-        bf = out_dir / f"people_batch_{stamp}_{n}.json"
-        of = out_dir / f"people_out_{stamp}_{n}.jsonl"
+        bf = out_dir / f"{prefix}_{stamp}_{n}.json"
+        of = out_dir / f"people_out_{stamp}{'c' if mode == 'chrome' else ''}_{n}.jsonl"
         bf.write_text(json.dumps(todo[i:i + batch_size], indent=1, ensure_ascii=False), encoding="utf-8")
-        batches.append({"batch": host_path(bf), "out": host_path(of), "companies": len(todo[i:i + batch_size])})
-    return {"queued": len(todo), "left_after_cap": max(0, len(queue) - limit), "fresh_cached": cached,
-            "country": cand.get("country"), "region": cand.get("region"), "batches": batches}
+        res["batches"].append({"batch": host_path(bf), "out": host_path(of), "companies": len(todo[i:i + batch_size]),
+                               "reference": "people-judge.md" if mode == "search" else "people-check.md"})
+    return res
 
 
 def host_path(path: Path) -> str:
@@ -458,12 +757,13 @@ def host_path(path: Path) -> str:
 
 
 def ingest_people(home: str, files: list[Path]) -> dict:
-    """Fold people-check output lines into people_checks.json. A line without a usable level (blocked, failed) is not
-    cached, so the company is queued again next time."""
+    """Fold people-check output lines into people_checks.json. A positive level needs evidence. "needs_google" lines
+    are kept for NEEDS_GOOGLE_DAYS so the Chrome fallback picks them up; blocked or failed lines are not cached, so the
+    company is queued again."""
     path = js.fix_path(home) / "people_checks.json"
     cache = read_json(path, {})
     got: dict[str, int] = {}
-    blocked = []
+    blocked, fallback = [], []
     for f in files:
         for line in f.read_text(encoding="utf-8-sig").splitlines() if f.exists() else []:
             try:
@@ -474,6 +774,15 @@ def ingest_people(home: str, files: list[Path]) -> dict:
             level = v.get("level")
             if not k:
                 continue
+            if v.get("status") == "needs_google" and level not in LEVELS:
+                cur = cache.get(k) or {}
+                # a fresh judged verdict stays; an unjudged (legacy) one gives way, so a re-check can reopen it
+                if not (fresh(cur) and cur.get("method") in METHODS):
+                    cache[k] = {"company": v.get("company"), "level": None, "status": "needs_google",
+                                "checked": v.get("checked") or TODAY, "engine": v.get("engine", ""),
+                                "detail": (v.get("detail") or "")[:300]}
+                    fallback.append(v.get("company"))
+                continue
             if level not in LEVELS:
                 blocked.append(f'{v.get("company")}: {v.get("status") or "no verdict"}')
                 continue
@@ -481,11 +790,77 @@ def ingest_people(home: str, files: list[Path]) -> dict:
             if level != "none" and not ev:
                 level = "none"  # a positive level needs a search result behind it
             cache[k] = {"company": v.get("company"), "level": level, "checked": v.get("checked") or TODAY,
-                        "engine": v.get("engine", ""), "queries": v.get("queries_run") or [], "evidence": ev,
-                        "detail": (v.get("detail") or "")[:300]}
+                        "engine": v.get("engine", ""), "method": v.get("method") if v.get("method") in METHODS else "legacy",
+                        "queries": v.get("queries_run") or [], "evidence": ev,
+                        "same_company": v.get("same_company", ""), "detail": (v.get("detail") or "")[:300]}
             got[level] = got.get(level, 0) + 1
     write_json(path, cache)
-    return {"ingested": got, "not_cached": blocked[:20], "cache": len(cache)}
+    return {"ingested": got, "needs_google": fallback[:40], "not_cached": blocked[:20], "cache": len(cache)}
+
+
+# ------------------------------------------------------------ employer harvest
+# The other direction: profiles of engineers in the candidate's country, read for their current employer. A weekly
+# side source (about 15 employers per 60 profiles in the 2026-10-14 test). The employers go to
+# <home>/region_employers.json, which recruiter-outreach's funding research reads; they are never written into
+# people_checks.json, because a profile's employer name can be a namesake of a company we know.
+
+HARVEST_DAYS = 7
+
+
+def harvest(home: str, out_dir: Path, pages: int = 3, force: bool = False) -> dict:
+    state_path = js.fix_path(home) / "search_state.json"
+    state = read_json(state_path, {"backends": {}})
+    last = state.get("harvest_last", "")
+    if not force and last >= (NOW - timedelta(days=HARVEST_DAYS)).isoformat():
+        return {"due": False, "last": last[:10]}
+    cand = userconfig.snapshot()
+    own = COUNTRY_SUBDOMAIN.get((cand.get("country") or "").lower(), "")
+    terms = [t for t in ["AI Engineer", "Machine Learning Engineer", "LLM Engineer", "GenAI Engineer", "Applied AI"]]
+    searcher = Searcher(home, budget=len(terms) * pages + 2)
+    if not searcher.canary():
+        return {"due": True, "search": searcher.stats, "note": "search engines look blocked"}
+    serps = []
+    for t in terms:
+        for p in range(1, pages + 1):
+            res = searcher.query(f'site:{own}.linkedin.com/in "{t}"', page=p)
+            serps.append({"q": f'site:{own}.linkedin.com/in "{t}"', "page": p, "engine": res.get("engine", ""),
+                          "results": [{k: (r.get(k) or "")[:400] for k in ("title", "href", "body")} for r in res.get("results") or []]})
+            if searcher.halted:
+                break
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stamp = NOW.strftime("%H%M")
+    bf, of = out_dir / f"harvest_batch_{stamp}.json", out_dir / f"harvest_out_{stamp}.jsonl"
+    bf.write_text(json.dumps({"country": cand.get("country"), "serps": serps}, indent=1, ensure_ascii=False), encoding="utf-8")
+    state = read_json(state_path, {"backends": {}})  # the searcher may have updated it
+    state["harvest_last"] = NOW.isoformat()
+    write_json(state_path, state)
+    return {"due": True, "batch": host_path(bf), "out": host_path(of), "profiles": sum(len(s["results"]) for s in serps),
+            "search": searcher.stats}
+
+
+def ingest_harvest(home: str, files: list[Path]) -> dict:
+    path = js.fix_path(home) / "region_employers.json"
+    reg = read_json(path, {})
+    added = 0
+    for f in files:
+        for line in f.read_text(encoding="utf-8-sig").splitlines() if f.exists() else []:
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            name = (d.get("employer") or "").strip()
+            k = key_of(name)
+            if not k or name_type(name):
+                continue
+            e = reg.setdefault(k, {"name": name, "first_seen": TODAY, "profiles": []})
+            added += not e["profiles"]
+            e["last_seen"] = TODAY
+            if d.get("profile_url") and d["profile_url"] not in {p.get("url") for p in e["profiles"]}:
+                e["profiles"].append({"url": d["profile_url"], "title": (d.get("title") or "")[:160],
+                                      "location": d.get("location", "")})
+                e["profiles"] = e["profiles"][-5:]
+    write_json(path, reg)
+    return {"employers": len(reg), "new": added}
 
 
 # ------------------------------------------------------------------ commands
@@ -513,7 +888,7 @@ def cmd_people_queue(args) -> int:
                 counts[k] = counts.get(k, 0) + 1
                 names[k] = r["company"]
         wanted = [{"company": names[k]} for k in sorted(counts, key=lambda k: -counts[k])]
-    print(json.dumps(people_queue(args.home, wanted, args.limit, out), indent=1, ensure_ascii=False))
+    print(json.dumps(people_queue(args.home, wanted, args.limit, out, mode=args.mode), indent=1, ensure_ascii=False))
     return 0
 
 
@@ -524,8 +899,30 @@ def cmd_people_ingest(args) -> int:
     return 0
 
 
+def cmd_search(args) -> int:
+    """One query through the search layer (for a look by hand, or a health check)."""
+    s = Searcher(args.home, budget=3)
+    res = s.query(args.query, page=args.page, use_cache=not args.no_cache)
+    print(json.dumps({"engine": res.get("engine"), "cached": res.get("cached"), "error": res.get("error"),
+                      "results": res.get("results"), "stats": s.stats}, indent=1, ensure_ascii=False))
+    return 0
+
+
+def cmd_people_harvest(args) -> int:
+    import enrich
+    out = js.fix_path(args.home) / "runs" / f"{enrich.today()}-explore"
+    print(json.dumps(harvest(args.home, out, args.pages, args.force), indent=1, ensure_ascii=False))
+    return 0
+
+
+def cmd_people_harvest_ingest(args) -> int:
+    import enrich
+    d = js.fix_path(args.dir) if args.dir else js.fix_path(args.home) / "runs" / f"{enrich.today()}-explore"
+    print(json.dumps(ingest_harvest(args.home, sorted(d.glob("harvest_out_*.jsonl"))), indent=1))
+    return 0
+
+
 def add_commands(sub) -> None:
-    import os
     home_default = os.environ.get("JOBSWEEP_HOME") or userconfig.home()
     p = sub.add_parser("boards", help="find companies' ATS boards from role links and read them (boards.json)")
     p.add_argument("--home", default=home_default)
@@ -533,12 +930,28 @@ def add_commands(sub) -> None:
     p.add_argument("--batches", type=int, default=14)
     p.add_argument("--budget", type=float, default=0, help="stop starting board reads after this many seconds")
     p.set_defaults(fn=cmd_boards)
-    p = sub.add_parser("people-queue", help="batches for the people check (references/people-check.md)")
+    p = sub.add_parser("people-queue", help="people-check batches: search + judge (default) or the Chrome fallback")
     p.add_argument("--home", default=home_default)
     p.add_argument("--limit", type=int, default=20)
+    p.add_argument("--mode", choices=["search", "chrome"], default="search")
     p.add_argument("--companies", type=lambda s: [x.strip() for x in s.split(",") if x.strip()])
     p.set_defaults(fn=cmd_people_queue)
     p = sub.add_parser("people-ingest", help="fold people_out_*.jsonl into people_checks.json")
     p.add_argument("--home", default=home_default)
     p.add_argument("--dir", help="folder with people_out_*.jsonl (default: today's explore folder)")
     p.set_defaults(fn=cmd_people_ingest)
+    p = sub.add_parser("search", help="one query through the search layer (ddgs, cached, paced)")
+    p.add_argument("--home", default=home_default)
+    p.add_argument("query")
+    p.add_argument("--page", type=int, default=1)
+    p.add_argument("--no-cache", action="store_true")
+    p.set_defaults(fn=cmd_search)
+    p = sub.add_parser("people-harvest", help="weekly: employers of engineers in the candidate's country (batch for references/people-harvest.md)")
+    p.add_argument("--home", default=home_default)
+    p.add_argument("--pages", type=int, default=3)
+    p.add_argument("--force", action="store_true")
+    p.set_defaults(fn=cmd_people_harvest)
+    p = sub.add_parser("people-harvest-ingest", help="fold harvest_out_*.jsonl into region_employers.json")
+    p.add_argument("--home", default=home_default)
+    p.add_argument("--dir")
+    p.set_defaults(fn=cmd_people_harvest_ingest)

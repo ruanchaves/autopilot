@@ -160,10 +160,15 @@ def build(home: str, run: str, batches: int = 14) -> dict:
     started = meta.get("started") or NOW.isoformat()
     decisions = enrich.read_jsonl(ap / "runs" / run / "decisions.jsonl") if (ap / "runs" / run / "decisions.jsonl").exists() else []
     trail: dict[str, list] = {}
-    people_log = []
+    people_log, search_log = [], []
     for d in decisions:
         if d.get("step") == "people check":
             people_log.append(d)
+        elif d.get("step") == "search":
+            try:
+                search_log.append({"at": d.get("at", ""), **json.loads(d.get("evidence") or "{}")})
+            except json.JSONDecodeError:
+                pass
         elif d.get("role"):
             trail.setdefault(d["role"], []).append({k: d.get(k, "") for k in ("at", "step", "outcome", "reason", "evidence", "by")})
 
@@ -238,6 +243,7 @@ def build(home: str, run: str, batches: int = 14) -> dict:
         "sources": source_rows(sweeps, role_stats),
         "funnel": [{"step": k[0], "outcome": k[1], "reason": k[2], "n": n} for k, n in funnel.most_common()],
         "people_checks": [{k: d.get(k, "") for k in ("company", "outcome", "reason", "evidence")} for d in people_log],
+        "search": search_log,
         "backtest": apm.load(home, "paytier_backtest.json", {}),
         "changes": changes,
         "roles": out_roles,

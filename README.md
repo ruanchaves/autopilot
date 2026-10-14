@@ -85,7 +85,7 @@ Then paste this into Claude Code:
 
 Claude links the three skill folders into `~/.claude/skills`, finds a Python 3.11+ with PyYAML (native, or inside WSL on Windows), sets the runner and the data folder in `config.yaml`, and starts the first-run setup, which asks about your role, resume, country, pay and sweep preferences and fills the candidate section from your resume. After a restart of Claude Code, `/job-source-sweep`, `/job-autopilot` and `/recruiter-outreach` are available. The last two ask their own few questions the first time they run (submit policy, cover letters, channels, tracker; daily caps, per-company cap, permission to send, search phrasings). `config.yaml` keeps a `setup_done` list of the skills that have been set up; empty it, or say "reconfigure", to go through the questions again.
 
-**Requirements:** Claude Code with the [Claude in Chrome](https://claude.com/chrome) extension connected to a Chrome profile logged in to LinkedIn; Python 3.11+ with PyYAML. Optional: [applika](https://github.com/ruanchaves/applika) for application tracking, and a `tailor-resume` skill in `~/.claude/skills` for per-role CVs (without it the autopilot uploads your resume PDF as-is).
+**Requirements:** Claude Code with the [Claude in Chrome](https://claude.com/chrome) extension connected to a Chrome profile logged in to LinkedIn; Python 3.11+ with PyYAML. For the people check, a second virtualenv with [ddgs](https://github.com/deedy5/ddgs) (the commands are in `config.yaml`, section `search`). Optional: [applika](https://github.com/ruanchaves/applika) for application tracking, and a `tailor-resume` skill in `~/.claude/skills` for per-role CVs (without it the autopilot uploads your resume PDF as-is).
 
 ## config.yaml
 
@@ -146,9 +146,18 @@ flowchart TD
 
 **People check.** It answers one question: do engineers who work at the company live in your country, elsewhere in your region, or elsewhere outside the US?
 - **Why:** a posting's location label is written by automated systems and is often wrong, so this is the only evidence accepted that a company hires outside the US.
-- **How:** Google searches aimed at LinkedIn profiles (`site:linkedin.com/in`), never LinkedIn's own search. A result counts only with an engineering title, the company as current employer, and a stated location (or a country-subdomain profile URL).
+- **How:** ordinary search engines aimed at LinkedIn profiles, never LinkedIn's own search.
+  - **Search:** a script runs the searches through the search layer (`scripts/companies.py`: the
+    [ddgs](https://github.com/deedy5/ddgs) library in its own virtualenv, its Yahoo engine (Bing's index), paced and cached).
+  - **Queries:** profile-country subdomains like `site:br.linkedin.com/in engineer "Company"`, where the subdomain proves
+    the country.
+  - **Judging:** a subagent judges the results against what we know about the company, which rejects namesakes such as
+    AZX Lab for AZX.
+  - **Fallback:** only what it can't settle goes to Google and Yahoo in Chrome.
+  - **What counts:** a result with an engineering title, the company as current employer, and a stated location or a
+    country-subdomain profile URL.
 - **Caching:** verdicts are cached per company, 90 days when engineers were found and 30 days when none were. "None found" isn't proof of anything.
-- **Pace:** Google blocks after about a dozen fast searches, so the check runs a few companies per run, best first (`references/people-check.md`).
+- **Pace:** up to 100 companies a run (`search.max_queries_per_run` 300), with 4–6 seconds between queries and a canary query that stops the run if the engines start blocking (`references/people-judge.md`, `references/people-check.md`).
 
 **Company boards.** The `company_boards` source reads companies' own Ashby, Greenhouse, Lever and Workable boards through their public APIs.
 - **Which companies:** every company whose role link pointed at one, plus recruiter-outreach's funded-company registry.
@@ -336,6 +345,8 @@ Everything per user lives outside the repo in `home` from `config.yaml`:
 ├── runs/<date>-explore/        roles.json, roles.csv, explorer.html
 ├── history/                    URLs seen before, per profile (the "new" marker)
 ├── people_checks.json          people-check verdicts per company (engineers outside the US), with evidence
+├── serp_cache/ · search_state.json   raw search results (30 days) and search-engine suspensions
+├── region_employers.json       employers of engineers in your country (weekly harvest, for funding research)
 ├── boards.json                 companies' ATS boards and their postings (company_boards source)
 ├── jds/                        job description text, keyed by normalised URL
 ├── classifications.json        eligibility and fit, cached per URL

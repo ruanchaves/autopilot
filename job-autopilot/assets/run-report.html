@@ -112,6 +112,12 @@ details > summary { cursor: pointer; font-weight: 600; }
   </section>
 
   <section>
+    <h2>Search engines</h2>
+    <p class="muted">The people check's searches this run: queries per engine, cache hits, empty results, errors, engines suspended, and whether the run had to stop. Companies the search couldn't settle go to the Chrome fallback.</p>
+    <div class="scroll"><table id="search"></table></div>
+  </section>
+
+  <section>
     <h2>Pay estimate, checked against posted pay</h2>
     <div id="backtest"></div>
   </section>
@@ -251,6 +257,15 @@ document.getElementById("changes").innerHTML = C.previous_run ? [
 document.getElementById("people").innerHTML = D.people_checks.length ? `<thead><tr><th>Company</th><th>Verdict</th><th>Engine</th><th>Evidence</th></tr></thead><tbody>` +
   D.people_checks.map(p => `<tr><td>${esc(p.company)}</td><td>${peoplePill(p.outcome)}</td><td>${esc(p.reason)}</td><td class="q">${esc(p.evidence)}</td></tr>`).join("") + "</tbody>"
   : '<tbody><tr><td class="muted">No people checks ran in this run.</td></tr></tbody>';
+
+// search engines
+const S = D.search || [];
+document.getElementById("search").innerHTML = S.length ? `<thead><tr><th>When</th><th>Queries</th><th>By engine</th><th>Cache hits</th><th>Empty</th><th>Errors</th><th>Canary</th><th>Suspended / stopped</th></tr></thead><tbody>` +
+  S.map(x => `<tr><td class="mono">${esc((x.at || "").slice(11, 16))}</td><td class="n">${fmt(x.queries)}</td>
+  <td>${esc(Object.entries(x.by_engine || {}).map(([k, v]) => k + " " + v).join(", "))}</td><td class="n">${fmt(x.cache_hits)}</td>
+  <td class="n">${fmt(x.empty)}</td><td class="n">${fmt(x.errors)}</td><td>${pill(x.canary === "ok" ? "ok" : x.canary ? "bad" : "neutral", x.canary || "not run")}</td>
+  <td>${esc([...(x.suspended || []), x.halted].filter(Boolean).join("; ")) || "—"}</td></tr>`).join("") + "</tbody>"
+  : '<tbody><tr><td class="muted">No searches ran in this run.</td></tr></tbody>';
 
 // backtest
 const B = D.backtest || {};

@@ -838,6 +838,10 @@ def cmd_funding_plan(args) -> int:
                  "already_targets": sorted({t["company"] for t in company_targets(args.home, st, runs, for_plan=True)}),
                  "queries_tried": sorted(k.split(":", 1)[1] for k, at in runs.items() if k.startswith("funding:") and at >= tried_since),
                  "recheck": recheck, "vc_funds": vc_funds(),
+                 # employers of engineers in the candidate's country, from job-source-sweep's weekly harvest
+                 # (people-harvest): candidates for avenue 6 of references/funding.md, not yet in the registry
+                 "region_employers": sorted((e.get("name") for k, e in enrich.read_json(js.fix_path(args.home) / "region_employers.json", {}).items()
+                                             if k not in reg and not NOT_EMPLOYER.search(e.get("name") or "")), key=str.lower)[:60],
                  "seeds": {"months": months, "role_terms": [st["target_role"]] + list(cand.get("core_areas") or []),
                            "title_terms": st["company_lane_title_terms"] or [st["target_role"]],
                            "region_terms": list(dict.fromkeys(x for x in [cand.get("country"), cand.get("region")] + list(cand.get("region_aliases") or []) if x))},
