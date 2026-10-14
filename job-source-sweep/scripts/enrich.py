@@ -430,9 +430,11 @@ def ingest_outputs(home: Path, out: Path) -> dict:
     cache = read_json(path, {})
     by_id = {v.get("id"): k for k, v in cache.items() if v.get("id")}
     batches = {}
-    for b in out.glob("*_batch_*.json"):
+    # only the eligibility and fit batches map ids to keys; people-check and harvest batches share the folder
+    for b in [*out.glob("elig_batch_*.json"), *out.glob("fit_batch_*.json")]:
         for e in json.loads(b.read_text(encoding="utf-8")):
-            batches[e["id"]] = e["key"]
+            if isinstance(e, dict) and "id" in e and "key" in e:
+                batches[e["id"]] = e["key"]
     rubric_sha = current_rubric_sha(home)
     changed = False
     for kind in ("elig", "fit"):
