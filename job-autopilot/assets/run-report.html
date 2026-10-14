@@ -1,0 +1,262 @@
+<title>__TITLE__</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: a ledger-like report. Summary figures, then the search breakdown, the funnel, the selected roles and one
+   filterable table of every role; each row opens to its decision trail. */
+:root {
+  --bg: #f6f7f9; --surface: #ffffff; --fg: #18202a; --muted: #5b6573; --line: #dfe3e8; --accent: #2457a6;
+  --accent-soft: #e6eefa; --a: #1b7a4e; --a-soft: #e2f3ea; --b: #8a6100; --b-soft: #fbf0d6; --c: #6b7280; --c-soft: #eceef1;
+  --bad: #a63232; --bad-soft: #f8e3e3;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-data: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #11151b; --surface: #181e26; --fg: #e3e8ee; --muted: #9aa5b3; --line: #2a333e; --accent: #7fa8ea;
+  --accent-soft: #1d2a3d; --a: #6fd3a2; --a-soft: #183528; --b: #e7bb5a; --b-soft: #3a2e14; --c: #a3acb8; --c-soft: #262d36;
+  --bad: #f19a9a; --bad-soft: #3b1f22; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #11151b; --surface: #181e26; --fg: #e3e8ee; --muted: #9aa5b3; --line: #2a333e; --accent: #7fa8ea;
+  --accent-soft: #1d2a3d; --a: #6fd3a2; --a-soft: #183528; --b: #e7bb5a; --b-soft: #3a2e14; --c: #a3acb8; --c-soft: #262d36;
+  --bad: #f19a9a; --bad-soft: #3b1f22; color-scheme: dark }
+body { background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 14px; line-height: 1.5;
+       padding-inline: 16px; padding-block: 24px 48px; }
+main { max-width: 1240px; margin: 0 auto; display: flex; flex-direction: column; gap: 32px; }
+h1 { font-size: 1.6rem; margin: 0; text-wrap: balance; }
+h2 { font-size: 1.15rem; margin: 0; }
+p { margin: 0; }
+section { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.muted { color: var(--muted); }
+.mono, td.n { font-family: var(--font-data); font-variant-numeric: tabular-nums; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.stat { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.stat b { font-family: var(--font-data); font-size: 1.35rem; }
+.stat span { color: var(--muted); font-size: 0.82rem; }
+.scroll { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; }
+table { border-collapse: collapse; width: 100%; font-size: 0.86rem; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); font-weight: 600; white-space: nowrap; position: sticky; top: 0; background: var(--surface); }
+td.n { text-align: right; white-space: nowrap; }
+td.q { max-width: 280px; overflow-wrap: anywhere; color: var(--muted); font-size: 0.8rem; }
+a { color: var(--accent); }
+.pill { display: inline-block; font-family: var(--font-data); font-size: 0.72rem; font-weight: 600; padding: 1px 7px; border-radius: 10px; white-space: nowrap; }
+.t-A { color: var(--a); background: var(--a-soft); } .t-B { color: var(--b); background: var(--b-soft); } .t-C { color: var(--c); background: var(--c-soft); }
+.ok { color: var(--a); background: var(--a-soft); } .warn { color: var(--b); background: var(--b-soft); } .bad { color: var(--bad); background: var(--bad-soft); } .neutral { color: var(--c); background: var(--c-soft); }
+.bar { height: 8px; background: var(--accent); border-radius: 4px; min-width: 2px; }
+.filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.filters input, .filters select { font: inherit; font-size: 0.85rem; padding: 5px 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--fg); max-width: 100%; }
+.filters input { flex: 1 1 220px; }
+button { font: inherit; font-size: 0.85rem; padding: 5px 10px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--fg); cursor: pointer; }
+button:focus-visible, select:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+tr.role { cursor: pointer; } tr.role:hover td { background: var(--accent-soft); }
+tr.detail td { background: var(--bg); }
+.trail { display: flex; flex-direction: column; gap: 4px; font-size: 0.82rem; }
+.trail div { display: grid; grid-template-columns: 9em 7em 1fr; gap: 8px; }
+.kv { display: grid; grid-template-columns: 9em 1fr; gap: 2px 10px; font-size: 0.82rem; margin-bottom: 8px; }
+.kv b { color: var(--muted); font-weight: 600; }
+.pager { display: flex; gap: 8px; align-items: center; }
+details > summary { cursor: pointer; font-weight: 600; }
+@media (max-width: 640px) { .trail div, .kv { grid-template-columns: 1fr; } }
+</style>
+
+<main>
+  <header style="display:flex;flex-direction:column;gap:6px">
+    <div class="muted mono" id="sub"></div>
+    <h1 id="h1"></h1>
+    <p class="muted" id="lede"></p>
+  </header>
+  <div class="stats" id="stats"></div>
+
+  <section>
+    <h2>Search breakdown</h2>
+    <p class="muted">Every source and browser task of the sweep runs behind this run: the query it ran, its status, and what each filter removed. "Selected" and "rejected" count the roles that source listed on that sweep date, by what this run decided about them.</p>
+    <div class="scroll"><table id="sources"></table></div>
+  </section>
+
+  <section>
+    <h2>Decision funnel</h2>
+    <p class="muted">Where each role considered in this run ended, by step and reason.</p>
+    <div class="scroll"><table id="funnel"></table></div>
+  </section>
+
+  <section>
+    <h2>Selected roles</h2>
+    <p class="muted">Queued or worked on in this run, in queue order. Tier A: pay at target and engineers in your country or region. Tier B: one of the two proven. Tier C: neither.</p>
+    <div class="scroll"><table id="selected"></table></div>
+  </section>
+
+  <section>
+    <h2>Every role, with its decision trail</h2>
+    <div class="filters">
+      <input id="q" type="search" placeholder="Search title, company, reason, evidence" aria-label="Search">
+      <select id="f-sel" aria-label="Selected or rejected"><option value="">Selected and rejected</option><option value="1">Selected</option><option value="0">Rejected</option></select>
+      <select id="f-reason" aria-label="Reason"></select>
+      <select id="f-tier" aria-label="Tier"></select>
+      <select id="f-pay" aria-label="Pay tier"></select>
+      <select id="f-people" aria-label="People check"></select>
+      <select id="f-source" aria-label="Source"></select>
+      <select id="f-age" aria-label="Posting age"><option value="">Any age</option><option value="3">Up to 3 days</option><option value="7">Up to 7 days</option><option value="21">Up to 21 days</option><option value="99999">Older than 21 days</option><option value="-1">Age unknown</option></select>
+    </div>
+    <p class="muted" id="count"></p>
+    <div class="scroll"><table id="roles"></table></div>
+    <div class="pager"><button id="prev" type="button">Previous</button><span id="page" class="muted mono"></span><button id="next" type="button">Next</button></div>
+  </section>
+
+  <section>
+    <h2>Changes since the last run</h2>
+    <div id="changes"></div>
+  </section>
+
+  <section>
+    <h2>People checks this run</h2>
+    <div class="scroll"><table id="people"></table></div>
+  </section>
+
+  <section>
+    <h2>Pay estimate, checked against posted pay</h2>
+    <div id="backtest"></div>
+  </section>
+</main>
+
+<script>
+const D = __DATA__;
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+const fmt = n => n == null || n === "" ? "" : Number(n).toLocaleString("en-US");
+const PAY = {posted_target: "posted ≥ target", likely_target: "likely ≥ target", unclear: "unclear", posted_near: "posted under target",
+             likely_below: "likely under target", posted_below: "posted under floor"};
+const PEOPLE = {brazil: `engineers in ${D.candidate.country}`, latam: `engineers in ${D.candidate.region}`, non_us: "only elsewhere outside the US",
+                none: "none found", unchecked: "not checked"};
+const pill = (cls, text) => `<span class="pill ${cls}">${esc(text)}</span>`;
+const tierPill = t => pill("t-" + t, "Tier " + t);
+const payPill = p => pill(/target/.test(p) ? "ok" : /below|near/.test(p) ? "bad" : "neutral", PAY[p] || p);
+const peoplePill = p => pill(p === "brazil" || p === "latam" ? "ok" : p === "non_us" ? "warn" : p === "none" ? "bad" : "neutral", PEOPLE[p] || p);
+const ageText = a => a.days == null ? "unknown" : (a.minimum ? "≥ " : "") + a.days + "d";
+const roleLink = r => `<a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.title)}</a><div class="muted">${esc(r.company)}</div>`;
+
+document.getElementById("h1").textContent = "Autopilot run " + D.run;
+document.getElementById("sub").textContent = `started ${D.started.slice(0, 16).replace("T", " ")} UTC · built ${D.built}`;
+document.getElementById("lede").textContent = `Target: $${fmt(D.target)}/month, floor $${fmt(D.floor)}, at companies with engineers in ${D.candidate.country} or ${D.candidate.region}. Queue mode: ${D.target_mode}.`;
+
+const sel = D.roles.filter(r => r.selected);
+const tiers = t => sel.filter(r => r.tier === t).length;
+const filled = D.roles.filter(r => r.step === "fill").length;
+document.getElementById("stats").innerHTML = [
+  [D.roles.length, "roles considered"], [sel.length, "selected"], [D.roles.length - sel.length, "rejected or waiting"],
+  [tiers("A"), "selected in tier A"], [tiers("B"), "selected in tier B"], [filled, "forms worked on this run"],
+  [D.people_checks.length, "companies people-checked"], [D.sources.length, "sources and tasks"]
+].map(([n, l]) => `<div class="stat"><b>${fmt(n)}</b><span>${esc(l)}</span></div>`).join("");
+
+// search breakdown
+const st = s => /fail|block/.test(s) ? "bad" : /partial|not run/.test(s) ? "warn" : s ? "ok" : "neutral";
+document.getElementById("sources").innerHTML = `<thead><tr><th>Source / task</th><th>Lane</th><th>Query</th><th>Status</th>
+  <th>Fetched</th><th>Title ok</th><th>In window</th><th>Kept</th><th>Rows to merge</th><th>Location excl.</th><th>Title drop</th>
+  <th>Outside window</th><th>Duplicates</th><th>Unique</th><th>New</th><th>Selected</th><th>Rejected</th></tr></thead><tbody>` +
+  D.sources.map(s => `<tr><td>${esc(s.source)}<div class="muted mono">${esc(s.run)}</div></td><td>${esc(s.lane)}</td>
+  <td class="q" title="${esc(s.query)}">${esc((s.query || "").slice(0, 160))}</td>
+  <td>${pill(st(s.status), s.status || "?")}${s.error ? `<div class="muted">${esc(s.error.slice(0, 160))}</div>` : ""}</td>
+  ${["fetched", "title_ok", "in_window", "kept", "rows_in", "location_excluded", "title_dropped", "outside_window", "duplicate", "unique", "new", "selected", "rejected"]
+    .map(k => `<td class="n">${fmt(s[k])}</td>`).join("")}</tr>`).join("") + "</tbody>";
+
+// funnel
+const max = Math.max(1, ...D.funnel.map(f => f.n));
+document.getElementById("funnel").innerHTML = `<thead><tr><th>Step</th><th>Outcome</th><th>Reason</th><th>Roles</th><th style="width:30%"></th></tr></thead><tbody>` +
+  D.funnel.map(f => `<tr><td>${esc(f.step)}</td><td>${esc(f.outcome)}</td><td>${esc(f.reason)}</td><td class="n">${fmt(f.n)}</td>
+  <td><div class="bar" style="width:${(100 * f.n / max).toFixed(1)}%"></div></td></tr>`).join("") + "</tbody>";
+
+// selected
+const selRows = sel.slice().sort((a, b) => (a.queuePos ?? 1e9) - (b.queuePos ?? 1e9));
+document.getElementById("selected").innerHTML = `<thead><tr><th>#</th><th>Tier</th><th>Role</th><th>Found by</th><th>Score</th><th>Pay</th>
+  <th>Engineers outside the US</th><th>Age</th><th>Outcome</th></tr></thead><tbody>` +
+  selRows.map(r => `<tr><td class="n">${r.queuePos ?? ""}</td><td>${tierPill(r.tier)}</td><td>${roleLink(r)}</td>
+  <td class="q">${esc(r.sources.join(" · "))}</td><td class="n">${r.score ?? ""}</td>
+  <td>${payPill(r.pay)}<div class="muted">${esc(r.payWhy)}</div></td><td>${peoplePill(r.people)}</td>
+  <td class="n" title="${esc(r.age.method)}">${ageText(r.age)}</td><td>${esc(r.outcome)}<div class="muted">${esc(r.evidence.slice(0, 140))}</div></td></tr>`).join("") + "</tbody>";
+
+// every role
+const opts = (id, label, values, names) => {
+  const el = document.getElementById(id);
+  el.innerHTML = `<option value="">${esc(label)}</option>` + values.map(v => `<option value="${esc(v)}">${esc((names && names[v]) || v)}</option>`).join("");
+};
+const uniq = a => [...new Set(a)].filter(x => x !== "" && x != null).sort();
+opts("f-reason", "Any step or reason", uniq(D.roles.map(r => r.reasonLabel || r.outcome)));
+opts("f-tier", "Any tier", ["A", "B", "C"]);
+opts("f-pay", "Any pay tier", Object.keys(PAY), PAY);
+opts("f-people", "Any people check", Object.keys(PEOPLE), PEOPLE);
+opts("f-source", "Any source", uniq(D.roles.flatMap(r => r.sources)));
+let page = 0, open = new Set();
+const PER = 150;
+const val = id => document.getElementById(id).value;
+function filtered() {
+  const q = val("q").toLowerCase(), s = val("f-sel"), rs = val("f-reason"), t = val("f-tier"), p = val("f-pay"),
+        pe = val("f-people"), so = val("f-source"), ag = val("f-age");
+  return D.roles.filter(r => (!q || [r.title, r.company, r.reasonLabel, r.evidence, r.payWhy, r.why].join(" ").toLowerCase().includes(q))
+    && (!s || String(+r.selected) === s) && (!rs || (r.reasonLabel || r.outcome) === rs) && (!t || r.tier === t)
+    && (!p || r.pay === p) && (!pe || r.people === pe) && (!so || r.sources.includes(so))
+    && (!ag || (ag === "-1" ? r.age.days == null : ag === "99999" ? r.age.days > 21 : r.age.days != null && r.age.days <= +ag)));
+}
+function detail(r) {
+  const ev = r.peopleEv || {};
+  return `<tr class="detail"><td colspan="8"><div class="kv">
+    <b>Decision</b><span>${esc(r.step)} → ${esc(r.outcome)}${r.reasonLabel ? " · " + esc(r.reasonLabel) : ""} · decided by ${esc(r.by)}</span>
+    <b>Evidence</b><span>${esc(r.evidence) || "—"}</span>
+    <b>Tier</b><span>${esc(r.tierWhy)}</span>
+    <b>Pay</b><span>${esc(r.payWhy)}${r.paySource ? " (" + esc(r.paySource) + ")" : ""}</span>
+    <b>People check</b><span>${esc(PEOPLE[r.people] || r.people)}${r.peopleChecked ? " · checked " + esc(r.peopleChecked) : ""}${ev.url ? ` · <a href="${esc(ev.url)}" target="_blank" rel="noopener">${esc(ev.title || ev.url)}</a> ${esc(ev.location || "")}` : ""}</span>
+    <b>Score</b><span>${r.score ?? "not scored"} ${r.parts && r.parts.core != null ? `(core ${r.parts.core}, requirements ${r.parts.requirements}, seniority ${r.parts.seniority}, domain ${r.parts.domain})` : ""}${r.blockers.length ? " · blockers: " + esc(r.blockers.join(", ")) : ""}</span>
+    <b>Scorer's note</b><span>${esc(r.why) || "—"}</span>
+    <b>JD location</b><span>${esc(r.elig)} · ${esc(r.location)}</span>
+    <b>Posted</b><span>${r.age.date ? esc(r.age.date) + " (" + esc(r.age.method) + ")" : "unknown"}${r.age.first_seen ? " · first seen by the sweep " + esc(r.age.first_seen) : ""}${r.age.other_date ? " · also dated " + esc(r.age.other_date) : ""}${r.age.reposted ? " · " + esc(r.age.reposted) : ""}</span>
+    <b>Found by</b><span>${esc(r.sources.join(" · "))} · sweep batches ${esc(r.batches.join(", "))}</span>
+    </div><div class="trail">${r.trail.map(t => `<div><span class="mono muted">${esc((t.at || "").slice(5, 16).replace("T", " "))}</span><span>${esc(t.step)}</span><span>${esc(t.outcome)}${t.reason ? " · " + esc(t.reason) : ""}${t.evidence ? " — " + esc(t.evidence) : ""} <span class="muted">(${esc(t.by)})</span></span></div>`).join("") || '<span class="muted">No decision logged for this role in this run; its state comes from earlier runs.</span>'}</div></td></tr>`;
+}
+function render() {
+  const rows = filtered();
+  const pages = Math.max(1, Math.ceil(rows.length / PER));
+  page = Math.min(page, pages - 1);
+  document.getElementById("count").textContent = `${fmt(rows.length)} roles match. Click a row for its decision trail.`;
+  document.getElementById("page").textContent = `page ${page + 1} of ${pages}`;
+  document.getElementById("roles").innerHTML = `<thead><tr><th>Tier</th><th>Role</th><th>Decision</th><th>Pay</th><th>Engineers outside the US</th>
+    <th>Age</th><th>Score</th><th>Found by</th></tr></thead><tbody>` + rows.slice(page * PER, page * PER + PER).map(r =>
+    `<tr class="role" data-id="${esc(r.id)}" tabindex="0"><td>${tierPill(r.tier)}</td><td>${roleLink(r)}</td>
+    <td>${pill(r.selected ? "ok" : "neutral", r.selected ? "selected" : r.outcome)}<div class="muted">${esc(r.reasonLabel)}</div></td>
+    <td>${payPill(r.pay)}</td><td>${peoplePill(r.people)}</td><td class="n" title="${esc(r.age.method)}">${ageText(r.age)}</td>
+    <td class="n">${r.score ?? ""}</td><td class="q">${esc(r.sources.join(" · "))}</td></tr>` + (open.has(r.id) ? detail(r) : "")).join("") + "</tbody>";
+}
+document.getElementById("roles").addEventListener("click", e => {
+  const tr = e.target.closest("tr.role");
+  if (!tr || e.target.closest("a")) return;
+  open.has(tr.dataset.id) ? open.delete(tr.dataset.id) : open.add(tr.dataset.id);
+  render();
+});
+document.getElementById("roles").addEventListener("keydown", e => {
+  if (e.key === "Enter" && e.target.matches("tr.role")) { e.target.click(); }
+});
+["q", "f-sel", "f-reason", "f-tier", "f-pay", "f-people", "f-source", "f-age"].forEach(id =>
+  document.getElementById(id).addEventListener("input", () => { page = 0; render(); }));
+document.getElementById("prev").onclick = () => { page = Math.max(0, page - 1); render(); };
+document.getElementById("next").onclick = () => { page += 1; render(); };
+render();
+
+// changes
+const C = D.changes;
+const list = (title, items, f) => `<details><summary>${esc(title)} (${items.length})</summary><ul>${items.slice(0, 200).map(f).join("")}</ul></details>`;
+document.getElementById("changes").innerHTML = C.previous_run ? [
+  `<p class="muted">Compared with run ${esc(C.previous_run)}.</p>`,
+  list("New roles", C.new, x => `<li>${esc(x.title)} · ${esc(x.company)}</li>`),
+  list("Gone since then", C.gone, x => `<li>${esc(x.title)} · ${esc(x.company)} <span class="muted">${esc(x.why)}</span></li>`),
+  list("Tier changed", C.tier_changed, x => `<li>${esc(x.title)} · ${esc(x.company)}: ${esc(x.from)} → ${esc(x.to)} <span class="muted">${esc(x.why)}</span></li>`),
+  list("Decision changed", C.decision_changed, x => `<li>${esc(x.title)} · ${esc(x.company)}: ${esc(x.from)} → ${esc(x.to)}</li>`)
+].join("") : '<p class="muted">This is the first run with a report, so there is nothing to compare with yet.</p>';
+
+// people checks
+document.getElementById("people").innerHTML = D.people_checks.length ? `<thead><tr><th>Company</th><th>Verdict</th><th>Engine</th><th>Evidence</th></tr></thead><tbody>` +
+  D.people_checks.map(p => `<tr><td>${esc(p.company)}</td><td>${peoplePill(p.outcome)}</td><td>${esc(p.reason)}</td><td class="q">${esc(p.evidence)}</td></tr>`).join("") + "</tbody>"
+  : '<tbody><tr><td class="muted">No people checks ran in this run.</td></tr></tbody>';
+
+// backtest
+const B = D.backtest || {};
+const pct = x => x == null ? "—" : Math.round(100 * x) + "%";
+document.getElementById("backtest").innerHTML = B.roles_with_posted_pay ? `<p>On ${fmt(B.roles_with_posted_pay)} roles that posted pay (checked ${esc(B.date)}), ${pct(B.base_rate_target)} reached the target.
+  Hiding their pay, the estimate called ${fmt(B.likely_target.n)} "likely ≥ target", and ${pct(B.likely_target.truly_target)} of those really were;
+  it called ${fmt(B.likely_below.n)} "likely under target", and ${pct(B.likely_below.truly_under_target)} of those really were. It covered ${pct(B.coverage)} of the roles.
+  Verdict: <b>${esc(B.verdict)}</b>.</p><p class="muted">${esc(B.note)}</p>` : '<p class="muted">No backtest yet.</p>';
+</script>

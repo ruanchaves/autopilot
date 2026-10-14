@@ -26,7 +26,7 @@ From your prompt:
 
 ## Where to look
 
-Use at least four of these avenues per pass, and spread the companies across them. Prefer breadth over depth.
+Use at least four of these avenues per pass, always including avenue 6, and spread the companies across them. Prefer breadth over depth.
 
 1. **Funding news.** Search the way the announcements are written. Combine a round, an AI term and a month from
    `seeds.months`:
@@ -57,6 +57,19 @@ Use at least four of these avenues per pass, and spread the companies across the
 4. **Lists.** Forbes AI 50, CB Insights AI 100, "fastest-growing AI startups" lists from the last six months.
 5. **Remote-first signals.** Search for "remote-first AI startup hiring Latin America", "AI startup hiring engineers
    in LATAM USD", or a careers page saying "we hire across the Americas". The company still needs funding evidence.
+6. **Where engineers in the candidate's region already work.** A company that employs AI engineers in the
+   candidate's country is the strongest sign it hires there. Postings' location labels are often wrong (user rule
+   2026-10-14).
+   - **Queries:** WebSearch for profiles, such as `"AI engineer" OR "machine learning engineer" Brazil
+     site:linkedin.com/in`, with the region's other countries in place of Brazil, and with "LLM" or "GenAI" in
+     place of the titles.
+   - **Reading the results:** read the raw result titles ("Name - Title - Company"). Never trust the prose summary.
+   - **What to keep:** collect the current employers that are funded product companies headquartered outside the
+     region (US or European startups with a team in the region), then check their funding and board as for any
+     other company.
+   - **What to record:** `found_via: people:<query>`, plus `people_evidence`: the profile URL and title that showed
+     it.
+   - **Never use LinkedIn's own search.**
 
 Write each search into `queries_run` exactly as you ran it. Searches that gave nothing go into `dead_queries` too.
 
@@ -111,7 +124,7 @@ Skip these:
    - `remote_policy`: remote-first, remote-friendly, hybrid or onsite
 4. **Record the rounds** in `funding`: round, `amount_usd` (a number), `date` (YYYY-MM-DD), lead `investors`,
    `source_url`.
-5. **Record `found_via`:** `news:<search as run>`, `portfolio:<fund>`, `batch:<name>`, `list:<name>`, or `recheck`.
+5. **Record `found_via`:** `news:<search as run>`, `portfolio:<fund>`, `batch:<name>`, `list:<name>`, `people:<search as run>`, or `recheck`.
 
 For each company in `recheck`, read the careers page again and report its `roles`, plus `ats` if it now has a board.
 

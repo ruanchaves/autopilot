@@ -11,7 +11,7 @@ learned about a role is cached in <home> so it carries across days and profiles:
 
     <home>/jds/index.json + *.txt    JD text, keyed by normalised URL
     <home>/classifications.json      eligibility class (for the candidate's country/region) and resume fit per URL
-    <home>/verdicts.json             country hiring check per company (shared with verify-queue)
+    <home>/people_checks.json        engineers outside the US per company (companies.py, shared with verify-queue)
     <home>/fit-rubric.md             candidate snapshot + rubric, tied to the resume's hash
 """
 
@@ -204,6 +204,13 @@ class JDFetcher:
         self.f = js.Fetcher(UA)
         self._himalayas_feed: dict | None = None
         self._himalayas_lock = threading.Lock()
+        # url -> (date text, where it came from): the posting date the platform itself states, read while fetching
+        # the JD. job-autopilot's run report uses it to estimate each posting's age (and to spot reposts).
+        self.dates: dict[str, tuple[str, str]] = {}
+
+    def date(self, url: str, value, method: str) -> None:
+        if value not in (None, "", 0):
+            self.dates[url] = (str(value), method)
 
     def get(self, url: str, accept: str = "text/html,application/xhtml+xml,*/*;q=0.8") -> str:
         return self.f.get(url, interval=HOST_INTERVAL, headers={"Accept": accept, "Accept-Language": "en-US,en;q=0.9"})
@@ -214,13 +221,18 @@ class JDFetcher:
     # Platform APIs return the full description without rendering JavaScript.
     def greenhouse(self, url):
         m = re.search(r"greenhouse\.io/(?:embed/job_app\?for=)?([^/?#]+)/jobs/(\d+)", url)
-        return m and to_text(self.api(f"https://boards-api.greenhouse.io/v1/boards/{m[1]}/jobs/{m[2]}").get("content", ""))
+        if not m:
+            return None
+        d = self.api(f"https://boards-api.greenhouse.io/v1/boards/{m[1]}/jobs/{m[2]}")
+        self.date(url, d.get("first_published") or d.get("updated_at"), "Greenhouse API")
+        return to_text(d.get("content", ""))
 
     def lever(self, url):
         m = re.search(r"jobs\.lever\.co/([^/]+)/([0-9a-f-]{36})", url)
         if not m:
             return None
         d = self.api(f"https://api.lever.co/v0/postings/{m[1]}/{m[2]}")
+        self.date(url, d.get("createdAt"), "Lever API")
         parts = [d.get("descriptionPlain") or to_text(d.get("description", ""))]
         parts += [l.get("text", "") + "\n" + to_text(l.get("content", "")) for l in d.get("lists", [])]
         parts.append(d.get("additionalPlain") or "")
@@ -232,6 +244,7 @@ class JDFetcher:
             return None
         for j in self.api(f"https://api.ashbyhq.com/posting-api/job-board/{m[1]}").get("jobs", []):
             if m[2] in (j.get("id"), (j.get("jobUrl") or "").rsplit("/", 1)[-1]):
+                self.date(url, j.get("publishedAt"), "Ashby API")
                 return j.get("descriptionPlain") or to_text(j.get("descriptionHtml", ""))
         return None
 
@@ -242,13 +255,17 @@ class JDFetcher:
         tenant, wd, site, path = m.groups()
         path = re.sub(r"/apply(/.*)?$", "", path)
         d = self.api(f"https://{tenant}.{wd}.myworkdayjobs.com/wday/cxs/{tenant}/{site}/{path}")
+        info = d.get("jobPostingInfo", {})
+        self.date(url, info.get("startDate") or info.get("postedOn"), "Workday API")
         return to_text(d.get("jobPostingInfo", {}).get("jobDescription", ""))
 
     def smartrecruiters(self, url):
         m = re.search(r"jobs\.smartrecruiters\.com/([^/]+)/(\d+)", url)
         if not m:
             return None
-        secs = self.api(f"https://api.smartrecruiters.com/v1/companies/{m[1]}/postings/{m[2]}").get("jobAd", {}).get("sections", {})
+        d = self.api(f"https://api.smartrecruiters.com/v1/companies/{m[1]}/postings/{m[2]}")
+        self.date(url, d.get("releasedDate"), "SmartRecruiters API")
+        secs = d.get("jobAd", {}).get("sections", {})
         return "\n\n".join(f"{v.get('title', '')}\n{to_text(v.get('text', ''))}" for v in secs.values() if v.get("text"))
 
     def workable(self, url):
@@ -256,6 +273,7 @@ class JDFetcher:
         if not m:
             return None
         d = self.api(f"https://apply.workable.com/api/v2/accounts/{m[1]}/jobs/{m[2]}")
+        self.date(url, d.get("published"), "Workable API")
         return "\n\n".join(to_text(d[k]) for k in ("description", "requirements", "benefits") if d.get(k))
 
     def oracle(self, url):
@@ -273,6 +291,9 @@ class JDFetcher:
         if not m:
             return None
         page = self.get(f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{m[1]}")
+        ago = re.search(r'class="posted-time-ago__text[^"]*"[^>]*>\s*([^<]+?)\s*<', page)
+        if ago:
+            self.date(url, ago.group(1), "LinkedIn page")
         d = re.search(r'class="show-more-less-html__markup[^"]*"[^>]*>(.*?)</div>', page, re.S)
         return to_text(d.group(1)) if d else None
 
@@ -327,6 +348,9 @@ class JDFetcher:
         except Exception as e:  # noqa: BLE001
             errors.append(f"page: {e}"[:160])
             raise RuntimeError(" | ".join(errors))
+        posted = re.search(r'"datePosted"\s*:\s*"([^"]+)"', page)
+        if posted:
+            self.date(url, posted.group(1), "JSON-LD datePosted")
         t = jsonld_description(page)
         if t and len(t) >= MIN_CHARS:
             return t, "json-ld"
@@ -366,6 +390,11 @@ def cmd_jds(args) -> int:
                         f"Posted: {r['posted_iso']}\nURL: {r['url']}\nFetched via: {method}\n\n")
                 (jd_dir / f"{name}.txt").write_text(head + text + "\n", encoding="utf-8")
                 entry.update(status="ok", method=method, chars=len(text), file=f"{name}.txt")
+            if r["url"] in fetcher.dates:
+                value, how = fetcher.dates[r["url"]]
+                parsed, _ = js.parse_date(value)
+                if parsed:
+                    entry.update(posted_src=parsed.strftime("%Y-%m-%dT%H:%MZ"), posted_method=how)
         except Exception as e:  # noqa: BLE001
             entry.update(status="failed", error=str(e)[:400])
         with lock:
@@ -500,32 +529,26 @@ def cmd_enrich_queue(args) -> int:
                                "region_aliases": c.get("region_aliases") or []})
         if stage == "fit":
             result["rubric"] = host_path(home / "fit-rubric.md")
-    else:  # country check
-        term = js.load_profile(config["profile"], args.home).get("country_check_term", "engineer")
-        verdicts = read_json(home / "verdicts.json", {})
-        cutoff = (js.NOW - timedelta(days=args.ttl)).strftime("%Y-%m-%d")
-        done_now = {v.get("key") for v in (read_jsonl(out / "verdicts.jsonl") if (out / "verdicts.jsonl").exists() else [])
-                    if v.get("status") == "complete"}
+    else:  # country check = the people check (companies.py, references/people-check.md)
+        import companies
+        companies.ingest_people(args.home, sorted(out.glob("people_out_*.jsonl")))
         wanted: dict[str, dict] = {}
         rank = {"green": 0, "yellow": 1}
         for r in roles:
             c = cache.get(r["key"], {})
             fit = c.get("fit", {}).get("fit")
-            if c.get("elig", {}).get("category") != 2 or fit not in args.fits:
+            # every role worth a look, whatever its JD says about location: the JD's label is not evidence
+            if c.get("elig", {}).get("category") not in (1, 2, 3) or fit not in args.fits:
                 continue
-            key = js.verdict_key(term, r["company"])
-            if not key or key in done_now or verdicts.get(key, {}).get("checked", "") >= cutoff:
+            k = companies.key_of(r["company"])
+            if not k:
                 continue
-            e = wanted.setdefault(key, {"company": r["company"], "key": key, "term": term, "roles": [],
-                                        "search_url": js.country_search_url(term, r["company"]), "rank": 9})
-            e["roles"].append(r["id"])
+            e = wanted.setdefault(k, {"company": r["company"], "roles": 0, "rank": 9})
+            e["roles"] += 1
             e["rank"] = min(e["rank"], rank.get(fit, 9))
-        queue = sorted(wanted.values(), key=lambda e: (e["rank"], -len(e["roles"])))
+        ordered = sorted(wanted.values(), key=lambda e: (e["rank"], -e["roles"]))
         limit = args.limit or int(config.get("country_check_limit") or 20)
-        plan = {"verdicts_file": host_path(out / "verdicts.jsonl"), "term": term, "queue": queue[:limit],
-                "remaining_after_cap": max(0, len(queue) - limit)}
-        write_json(out / "verify-queue.json", plan)
-        result.update(plan)
+        result.update(companies.people_queue(args.home, ordered, limit, out))
     print(json.dumps(result, indent=1, ensure_ascii=False))
     return 0
 
@@ -612,7 +635,10 @@ def cmd_explorer(args) -> int:
     dates = run_dates(args.home, args.batches)
     roles = collect_roles(args.home, args.profiles, dates)
     cache = ingest_outputs(home, out)
-    verdicts, verify_gaps = js.ingest_verdicts(args.home, out)
+    import companies
+    verify_gaps = [{"task": f"people check: {x}", "reason": "no verdict"}
+                   for x in companies.ingest_people(args.home, sorted(out.glob("people_out_*.jsonl")))["not_cached"]]
+    people = companies.people_checks(args.home)
     index = read_json(home / "jds" / "index.json", {})
     config = js.load_config(args.home)
     term = js.load_profile(config["profile"], args.home).get("country_check_term", "engineer")
@@ -629,10 +655,10 @@ def cmd_explorer(args) -> int:
         el, ft = c.get("elig"), c.get("fit")
         if ft and ft.get("rubric") != rsha:
             ft = None  # rated against a different resume
-        v = verdicts.get(js.verdict_key(term, r["company"])) if r["company"] else None
-        bz = "none"
-        if v:
-            bz = ("good" if v.get("brazil_located") else "weak") if v["flag"] == "green" else "bad"
+        v = people.get(companies.key_of(r["company"])) if r["company"] else None
+        # good: engineers in the candidate's country or region; weak: only elsewhere outside the US; bad: none found
+        bz = {"brazil": "good", "latam": "good", "non_us": "weak", "none": "bad"}.get((v or {}).get("level"), "none")
+        ev = ((v or {}).get("evidence") or [{}])[0]
         region_hint = el["region"] if el and el.get("region", "").lower() != "unclear" else ""
         records.append({
             "id": r["id"], "title": r["title"], "company": r["company"], "url": r["url"],
@@ -647,8 +673,10 @@ def cmd_explorer(args) -> int:
             "fit": ft["fit"] if ft and ft.get("fit") in ("green", "yellow", "red") else "unrated",
             "fitReason": ft.get("reason", "") if ft else "", "fitMatches": ft.get("matches", "") if ft else "",
             "fitGaps": ft.get("gaps", "") if ft else "",
-            "bz": bz, "bzEvidence": ((v.get("evidence") or [v.get("detail", "")])[0] if v else ""),
-            "bzUrl": v.get("search_url", "") if v else "", "bzChecked": v.get("checked", "") if v else "",
+            "bz": bz, "bzLevel": (v or {}).get("level", ""),
+            "bzEvidence": " | ".join(x for x in [ev.get("title", ""), ev.get("location", ""), ev.get("snippet", "")] if x)[:300]
+            if v else "",
+            "bzUrl": ev.get("url", "") if v else "", "bzChecked": v.get("checked", "") if v else "",
             "seniority": seniority(r["title"]),
         })
         a = auto_scores.get(r["id"])
@@ -657,7 +685,8 @@ def cmd_explorer(args) -> int:
                                skipReason=a.get("skipReason", ""), skipEvidence=a.get("skipEvidence", ""),
                                scoreParts=a.get("parts") or {}, blockers=a.get("blockers") or [],
                                scoreConfidence=a.get("confidence", ""), override=a.get("override", ""),
-                               apStatus=a.get("status", ""), payNote=a.get("pay", ""))
+                               apStatus=a.get("status", ""), payNote=a.get("pay", ""),
+                               tier=a.get("tier", ""), payTier=a.get("payTier", ""), payTierWhy=a.get("payTierWhy", ""))
 
     write_json(out / "roles.json", records, indent=0)
     cols = ["title", "company", "location", "posted", "elig", "eligEvidence", "region", "fit", "fitReason", "fitGaps",
@@ -673,7 +702,9 @@ def cmd_explorer(args) -> int:
             "batches": sorted({b for r in records for b in r["batches"]}, reverse=True),
             "resume": Path(config.get("resume") or "").name, "term": term,
             "country": userconfig.country(), "region": userconfig.region(), "role": config.get("role_title", ""),
-            "autopilot": {k: auto.get(k) for k in ("built", "apps", "questions", "estimates", "skills", "ready", "max_ready")} if auto else None,
+            "autopilot": {**{k: auto.get(k) for k in ("built", "apps", "questions", "estimates", "skills", "ready", "max_ready")},
+                          "reports": [r for r in read_json(home / "autopilot" / "runs.json", []) if r.get("report_url")][-8:][::-1]}
+            if auto else None,
             "recruiters": {k: recruiters.get(k) for k in ("built", "leads", "quotas", "min_score", "queries")} if recruiters else None}
     template = (js.SKILL / "assets" / "explorer.html").read_text(encoding="utf-8")
     safe = lambda obj: json.dumps(obj, ensure_ascii=False).replace("</", "<\\/")  # noqa: E731

@@ -11,7 +11,13 @@ the subagent clicks Submit itself and records `applied` with the confirmation it
 
     autopilot.py score-queue   [--batches 14] [--batch-size 20] [--decisions DIR]
     autopilot.py score-ingest
-    autopilot.py queue         [--batches 14] [--decisions DIR]
+    autopilot.py company-queue [--batch-size 40] [--batches 14] [--backtest]   # company-type batches (references/company-type.md)
+    autopilot.py company-ingest
+    autopilot.py paytier-backtest                                 # how well the pay estimate predicts posted pay
+    autopilot.py people-queue  [--limit N]                        # people-check batches, target-pay companies first
+    autopilot.py people-ingest
+    autopilot.py queue         [--batches 14] [--decisions DIR]   # tiers A/B/C, round-robin across sources inside each
+    autopilot.py run-report    [--published-url URL]              # this run's report page (assets/run-report.html)
     autopilot.py tailor-queue  [--n 6]
     autopilot.py pace-start
     autopilot.py next
@@ -32,6 +38,11 @@ candidate). Everything else lives in <home>/autopilot/:
     ledger.json        one entry per role id: status, attempts, tailored CV, answers given, cover letter, applika id
     pacing.json        per-host budgets that adapt between runs
     queue.json         the current apply order
+    company_types.json one judgement per company (funded startup, staffing firm...), for the pay estimate
+    paytier_backtest.json  the pay estimate checked against roles that posted pay
+    target_roles.json  tier A roles whose form couldn't be filled; recruiter-outreach's company lane reads it
+    runs/<run_id>/     decisions.jsonl (every keep/drop/rank decision of the run, with its evidence), report.html
+    runs.json          every run with its report link
     work/<date>/       batch files, tailor and apply result files
 
 Recruiter outreach is a separate pipeline: the recruiter-outreach skill (sibling folder).
@@ -57,7 +68,9 @@ SWEEP = Path(__file__).resolve().parents[2] / "job-source-sweep" / "scripts"
 sys.path.insert(0, str(SWEEP))
 import jobsweep as js  # noqa: E402
 import enrich  # noqa: E402
+import companies as co  # noqa: E402  (ATS boards, people checks)
 import userconfig  # noqa: E402  (config.yaml at the repo root)
+import target as tg  # noqa: E402  (pay tier and target tiers, this folder)
 
 NOW = datetime.now(timezone.utc)
 TODAY = NOW.strftime("%Y-%m-%d")
@@ -102,8 +115,14 @@ DEFAULT_SETTINGS = {
     # subagent clicks Submit itself and records `applied` with the confirmation it saw.
     "auto_submit": False,
     # cover letters: "required" = draft one only when the form requires it or the posting asks for
-    # one; "always" = draft one wherever a form accepts it; "never"
+    # one; "always" = draft one wherever a form accepts it; "target" = "always" for tier A roles and
+    # "required" for the rest; "never"
     "cover_letter": "required",
+    # target tiers (target.py): "prefer" queues tier A, then B, then C; "only" leaves tier C out of the queue
+    "target_mode": "prefer",
+    # companies the people check looks at per run. Google, the one engine whose results show where people
+    # live, blocked after ~13 searches in the 2026-10-14 test, so a run checks few companies, best first.
+    "people_check_limit": 20,
     # filled in from config.yaml by settings(): banned_companies (current employers/clients, never
     # applied to), pay_target_usd_month / pay_skip_below_usd_month (pay section), and the tracker
     # section (applika_enabled, rejection_cooldown_days, rejection_neutral_feedback,
@@ -207,7 +226,8 @@ def fresh_bonus(parts: dict) -> int:
     return 5 if days <= 3 else 2 if days <= 7 else 0
 
 
-def total_score(parts: dict | None, elig_cat, target: float = 10000) -> int | None:
+def total_score(parts: dict | None, elig_cat, target: float = 10000, pt: dict | None = None) -> int | None:
+    """pt: the role's pay tier (target.pay_tier); with no posted pay, likely_target adds 6 and likely_below takes 8."""
     if not parts:
         return None
     s = sum(max(0, min(PART_MAX[k], float(parts.get(k, 0)))) for k in PART_MAX)
@@ -216,18 +236,87 @@ def total_score(parts: dict | None, elig_cat, target: float = 10000) -> int | No
     if parts.get("confidence") == "title_only":
         s = min(s, 60)
     s += pay_bonus(parts, target) + fresh_bonus(parts)
+    if pt and not (parts.get("pay_max") or parts.get("pay_min")):
+        s += tg.pay_points(pt)
     return round(max(0, min(100, s)))
 
 
-def apply_decision(parts: dict, st: dict) -> tuple[bool, str, str]:
-    """The model's liberal apply call, plus the user's pay floor on posted pay."""
+# A JD's location wording is written by automated systems and is often wrong; what a company's engineers show is
+# the evidence (people check). Legal requirements are different: citizenship, clearances and export rules are real.
+LEGAL = re.compile(r"citizen|clearance|green card|itar|export control|authori[sz]ed to work|work authori[sz]ation|"
+                   r"visa|sponsor|permanent resident|legal entity|w-?2 only|ssn", re.I)
+
+
+def apply_decision(parts: dict, st: dict, pt: dict | None = None, people: str | None = None) -> tuple[bool, str, str]:
+    """The model's liberal apply call, the user's pay floor on posted pay, and the pay gate from the company's own
+    quotes. A "US-based only" kind of exclusion is overridden when the people check found engineers in the
+    candidate's country or region (the role is then capped at tier B); legal requirements never are."""
     if parts.get("apply") is False:
-        return False, parts.get("skip_reason", ""), parts.get("skip_evidence", "")
+        why, evidence = parts.get("skip_reason", ""), parts.get("skip_evidence", "")
+        if why == "location_explicit" and people in tg.REGION_OK and not LEGAL.search(evidence):
+            return True, "location_overridden", evidence
+        return False, why, evidence
     hi = parts.get("pay_max") or parts.get("pay_min")
     if hi and st.get("pay_skip_below_usd_month") and hi < st["pay_skip_below_usd_month"]:
         return False, "pay_below_target", (f'Posted pay: {parts["pay_note"]} (~USD {round(hi):,}/month)' if parts.get("pay_note")
                                            else f"Posted pay tops out at ~USD {round(hi):,}/month")
+    if pt and pt.get("gate"):
+        return False, "pay_gate", pt.get("detail", "")
     return True, "", ""
+
+
+def evaluate(home: str, roles: list[dict], st: dict | None = None) -> dict[str, dict]:
+    """role id -> score, pay tier, people check, tier and apply decision, from the caches. Shared by queue, the
+    dashboard and the run report so all three show the same numbers."""
+    st = st or settings(home)
+    cache = enrich.read_json(js.fix_path(home) / "classifications.json", {})
+    scores = load(home, "scores.json", {})
+    ctx = tg.context(home, roles, st, scores)
+    target = st["pay_target_usd_month"]
+    out = {}
+    for r in roles:
+        sp = scores.get(r["key"])
+        cat = (cache.get(r["key"], {}).get("elig") or {}).get("category")
+        pt = tg.pay_tier(r, sp, ctx)
+        pv = ctx["people"].get(co.key_of(r.get("company", ""))) or {}
+        people = pv.get("level")
+        ok, why, evidence = apply_decision(sp, st, pt, people) if sp else (True, "", "")
+        tier = tg.tier_of(pt["tier"], people)
+        if why == "location_overridden" and tier == "A":
+            tier = "B"
+        out[r["id"]] = {"score": total_score(sp, cat, target, pt), "pay": pt, "people": people,
+                        "people_evidence": (pv.get("evidence") or [{}])[0] if pv else {}, "people_checked": pv.get("checked", ""),
+                        "tier": tier, "tier_reason": tg.tier_reason(pt, people, tier),
+                        "ok": ok, "why": why, "evidence": evidence, "elig": cat, "parts": sp}
+    return out
+
+
+# ------------------------------------------------------------- decision log
+# Every step that keeps, drops, ranks or estimates something appends one line per role to runs/<run_id>/
+# decisions.jsonl: the step, the outcome, a reason code, the evidence, and who decided (a script rule, a subagent,
+# the user, applika). The run report (assets/run-report.html) is built from it.
+
+def run_id(home: str) -> str:
+    return (pacing(home).get("run") or {}).get("id") or NOW.strftime("%Y%m%dT%H%M")
+
+
+def run_dir(home: str, rid_: str | None = None) -> Path:
+    path = ap_dir(home) / "runs" / (rid_ or run_id(home))
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def log(home: str, recs: list[dict]) -> None:
+    if not recs:
+        return
+    with (run_dir(home) / "decisions.jsonl").open("a", encoding="utf-8") as fh:
+        for r in recs:
+            fh.write(json.dumps({"at": NOW.isoformat(timespec="seconds"), **r}, ensure_ascii=False) + "\n")
+
+
+def rec(step: str, r: dict, outcome: str, reason: str = "", evidence: str = "", by: str = "script") -> dict:
+    return {"step": step, "role": r.get("id", ""), "key": r.get("key", ""), "title": r.get("title", ""),
+            "company": r.get("company", ""), "outcome": outcome, "reason": reason, "evidence": (evidence or "")[:400], "by": by}
 
 
 def load_decisions(path: str | None) -> dict[str, str]:
@@ -269,7 +358,7 @@ def cmd_score_queue(args) -> int:
     rej = recent_rejections(existing, st)
     apps = recent_applications(existing, st)
     rejected_company = applied_company = in_applika = 0
-    entries = []
+    entries, logged = [], []
     for r in roles:
         e = ledger.get(r["id"], {})
         if r["id"] in rejected or e.get("status") in FINAL:
@@ -282,16 +371,20 @@ def cmd_score_queue(args) -> int:
                                "applika": {"id": m.get("id"), "note": "already in applika"},
                                "detail": "Already in applika"}
             in_applika += 1
+            logged.append(rec("pre-score", r, "skipped", "in_applika",
+                              f'applika {m.get("id")}: {m.get("role")} on {m.get("application_date")}', "applika"))
             continue
         rj = rejection_for(rej, r["company"])
         if rj and e.get("override") != "apply":
             ledger[r["id"]] = {**base, "status": "skipped", "detail": rejection_detail(rj)}
             rejected_company += 1
+            logged.append(rec("pre-score", r, "skipped", "rejected_company", rejection_detail(rj), "applika"))
             continue
         ap = rejection_for(apps, r["company"])
         if ap and untouched(e) and e.get("override") != "apply":
             ledger[r["id"]] = {**base, "status": "skipped", "detail": application_detail(ap)}
             applied_company += 1
+            logged.append(rec("pre-score", r, "skipped", "applied_company", application_detail(ap), "applika"))
             continue
         if scores.get(r["key"], {}).get("rubric") == rubric:
             continue
@@ -313,6 +406,7 @@ def cmd_score_queue(args) -> int:
     enrich.write_json(out / "score_context.json", ctx)
     if rejected_company or applied_company or in_applika:
         save(args.home, "ledger.json", ledger)
+    log(args.home, logged)
     return emit({"pending": len(entries), "skipped_rejected_company": rejected_company,
                  "skipped_applied_company": applied_company, "skipped_in_applika": in_applika,
                  "rejection_cooldown_days": st["rejection_cooldown_days"],
@@ -339,6 +433,11 @@ def cmd_score_ingest(args) -> int:
             posted[e["id"]] = e.get("posted", "")
     scores = load(args.home, "scores.json", {})
     n = 0
+    logged = []
+    titles = {}
+    for bf in out.glob("score_batch_*.json"):
+        for e in json.loads(bf.read_text(encoding="utf-8")):
+            titles[e["id"]] = e
     for f in sorted(out.glob("score_out_*.jsonl")):
         for d in enrich.read_jsonl(f):
             key = keys.get(str(d.get("id")))
@@ -352,7 +451,13 @@ def cmd_score_ingest(args) -> int:
                            "pay_min": num(d.get("pay_min_usd_month")), "pay_max": num(d.get("pay_max_usd_month")),
                            "pay_note": d.get("pay_note", ""), "posted": posted.get(str(d["id"]), "")}
             n += 1
+            b = titles.get(str(d["id"]), {})
+            ok = d.get("apply", True) is not False
+            logged.append(rec("score", {"id": str(d["id"]), "key": key, "title": b.get("title", ""), "company": b.get("company", "")},
+                              "apply" if ok else "skip", "" if ok else d.get("skip_reason", ""),
+                              d.get("why", "") if ok else d.get("skip_evidence", ""), "scoring subagent"))
     save(args.home, "scores.json", scores)
+    log(args.home, logged)
     return emit({"ingested": n, "scored_total": len(scores)})
 
 
@@ -369,11 +474,7 @@ def is_ready(e: dict) -> bool:
 
 
 def role_scores(home: str, roles: list[dict]) -> dict[str, int | None]:
-    cache = enrich.read_json(js.fix_path(home) / "classifications.json", {})
-    scores = load(home, "scores.json", {})
-    target = settings(home)["pay_target_usd_month"]
-    return {r["id"]: total_score(scores.get(r["key"]), (cache.get(r["key"], {}).get("elig") or {}).get("category"), target)
-            for r in roles}
+    return {k: v["score"] for k, v in evaluate(home, roles).items()}
 
 
 def blocked_on_questions(entry: dict, b: dict) -> bool:
@@ -526,6 +627,15 @@ def source_group(labels: list[str]) -> str:
     return label
 
 
+def tiered_queue(q: list[dict]) -> list[dict]:
+    """Tier A first, then B, then C (target.py); inside each tier the source round-robin below still applies, so one
+    big feed can't take over a tier."""
+    out = []
+    for t in ("A", "B", "C"):
+        out += balance_queue([x for x in q if x.get("tier", "C") == t])
+    return out
+
+
 def balance_queue(q: list[dict]) -> list[dict]:
     """Deal the queue out round-robin across sources, each source best score first, accepted roles
     first within a source and unscored roles last. A score-only sort fills the run with whichever
@@ -568,7 +678,8 @@ def too_old(r: dict, max_age_days: int | None) -> bool:
 
 def cmd_queue(args) -> int:
     roles = all_roles(args.home, args.batches)
-    sc = role_scores(args.home, roles)
+    ev = evaluate(args.home, roles)
+    sc = {k: v["score"] for k, v in ev.items()}
     parts = load(args.home, "scores.json", {})
     existing, applika_err = applika_list(args.home, refresh=True)
     dec = load_decisions(args.decisions)
@@ -579,20 +690,29 @@ def cmd_queue(args) -> int:
     apps = recent_applications(existing, st)
     q, skipped = [], {"rejected": 0, "final": 0, "banned": 0, "rejected_company": 0, "in_applika": 0,
                       "applied_company": 0, "not_worth_applying": 0, "needs_you": 0, "waiting_answers": 0,
-                      "load_retries": 0, "too_old": 0}
+                      "load_retries": 0, "too_old": 0, "tier_c_only_mode": 0}
+    logged = []
     for r in roles:
         e = ledger.get(r["id"], {})
         status = e.get("status")
+        v = ev[r["id"]]
         base = {"id": r["id"], "key": r["key"], "title": r["title"], "company": r["company"], "url": r["url"],
-                "location": r["location"], "score": sc.get(r["id"]), "attempts": e.get("attempts", [])}
+                "location": r["location"], "score": sc.get(r["id"]), "attempts": e.get("attempts", []),
+                "tier": v["tier"], "pay_tier": v["pay"]["tier"], "people": v["people"]}
+
+        def drop(reason: str, evidence: str = "", by: str = "script", outcome: str = "skipped") -> None:
+            logged.append(rec("queue", r, outcome, reason, evidence, by))
+
         if is_banned(r["company"], st) and status != "applied":
             ledger[r["id"]] = {**e, **base, "status": "skipped", "detail": "Banned company (a current employer)"}
             skipped["banned"] += 1
+            drop("banned", "a current employer or client (banned_companies)")
             continue
         rj = rejection_for(rej, r["company"])
         if rj and status != "applied" and e.get("override") != "apply":
             ledger[r["id"]] = {**e, **base, "status": "skipped", "detail": rejection_detail(rj)}
             skipped["rejected_company"] += 1
+            drop("rejected_company", rejection_detail(rj), "applika")
             continue
         if status not in FINAL:
             m = applika_exact(existing, {**r, **e})
@@ -601,61 +721,87 @@ def cmd_queue(args) -> int:
                                    "applika": {"id": m.get("id"), "note": "already in applika"},
                                    "detail": "Already in applika"}
                 skipped["in_applika"] += 1
+                drop("in_applika", f'{m.get("role")} on {m.get("application_date")}', "applika")
                 continue
             ap = rejection_for(apps, r["company"])
             if ap and untouched(e) and e.get("override") != "apply":
                 ledger[r["id"]] = {**e, **base, "status": "skipped", "detail": application_detail(ap)}
                 skipped["applied_company"] += 1
+                drop("applied_company", application_detail(ap), "applika")
                 continue
             sp = parts.get(r["key"]) or {}
             if e.get("override") == "skip":  # the user overrode the model on the dashboard
                 ledger[r["id"]] = {**e, **base, "status": "skipped", "detail": "You chose not to apply"}
                 skipped["final"] += 1
+                drop("your_override", "You chose not to apply on the dashboard", "you")
                 continue
-            ok, why, evidence = apply_decision(sp, st)
+            ok, why, evidence = v["ok"], v["why"], v["evidence"]
             if not ok and e.get("override") != "apply":
                 ledger[r["id"]] = {**e, **base, "status": "not_applying", "detail": f"{why}: {evidence}".strip(": ")}
                 skipped["not_worth_applying"] += 1
+                drop(why or "not_worth_applying", evidence,
+                     "script (pay rule)" if why in ("pay_below_target", "pay_gate") else "scoring subagent", "not_applying")
                 continue
         if dec.get(r["id"]) == "rejected":
             skipped["rejected"] += 1
+            drop("rejected_in_explorer", "You rejected it in the role explorer", "you")
             continue
         if status in FINAL:
             skipped["final"] += 1
+            drop("finished", f'{status}: {e.get("detail", "")}', outcome=status or "finished")
             continue
         if status in ("filled", "failed_submit"):
             skipped["needs_you"] += 1  # waiting for the user to submit (or discard) it
+            drop("waiting_for_you", "Filled and waiting for you to submit" if status == "filled" else e.get("detail", ""),
+                 outcome="waiting")
             continue
         if status == "failed_fill" and blocked_on_questions(e, b):
             # The form is filled as far as it goes and its tab is open. The user either finishes it
             # by hand (then marks it submitted) or answers the questions on the dashboard, after
             # which the role is queued again and filled once more on the next run.
             skipped["waiting_answers"] += 1
+            drop("waiting_answers", f'{len(e.get("waiting_on") or [])} questions waiting on the dashboard', outcome="waiting")
             continue
         if status == "failed_load" and e.get("load_failures", 0) >= st["max_load_retries"]:
             skipped["load_retries"] += 1
+            drop("load_retries", e.get("detail", ""))
             continue
         if too_old(r, args.max_age_days):
             skipped["too_old"] += 1
+            drop("too_old", f'posted {r.get("posted_iso") or "?"}, older than {args.max_age_days} days')
+            continue
+        if st.get("target_mode") == "only" and v["tier"] == "C" and not dec.get(r["id"]) == "accepted":
+            skipped["tier_c_only_mode"] += 1
+            drop("tier_c", v["tier_reason"])
             continue
         q.append({"id": r["id"], "key": r["key"], "title": r["title"], "company": r["company"], "url": r["url"],
                   "location": r["location"], "score": sc.get(r["id"]), "accepted": dec.get(r["id"]) == "accepted",
-                  "source": source_group(r.get("sources"))})
-    q = balance_queue(q)
+                  "source": source_group(r.get("sources")), "tier": v["tier"], "pay_tier": v["pay"]["tier"],
+                  "people": v["people"]})
+    q = tiered_queue(q)
+    for i, x in enumerate(q, 1):
+        v = ev[x["id"]]
+        logged.append(rec("queue", x, "queued", f"tier {x['tier']}",
+                          f"position {i}; {v['tier_reason']}; pay: {v['pay']['detail']}"))
+    log(args.home, logged)
     save(args.home, "queue.json", q)
     for r in q:  # keep the ledger's copy of each queued role current, so the dashboard can list it
         e = ledger.setdefault(r["id"], {"id": r["id"], "status": "queued", "attempts": []})
-        e.update({k: r[k] for k in ("key", "title", "company", "url", "location", "score", "source")})
+        e.update({k: r[k] for k in ("key", "title", "company", "url", "location", "score", "source", "tier", "pay_tier", "people")})
         if e.get("status") in (None, "failed_fill", "not_applying"):  # answers arrived / decision changed
             e["status"] = "queued"
     save(args.home, "ledger.json", ledger)
     by_source = Counter(x["source"] for x in q)
     return emit({"queued": len(q), "unscored": sum(1 for x in q if x["score"] is None), "skipped": skipped,
+                 "by_tier": dict(sorted(Counter(x["tier"] for x in q).items())),
+                 "by_pay_tier": dict(Counter(x["pay_tier"] for x in q).most_common()),
+                 "by_people": dict(Counter(x["people"] or "unchecked" for x in q).most_common()),
+                 "target_mode": st.get("target_mode", "prefer"),
                  "by_source": dict(by_source.most_common()),
                  "rejected_companies": sorted({v["company"] for v in rej.values()}),
                  "applied_companies": len({v["applika_id"] for v in apps.values()}),
                  "applika_error": applika_err,
-                 "top": [f'{x["score"]} {x["title"]} @ {x["company"]} [{x["source"]}]' for x in q[:12]]})
+                 "top": [f'{x["tier"]} {x["score"]} {x["title"]} @ {x["company"]} [{x["source"]}]' for x in q[:12]]})
 
 
 def slug(text: str, n: int) -> str:
@@ -767,6 +913,10 @@ def cmd_pace_start(args) -> int:
     p["run"] = {"id": NOW.strftime("%Y%m%dT%H%M"), "started": NOW.isoformat()}
     p["companies"] = {}
     save(args.home, "pacing.json", p)
+    runs = load(args.home, "runs.json", [])
+    runs.append({"id": p["run"]["id"], "started": p["run"]["started"], "report_url": ""})
+    save(args.home, "runs.json", runs)
+    run_dir(args.home, p["run"]["id"])
     return emit({"run": p["run"]["id"], "budget_changes": changes,
                  "budgets": {h: v["budget"] for h, v in p["hosts"].items()}})
 
@@ -854,13 +1004,18 @@ def cmd_next(args) -> int:
         rj = rejection_for(recent_rejections(existing, st), r["company"])
         ledger.setdefault(r["id"], {"id": r["id"], "status": "queued", "attempts": []})["filling_since"] = NOW.isoformat()
         save(args.home, "ledger.json", ledger)
-        return emit({"banned_companies": st["banned_companies"], "cover_letter_policy": st["cover_letter"],
+        policy = st["cover_letter"]
+        if policy == "target":  # tier A roles always get a letter; the rest only when the form asks
+            policy = "always" if r.get("tier") == "A" else "required"
+        log(args.home, [rec("fill", r, "started", f"tier {r.get('tier', '?')}", f"cover letter policy: {policy}")])
+        return emit({"banned_companies": st["banned_companies"], "cover_letter_policy": policy,
                      "auto_submit": bool(st.get("auto_submit")), "candidate": userconfig.profile(),
                      "role": {**r, "tailored_pdf": t["pdf"], "tailored_summary": t.get("summary", ""),
                               "tailored_folder": str(Path(t["pdf"]).parent.parent) if t.get("pdf") and tailor else "",
                               "jd_file": t.get("jd_file", ""),
                               "earlier_applications_to_company": earlier,
                               "recent_rejection": rejection_detail(rj) if rj else "",
+                              "salary_answer": salary_answer(load(args.home, "scores.json", {}).get(r.get("key")), st),
                               "previous_attempt": {k: e.get(k) for k in ("status", "apply_url", "detail", "answers_given")}
                               if e.get("attempts") else None},
                      "host_guess": host, "untailored_in_queue": untailored, "ready_waiting": ready})
@@ -870,6 +1025,22 @@ def cmd_next(args) -> int:
     if waiting:
         return emit({"wait_seconds": min(waiting)})
     return emit({"done": True, "reason": "queue empty or every host's budget is used"})
+
+
+def salary_answer(sp: dict | None, st: dict) -> dict | None:
+    """When the posted range reaches the target, the number to give is in its upper half (three quarters of the way
+    up, never under pay.ask_usd_month), not the flat ask. None: follow candidate.salary_policy as before."""
+    sp = sp or {}
+    lo, hi = sp.get("pay_min"), sp.get("pay_max") or sp.get("pay_min")
+    target = st["pay_target_usd_month"]
+    if not hi or hi < target:
+        return None
+    ask = float((userconfig.pay() or {}).get("ask_usd_month") or target)
+    lo = lo or hi
+    monthly = max(ask, lo + 0.75 * (hi - lo))
+    monthly = round(monthly / 250) * 250
+    return {"usd_month": int(monthly), "usd_year": int(round(monthly * 12 / 1000) * 1000),
+            "why": f"posted range {sp.get('pay_note') or f'~USD {round(lo):,}-{round(hi):,}/month'}: answer in its upper half"}
 
 
 # -------------------------------------------------------------------- record
@@ -999,6 +1170,17 @@ def cmd_record(args) -> int:
             e.update(status="deferred")
         save(args.home, "pacing.json", p)
         out.update(status=e["status"], host=host)
+        log(args.home, [rec("fill", {**e, "id": rid}, outcome, f"type {e.get('failure_type')}" if e.get("failure_type") else "",
+                            res.get("detail", ""), "fill subagent")])
+        if outcome in ("failed_submit", "failed_load") and e.get("tier") == "A":
+            # a tier A role whose form couldn't be filled: recruiter-outreach's company lane reaches the company
+            # directly (its hiring manager or in-house recruiter). This skill still contacts no one.
+            tr = load(args.home, "target_roles.json", {})
+            tr[rid] = {"id": rid, "title": e.get("title"), "company": e.get("company"), "url": e.get("url"),
+                       "apply_url": e.get("apply_url", ""), "pay_tier": e.get("pay_tier"), "people": e.get("people"),
+                       "outcome": outcome, "detail": res.get("detail", "")[:300], "at": TODAY}
+            save(args.home, "target_roles.json", tr)
+            out["handed_to_recruiter_outreach"] = True
     save(args.home, "ledger.json", ledger)
     save(args.home, "answer-bank.json", b)
     return emit(out)
@@ -1057,6 +1239,7 @@ def cmd_confirm(args) -> int:
             continue
         e = mark_confirmed(ledger, rid, status)
         done.append(f'{e.get("company")}: {e.get("title")} -> {e["status"]}')
+        log(args.home, [rec("you", e, e["status"], status, "confirmed in chat", "you")])
     save(args.home, "ledger.json", ledger)
     return emit({"confirmed": done, "unknown_ids": unknown,
                  "next": "run applika-sync to register the submitted ones" if status == "submitted" and done else ""})
@@ -1094,8 +1277,9 @@ def cmd_answers(args) -> int:
                 # dashboard "Submitted" / "Discard" on a filled form: {role, status, at}
                 cur = ledger.get(d["role"], {})
                 if cur.get("status") not in ("applied", "discarded") or (cur.get("confirmed_at") or "") < (d.get("at") or ""):
-                    mark_confirmed(ledger, d["role"], d["status"], d.get("at", ""))
+                    e = mark_confirmed(ledger, d["role"], d["status"], d.get("at", ""))
                     got[d["status"]] += 1
+                    log(args.home, [rec("you", e, e["status"], d["status"], f'marked on the dashboard {d.get("at", "")}', "you")])
                 continue
             if d.get("override") in ("apply", "skip", "model") and d.get("role"):
                 # dashboard override of the model's apply decision: {role, override, at}
@@ -1213,14 +1397,24 @@ def cmd_dashboard(args) -> int:
     st = settings(args.home)
     target = st["pay_target_usd_month"]
     by_id = {}
+    try:
+        roles = all_roles(args.home, 14)
+    except SystemExit:
+        roles = []
+    ev = evaluate(args.home, roles, st)
     for key, sp in scores.items():
         rid_ = sp.get("id") or enrich.rid(key)
         cat = (cache.get(key, {}).get("elig") or {}).get("category")
-        ok, why, evidence = apply_decision(sp, st)
+        v = ev.get(rid_)
+        ok, why, evidence = (v["ok"], v["why"], v["evidence"]) if v else apply_decision(sp, st)
+        pt = v["pay"] if v else None
         by_id[rid_] = {
-            "score": total_score(sp, cat, target),
+            "score": v["score"] if v else total_score(sp, cat, target),
+            "tier": v["tier"] if v else "", "payTier": pt["tier"] if pt else "", "payTierWhy": pt["detail"] if pt else "",
+            "people": v["people"] if v else None,
             "parts": {**{k: sp.get(k, 0) for k in PART_MAX}, "location": LOGISTICS.get(cat, 7),
-                      "pay": pay_bonus(sp, target), "fresh": fresh_bonus(sp)},
+                      "pay": pay_bonus(sp, target) + (tg.pay_points(pt) if pt and not (sp.get("pay_max") or sp.get("pay_min")) else 0),
+                      "fresh": fresh_bonus(sp)},
             "pay": sp.get("pay_note", ""),
             "confidence": sp.get("confidence", "jd"), "level": sp.get("level", ""),
             "why": sp.get("why", ""), "apply": ok, "skipReason": why,
@@ -1281,6 +1475,7 @@ def cmd_status(args) -> int:
     p = pacing(args.home)
     queue = load(args.home, "queue.json", [])
     return emit({"by_status": counts,
+                 "queue_by_tier": dict(sorted(Counter(x.get("tier", "?") for x in queue).items())),
                  "queue_by_source": dict(Counter(x.get("source", "unknown") for x in queue).most_common()),
                  "applied_by_source": dict(Counter(e.get("source", "unknown") for e in ledger.values()
                                                    if e.get("status") == "applied").most_common()),
@@ -1291,6 +1486,92 @@ def cmd_status(args) -> int:
                  "pending_skills": len(b["skills"]["pending"]),
                  "applika_unregistered": sum(1 for e in ledger.values() if e.get("status") == "applied" and not e.get("applika")),
                  "pacing": {h: f'{v["used"]}/{v["budget"]}{" friction" if v["friction"] else ""}' for h, v in p["hosts"].items()}})
+
+
+# ------------------------------------------------------------- target tiers
+
+def cmd_company_queue(args) -> int:
+    """Company-type batches (references/company-type.md) for companies without a type: those of the last --batches
+    sweep dates, and with --backtest every company whose role posted pay (the pay estimate is checked on them)."""
+    roles = all_roles(args.home, args.batches)
+    keys = None
+    if args.backtest:
+        everything = all_roles(args.home, 400)
+        scores = load(args.home, "scores.json", {})
+        posted = {co.key_of(r["company"]) for r in everything
+                  if (scores.get(r["key"]) or {}).get("pay_max") or (scores.get(r["key"]) or {}).get("pay_min")}
+        roles = everything
+        keys = posted | {co.key_of(r["company"]) for r in all_roles(args.home, args.batches)}
+    entries = tg.company_type_entries(args.home, roles, keys)
+    out = work_dir(args.home)
+    stamp = NOW.strftime("%H%M")
+    batches = []
+    for i in range(0, len(entries), args.batch_size):
+        n = i // args.batch_size + 1
+        bf, of = out / f"company_batch_{stamp}_{n}.json", out / f"company_out_{stamp}_{n}.jsonl"
+        enrich.write_json(bf, entries[i:i + args.batch_size])
+        batches.append({"batch": enrich.host_path(bf), "out": enrich.host_path(of), "companies": len(entries[i:i + args.batch_size])})
+    return emit({"pending": len(entries), "known": len(tg.company_types(args.home)), "batches": batches})
+
+
+def cmd_company_ingest(args) -> int:
+    return emit(tg.ingest_company_types(args.home, sorted(work_dir(args.home).glob("company_out_*.jsonl"))))
+
+
+def cmd_paytier_backtest(args) -> int:
+    return emit(tg.backtest(args.home, all_roles(args.home, 400), settings(args.home)))
+
+
+def cmd_people_queue(args) -> int:
+    """People-check batches (job-source-sweep/references/people-check.md): companies of roles still worth applying
+    to, target pay first (posted, then likely), then the best score."""
+    st = settings(args.home)
+    roles = all_roles(args.home, args.batches)
+    ev = evaluate(args.home, roles, st)
+    ledger = load(args.home, "ledger.json", {})
+    rank = {"posted_target": 0, "likely_target": 1, "unclear": 2, "posted_near": 3, "likely_below": 4, "posted_below": 9}
+    wanted = []
+    for r in roles:
+        v, e = ev[r["id"]], ledger.get(r["id"], {})
+        if e.get("status") in FINAL or not v["ok"] and v["why"] != "location_explicit":
+            continue
+        if v["pay"]["tier"] == "posted_below" or is_banned(r["company"], st):
+            continue
+        wanted.append({"company": r["company"], "why": f'{v["pay"]["tier"]}: {r["title"]}',
+                       "_rank": (rank.get(v["pay"]["tier"], 5), -(v["score"] or 0))})
+    wanted.sort(key=lambda w: w["_rank"])
+    res = co.people_queue(args.home, wanted, args.limit or int(st["people_check_limit"]), work_dir(args.home))
+    return emit(res)
+
+
+def cmd_people_ingest(args) -> int:
+    files = sorted(work_dir(args.home).glob("people_out_*.jsonl"))
+    res = co.ingest_people(args.home, files)
+    cache = co.people_checks(args.home)
+    logged = []
+    for f in files:
+        for d in enrich.read_jsonl(f):
+            v = cache.get(d.get("key") or co.key_of(d.get("company", "")))
+            if v and v.get("checked") == TODAY:
+                ev_ = (v.get("evidence") or [{}])[0]
+                logged.append(rec("people check", {"company": v.get("company", "")}, v["level"], v.get("engine", ""),
+                                  " | ".join(x for x in [ev_.get("title", ""), ev_.get("location", ""), ev_.get("url", "")] if x)
+                                  or v.get("detail", ""), "people-check subagent"))
+    log(args.home, logged)
+    return emit(res)
+
+
+def cmd_run_report(args) -> int:
+    import report
+    if args.published_url:
+        runs = load(args.home, "runs.json", [])
+        rid_ = args.run or run_id(args.home)
+        for r in runs:
+            if r.get("id") == rid_:
+                r["report_url"] = args.published_url
+        save(args.home, "runs.json", runs)
+        return emit({"run": rid_, "report_url": args.published_url})
+    return emit(report.build(args.home, args.run or run_id(args.home), args.batches))
 
 
 def main() -> int:
@@ -1319,6 +1600,16 @@ def main() -> int:
     sub.add_parser("ready").set_defaults(fn=cmd_ready)
     sub.add_parser("dashboard").set_defaults(fn=cmd_dashboard)
     sub.add_parser("status").set_defaults(fn=cmd_status)
+    p = sub.add_parser("company-queue"); p.add_argument("--batch-size", type=int, default=40)
+    p.add_argument("--batches", type=int, default=14); p.add_argument("--backtest", action="store_true")
+    p.set_defaults(fn=cmd_company_queue)
+    sub.add_parser("company-ingest").set_defaults(fn=cmd_company_ingest)
+    sub.add_parser("paytier-backtest").set_defaults(fn=cmd_paytier_backtest)
+    p = sub.add_parser("people-queue"); p.add_argument("--limit", type=int, default=0); p.add_argument("--batches", type=int, default=14)
+    p.set_defaults(fn=cmd_people_queue)
+    sub.add_parser("people-ingest").set_defaults(fn=cmd_people_ingest)
+    p = sub.add_parser("run-report"); p.add_argument("--run"); p.add_argument("--batches", type=int, default=14)
+    p.add_argument("--published-url"); p.set_defaults(fn=cmd_run_report)
     args = ap.parse_args()
     return args.fn(args)
 

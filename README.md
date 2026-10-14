@@ -7,7 +7,7 @@ The skills are Markdown instructions (`SKILL.md`, plus `references/` for the sub
 | Skill | What it does | Sends anything? |
 |---|---|---|
 | `/job-source-sweep` | Sweeps feeds, APIs, VC portfolio boards, LinkedIn, Wellfound, Remote Rocketship and Google `site:` searches over 19 ATS platforms and 15 job boards. Fetches each job description, classifies location eligibility, rates resume fit, and publishes the **role explorer**, a filterable page where you accept or reject roles. | No |
-| `/job-autopilot` | Runs the sweep, gives every role a 0-100 score, tailors the resume per role, and fills each application form completely in Chrome. **By default it stops in front of Submit** and leaves the tab open; you review, submit, and mark it submitted on the dashboard. Optional `auto_submit`. | Only with `auto_submit: true` |
+| `/job-autopilot` | Runs the sweep, gives every role a 0-100 score, estimates pay when none is posted, checks whether each company has engineers in your country or region, and queues tier A roles (target pay plus engineers there) first. It tailors the resume per role and fills each application form completely in Chrome. **By default it stops in front of Submit** and leaves the tab open; you review, submit, and mark it submitted on the dashboard. Every run publishes a report explaining each decision. Optional `auto_submit`. | Only with `auto_submit: true` |
 | `/recruiter-outreach` | Finds recruiters on LinkedIn who place people in your role from your region, scores each on four questions, and contacts the best ones: 20 new connection requests a day with a custom note, then InMails while credits last, plus a plain message to every recruiter who is already a 1st-degree connection (those never count toward the 20). Keeps prospecting with invented search phrasings until the day's budget is spent. | Yes, within the daily caps |
 
 ## Contents
@@ -99,7 +99,7 @@ Claude links the three skill folders into `~/.claude/skills`, finds a Python 3.1
 | `banned_companies` | current employers and clients | never applied to, never contacted |
 | `tracker` | `enabled`, `company_cooldown_days`, `rejection_cooldown_days`, `rejection_neutral_feedback`, `rejection_ignore_companies` | applika registration, the one-application-per-company cooldown and rejection cooldowns |
 | `sweep` | `days`, `mode` (`quick`/`standard`/`full`), `explorer` (`full`/`table`/`off`), `max_new_roles`, `remote_only`, `report_rows`, `country_check`, `country_check_limit`, `skip_tasks`, `skip_sources`, `skip_hosts` | job-source-sweep |
-| `autopilot` | `channels`, `max_minutes`, `max_ready`, `auto_submit`, `cover_letter` (`required`/`always`/`never`), `max_load_retries`, `tailor`, `tailor_ahead`, `per_company_per_run` | job-autopilot |
+| `autopilot` | `channels`, `max_minutes`, `max_ready`, `auto_submit`, `cover_letter` (`required`/`always`/`target`/`never`), `target_mode` (`prefer`/`only`), `people_check_limit`, `max_load_retries`, `tailor`, `tailor_ahead`, `per_company_per_run` | job-autopilot |
 | `recruiter_outreach` | `connect_per_day`, `inmail_per_day`, `message_per_day`, `min_score`, `max_per_company`, `stale_days`, `gap_seconds`, `people_queries`, `post_queries`, `required_terms`, `cta_styles` | recruiter-outreach |
 
 Each skill has an interactive first-run setup that writes its section: the sweep asks about the role, resume, country, pay and sweep preferences and fills `candidate` from the resume; the autopilot asks about submitting, cover letters, channels, the tracker and caps; recruiter outreach asks for permission to send, the daily and per-company caps, strictness, and proposes the search phrasings. `job-source-sweep/scripts/userconfig.py` is the loader all three skills share. Set `AUTOPILOT_CONFIG` to point at a different file. The only state the scripts write back is `<home>/config.json` with the explorer's artifact URL; preferences are always edited in `config.yaml`.
@@ -122,7 +122,7 @@ flowchart TD
     merge2 --> stop{"wall-clock cap or<br/>max_new_roles reached?"}
     stop -- no --> browser
     stop -- yes --> country{"sweep.country_check?"}
-    country -- "always / on request" --> verify["jobsweep verify-queue<br/>one Google search per company:<br/>'&lt;company&gt; engineer &lt;country&gt; site:linkedin.com'<br/>verdicts cached 30 days"] --> enrich
+    country -- "always / on request" --> verify["jobsweep verify-queue · people check<br/>Google: 'engineer &quot;&lt;company&gt;&quot; &lt;country&gt; site:linkedin.com/in'<br/>engineers located outside the US · never LinkedIn search<br/>cached 90 days (found) / 30 days (none)"] --> enrich
     country -- never --> enrich
 
     subgraph enrich["Enrich (cached, resumable)"]
@@ -144,13 +144,29 @@ flowchart TD
 
 **Role profiles.** `profiles/<slug>.json` holds the include and exclude regexes, the API and Google phrasings, and per-source options for one role. `_template.json` documents every field; `ai-engineer.json` is a worked example. Profiles created for you go to `<home>/profiles/` and take precedence. `jobsweep test-match` shows which titles a profile keeps and drops.
 
-**Country check.** One Google search per new company asks whether anyone with your role's term already works there from your country. A green verdict means an engineer profile naming the company appeared on page 1; a red verdict means page 1 showed none, which is not proof of anything. Verdicts are cached per company and term.
+**People check.** It answers one question: do engineers who work at the company live in your country, elsewhere in your region, or elsewhere outside the US?
+- **Why:** a posting's location label is written by automated systems and is often wrong, so this is the only evidence accepted that a company hires outside the US.
+- **How:** Google searches aimed at LinkedIn profiles (`site:linkedin.com/in`), never LinkedIn's own search. A result counts only with an engineering title, the company as current employer, and a stated location (or a country-subdomain profile URL).
+- **Caching:** verdicts are cached per company, 90 days when engineers were found and 30 days when none were. "None found" isn't proof of anything.
+- **Pace:** Google blocks after about a dozen fast searches, so the check runs a few companies per run, best first (`references/people-check.md`).
+
+**Company boards.** The `company_boards` source reads companies' own Ashby, Greenhouse, Lever and Workable boards through their public APIs.
+- **Which companies:** every company whose role link pointed at one, plus recruiter-outreach's funded-company registry.
+- **What comes back:** each posting's own date, location and pay, 21 days back (`scripts/companies.py`, `<home>/boards.json`).
+
+**Funnel.** Every merge writes `funnel.json`: per source, the rows fetched, then what the title filter, the date window, the location filter and dedupe each removed. job-autopilot's run report shows it.
 
 **Coverage, not silence.** Every task the caps cut, every failed feed, every CAPTCHA or login wall is reported as a gap. The sweep never presents a skipped source as "no results".
 
 ## job-autopilot
 
-The autopilot wraps the sweep, ranks what it found, and prepares applications from the best role down. Chrome subagents fill forms in parallel, each in its own tab. The forms stay open in front of Submit; the dashboard shows every answer typed, with estimates flagged, so you can review and send.
+The autopilot wraps the sweep, ranks what it found, and prepares applications from the best role down.
+- **Tiers:** roles are worked in tiers.
+  - **Tier A:** pay at your target and engineers working there from your country or region.
+  - **Tier B:** one of the two.
+  - **Tier C:** neither.
+- **Pay without a posted number:** it is estimated from what the company quoted you, what it posts for its other engineering roles, and what kind of company it is. A backtest against roles that did post pay checks the estimate (`job-autopilot/references/target-tier-research.md`).
+- **Run report:** every run publishes a report artifact with every source and query, why each role was selected or rejected and who decided, and each posting's estimated age. Chrome subagents fill forms in parallel, each in its own tab. The forms stay open in front of Submit; the dashboard shows every answer typed, with estimates flagged, so you can review and send.
 
 ```mermaid
 flowchart TD
@@ -319,7 +335,8 @@ Everything per user lives outside the repo in `home` from `config.yaml`:
 ├── runs/<date>-<slug>/         a sweep: results.md, results.csv, browser rows, coverage
 ├── runs/<date>-explore/        roles.json, roles.csv, explorer.html
 ├── history/                    URLs seen before, per profile (the "new" marker)
-├── verdicts.json               country-check cache, per company and term
+├── people_checks.json          people-check verdicts per company (engineers outside the US), with evidence
+├── boards.json                 companies' ATS boards and their postings (company_boards source)
 ├── jds/                        job description text, keyed by normalised URL
 ├── classifications.json        eligibility and fit, cached per URL
 ├── fit-rubric.md               the resume distilled into a rubric
@@ -327,6 +344,11 @@ Everything per user lives outside the repo in `home` from `config.yaml`:
 │   ├── answer-bank.json        profile mirror, answers, pending questions, skills
 │   ├── ledger.json             every role's status, attempts, answers, cover letter
 │   ├── scores.json · queue.json · pacing.json
+│   ├── company_types.json      one type per company (funded startup, staffing firm...) for the pay estimate
+│   ├── paytier_backtest.json   the pay estimate checked against roles that posted pay
+│   ├── target_roles.json       tier A roles whose form couldn't be filled (read by recruiter-outreach)
+│   ├── runs/<run_id>/          decisions.jsonl (every decision of the run) · report.html · report.json
+│   ├── runs.json               every run with its report link
 │   └── work/<date>/            batches, result files, dashboard imports
 └── recruiters/
     ├── leads.json · contacts.json · companies.json · pacing.json

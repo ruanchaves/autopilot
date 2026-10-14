@@ -60,6 +60,11 @@ sys.path.insert(0, str(SWEEP))
 import jobsweep as js  # noqa: E402
 import enrich  # noqa: E402
 import userconfig  # noqa: E402  (config.yaml at the repo root)
+# shared with job-autopilot: employer-type patterns, posting regions, ATS board readers, people checks
+from companies import (VENDOR as _VENDOR, PLATFORM as _PLATFORM, STAFF_AUG as _STAFF_AUG,  # noqa: E402
+                       PREMIUM as _PREMIUM, NOT_EMPLOYER, ENG_TITLE as _ENG_TITLE, NOT_ENG as _NOT_ENG,
+                       REGIONS, TARGET_REGIONS, NEIGHBOURS, BOARD_KINDS, region_of, usd_month, board_roles)
+import companies as shared_companies  # noqa: E402  (recruiters.py has its own companies() for contact counts)
 
 NOW = datetime.now(timezone.utc)
 TODAY = NOW.strftime("%Y-%m-%d")
@@ -331,16 +336,8 @@ TIER = {"funded_product": 20, "boutique_search": 20, "unclear": 8, "staff_aug": 
 PARTS_MAX = {"scope": 30, "active": 10, "role": 20, "pay": 20, "tier": 20}
 
 # Fallback for leads probed before client_tier and the vendor/platform flags existed: read the headline, company
-# and evidence. An explicit signal from discovery always wins over these patterns.
-_VENDOR = re.compile(r"\b(c2c|corp[- ]to[- ]corp|w2|bench\s*sale|us it (staffing|recruit)|it staffing|"
-                     r"staffing solutions|vendor management|h1b|implementation partner)\b", re.I)
-_PLATFORM = re.compile(r"\b(annotation|data labell?ing|rlhf|task creator|ai trainer|ai training|freelance tasks|"
-                       r"expert network|honorarium)\b", re.I)
-_STAFF_AUG = re.compile(r"\b(nearshore|near-shore|staff augmentation|staffing|outsourc\w*|offshore|software factory|"
-                        r"talent as a service|dedicated teams?|delivery manager|account manager)\b", re.I)
-_PREMIUM = re.compile(r"\b(y ?combinator|yc ?[ws]\d{2}|\byc\b|series [abc]\b|seed[- ]stage|founding (engineer|team|ai)|"
-                      r"vc[- ]backed|venture[- ]backed|venture capital|portfolio compan\w+|talent partner at [a-z ]*(ventures|capital|partners)|"
-                      r"executive search|ai talent search|startups?\b)", re.I)
+# and evidence (the patterns live in job-source-sweep/scripts/companies.py). An explicit signal from discovery always
+# wins over these patterns.
 
 
 def lead_text(lead: dict) -> str:
@@ -525,11 +522,7 @@ def title_re(st: dict) -> re.Pattern:
         [w for w in re.split(r"\W+", st["target_role"]) if len(w) > 1 and w.lower() not in ("engineer", "senior", "staff")]
     return re.compile(r"\b(" + "|".join(re.escape(t) for t in terms) + r")\b", re.I) if terms else re.compile(".")
 # a raw ATS board lists every job at the company, so a board title needs an engineering word as well as a target
-# term: "AI Engineer" counts, "Account Executive, AI Native" does not (sweep roles were already filtered by profile)
-_ENG_TITLE = re.compile(r"\b(engineer\w*|scientist|developer|research\w*|architect|programmer|swe|mle|founding|"
-                        r"member of (the )?technical staff|mts)\b", re.I)
-_NOT_ENG = re.compile(r"\b(intern(ship)?|sales|account executive|recruit\w*|marketing|solutions engineer|"
-                      r"customer success|support engineer)\b", re.I)
+# term (ENG_TITLE / NOT_ENG in companies.py)
 
 
 def board_match(title: str, st: dict) -> bool:
@@ -538,11 +531,7 @@ def board_match(title: str, st: dict) -> bool:
 
 FUNDED_SRC = re.compile(r"portfolio|work at a startup|y ?combinator", re.I)
 STARTUP_SRC = re.compile(r"wellfound|who is hiring", re.I)
-# talent marketplaces and staffing names that show up as the "company" of a posting; their roles are not a hiring
-# company's own
-NOT_EMPLOYER = re.compile(r"\b(jobgether|toptal|turing|andela|crossover|arc\.dev|braintrust|micro1|strider|mercor|"
-                          r"index\.dev|outlier|remotasks|data ?annotation|bairesdev|deel|remote\.com|jobright|"
-                          r"dailyremote|himalayas|remote ?rocketship|lupa|hired|confidential)\b", re.I)
+# talent marketplaces and staffing names that show up as the "company" of a posting (NOT_EMPLOYER, companies.py)
 
 
 def lead_type(v: dict) -> str:
@@ -677,6 +666,31 @@ def company_targets(home: str, st: dict, runs: dict | None = None, for_plan: boo
         t["sources"] = sorted(set(t["sources"]) | {"funding:" + s for s in e.get("sources") or []})
         if ok and "registry" not in t["origin"]:
             t["origin"].append("registry")
+    # job-autopilot's tier A roles whose form couldn't be filled (account walls, load failures): the company pays the
+    # target and has engineers in the candidate's region (autopilot/target_roles.json), so reaching it directly is
+    # the next best thing to the application
+    for x in enrich.read_json(hp / "autopilot" / "target_roles.json", {}).values():
+        name = (x.get("company") or "").strip()
+        k = company_key(name)
+        if excluded(name, k):
+            continue
+        t = entry_for(k, name)
+        if not any(y["title"].strip().lower() == (x.get("title") or "").strip().lower() for y in t["roles"]):
+            t["roles"].append({"title": x.get("title", ""), "url": x.get("url", ""), "posted": (x.get("at") or "")[:10],
+                               "pay_usd_month": None, "eligibility": "open"})
+        t["open_to_region"] = True
+        t["autopilot_blocked"] = x.get("outcome", "")
+        t["latest"] = max(t["latest"], x.get("at") or "")
+        if "autopilot" not in t["origin"]:
+            t["origin"].append("autopilot")
+    # people checks (companies.py): engineers in the candidate's country or region are evidence the company hires
+    # there, whatever its postings say
+    people = shared_companies.people_checks(home)
+    for t in out.values():
+        lvl = shared_companies.people_level(people, t["company"])
+        t["people"] = lvl
+        if lvl in ("brazil", "latam"):
+            t["open_to_region"] = True
     ranked = sorted((t for t in out.values() if for_plan or t["room"] > 0), key=lambda t: t["latest"], reverse=True)  # newest first...
     # ...within each band (sort is stable). A role that says it is open to the candidate's region comes first: a US
     # salary on a posting that states no region is often US-only in practice, so posted pay ranks after region (a role
@@ -693,7 +707,9 @@ def company_targets(home: str, st: dict, runs: dict | None = None, for_plan: boo
                                          "VC/YC portfolio board" if t["funded_source"] and "sweep" in t["origin"]
                                          and any(FUNDED_SRC.search(s) for s in t["sources"]) else "",
                                          "startup board" if t["startup_source"] and not t["funded_source"] else "",
-                                         f"open to {region}" if t["open_to_region"] else
+                                         "autopilot couldn't fill its form" if t.get("autopilot_blocked") else "",
+                                         f"engineers in {region}" if t.get("people") in ("brazil", "latam") else "",
+                                         f"open to {region}" if t["open_to_region"] and t.get("people") not in ("brazil", "latam") else
                                          f"posts roles elsewhere in {region}" if t["nearby_region"] else ""] if x)
         t.pop("room", None)
     return ranked
@@ -721,20 +737,8 @@ def vc_funds() -> list:
 # posting's own location and workplace fields decide whether a role is open to the candidate's region: the check
 # the 2026-10-13 run lacked when three US-pay targets turned out to be onsite.
 
-REGIONS = ("open", "nearby", "unclear", "us_only", "other_region", "onsite")
-TARGET_REGIONS = ("open", "nearby", "unclear")  # a registry role in one of these makes its company a target
-# countries of a candidate region (candidate.region, lowercased): a posting in one of them is "nearby"
-NEIGHBOURS = {"latam": re.compile(r"\b(mexico|méxico|colombia|argentina|chile|peru|perú|uruguay|paraguay|bolivia|ecuador|"
-                                  r"venezuela|costa rica|panama|panamá|guatemala|dominican republic|puerto rico|brazil|brasil|"
-                                  r"andean|andes|caribbean|central america|bogot[aá]|medell[ií]n|buenos aires|santiago|lima|"
-                                  r"montevideo|cdmx|mexico city|são paulo|sao paulo)\b")}
-BOARD_KINDS = ("ashby", "greenhouse", "lever", "workable")
-_US_LOC = re.compile(r"\b(us|u\.s\.?|usa|united states|canada|north america|new york|nyc|san francisco|sf|bay area|"
-                     r"seattle|boston|austin|los angeles|chicago|denver|miami|toronto)\b", re.I)
-_OTHER_LOC = re.compile(r"\b(uk|united kingdom|london|europe|emea|eu|germany|berlin|france|paris|spain|netherlands|"
-                        r"poland|portugal|ireland|italy|austria|belgium|switzerland|sweden|denmark|norway|finland|czech\w*|"
-                        r"romania|greece|hungary|ukraine|serbia|india|apac|asia|singapore|japan|korea|china|australia|"
-                        r"new zealand|israel|tel aviv|uae|dubai|turkey|south africa|nigeria|kenya|egypt)\b", re.I)
+# REGIONS, TARGET_REGIONS, NEIGHBOURS, BOARD_KINDS, region_of, usd_month and board_roles live in
+# job-source-sweep/scripts/companies.py, shared with the sweep's company_boards source and job-autopilot.
 
 
 def registry(home: str) -> dict:
@@ -758,85 +762,6 @@ def funding_label(e: dict) -> str:
         inv = ", ".join((r.get("investors") or [])[:2])
         return f"{r.get('round') or 'funded'}" + (f": {inv}" if inv else "")
     return " ".join(x for x in [r.get("round") or "round", money, (r.get("date") or "")[:10]] if x)
-
-
-def region_of(location: str, remote, cand: dict) -> str:
-    """open / unclear / us_only / other_region / onsite, from a posting's location text and remote flag."""
-    loc = location or ""
-    low = loc.lower()
-    mine = [x.lower() for x in [cand.get("country"), cand.get("region")] + list(cand.get("region_aliases") or []) if x]
-    if any(re.search(r"\b" + re.escape(t) + r"\b", low) for t in mine) or \
-            re.search(r"\b(anywhere|worldwide|global|international|americas|latam|latin america|south america)\b", low):
-        return "open"
-    near = NEIGHBOURS.get((cand.get("region") or "").lower())
-    if near and near.search(low):
-        return "nearby"  # another country of the candidate's region: the company hires there, worth asking
-    if remote is False or (remote is None and "remote" not in low):
-        return "onsite"
-    if _OTHER_LOC.search(loc):  # "Poland; United States; Germany" is a multi-country list without the region
-        return "other_region"
-    return "us_only" if _US_LOC.search(loc) or re.search(r",\s*[A-Z]{2}\b", loc) else "unclear"
-
-
-def usd_month(lo, hi, interval: str = "", currency: str = "USD") -> int | None:
-    if (currency or "USD").upper() != "USD":
-        return None
-    v = hi or lo
-    try:
-        v = float(v)
-    except (TypeError, ValueError):
-        return None
-    if v <= 0:
-        return None
-    i = (interval or "year").lower()
-    return round(v * 160 if "hour" in i else v * 4.33 if "week" in i else v if "month" in i else v / 12)
-
-
-def board_roles(f, ats: dict) -> list:
-    """Every open posting on a company's ATS board: title, url, location, remote flag, posted date, monthly USD pay."""
-    kind, slug = (ats.get("kind") or "").lower(), ats.get("slug") or ""
-    out = []
-    if kind == "ashby":
-        for j in f.json(f"https://api.ashbyhq.com/posting-api/job-board/{slug}?includeCompensation=true", interval=1).get("jobs") or []:
-            if j.get("isListed") is False:
-                continue
-            locs = [j.get("location") or ""] + [x.get("location") or "" for x in j.get("secondaryLocations") or []]
-            pay = None
-            for c in (j.get("compensation") or {}).get("summaryComponents") or []:
-                if c.get("compensationType") == "Salary":
-                    pay = usd_month(c.get("minValue"), c.get("maxValue"), c.get("interval"), c.get("currencyCode"))
-            wt = (j.get("workplaceType") or "").lower()
-            out.append({"title": j.get("title", ""), "url": j.get("jobUrl", ""), "location": "; ".join(x for x in locs if x),
-                        "remote": True if j.get("isRemote") or wt == "remote" else False if wt in ("onsite", "hybrid") else None,
-                        "posted": (j.get("publishedAt") or "")[:10],
-                        "pay_usd_month": pay})
-    elif kind == "greenhouse":
-        for j in f.json(f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs", interval=1).get("jobs") or []:
-            out.append({"title": j.get("title", ""), "url": j.get("absolute_url", ""),
-                        "location": (j.get("location") or {}).get("name", ""), "remote": None,
-                        "posted": (j.get("first_published") or j.get("updated_at") or "")[:10], "pay_usd_month": None})
-    elif kind == "lever":
-        for j in f.json(f"https://api.lever.co/v0/postings/{slug}?mode=json", interval=1) or []:
-            cat = j.get("categories") or {}
-            locs = list(dict.fromkeys([cat.get("location") or ""] + list(cat.get("allLocations") or [])))
-            sr = j.get("salaryRange") or {}
-            wt = (j.get("workplaceType") or "").lower()
-            out.append({"title": j.get("text", ""), "url": j.get("hostedUrl", ""), "location": "; ".join(x for x in locs if x),
-                        "remote": True if wt == "remote" else False if wt in ("on-site", "onsite", "hybrid") else None,
-                        "posted": datetime.fromtimestamp((j.get("createdAt") or 0) / 1000, timezone.utc).strftime("%Y-%m-%d")
-                        if j.get("createdAt") else "",
-                        "pay_usd_month": usd_month(sr.get("min"), sr.get("max"), sr.get("interval"), sr.get("currency"))})
-    elif kind == "workable":
-        for j in f.json(f"https://apply.workable.com/api/v1/widget/accounts/{slug}", interval=1).get("jobs") or []:
-            locs = [", ".join(x for x in [l.get("city"), l.get("region"), l.get("country")] if x)
-                    for l in j.get("locations") or [] if not l.get("hidden")] or \
-                [", ".join(x for x in [j.get("city"), j.get("state"), j.get("country")] if x)]
-            out.append({"title": j.get("title", ""), "url": j.get("url") or j.get("shortlink", ""),
-                        "location": "; ".join(x for x in locs if x), "remote": bool(j.get("telecommuting")) or None,
-                        "posted": (j.get("published_on") or j.get("created_at") or "")[:10], "pay_usd_month": None})
-    else:
-        raise js.SourceError(f"no board reader for '{kind}'")
-    return out
 
 
 def cmd_refresh_boards(args) -> int:

@@ -145,6 +145,15 @@
       "_note": "ycombinator.com/jobs is public and embeds the Work at a Startup results as Inertia data-page JSON (20 per page; query= and remote=yes work). The job url points at workatastartup.com."
     },
     {
+      "id": "company_boards",
+      "label": "Company job boards (ATS API)",
+      "kind": "boards",
+      "url": "<home>/boards.json",
+      "window_days": 21,
+      "max_age_hours": 20,
+      "_note": "Companies' own Ashby/Greenhouse/Lever/Workable boards (scripts/companies.py): every company whose role link pointed at one, plus recruiter-outreach's funded-company registry. Each board is re-read through its public API at most every max_age_hours; postings like the target role (target title term + engineering word) come back with the board's own date, location and pay. window_days: a target company's role posted up to three weeks ago is still worth applying to."
+    },
+    {
       "id": "getro_generalcatalyst",
       "label": "General Catalyst portfolio",
       "kind": "getro",

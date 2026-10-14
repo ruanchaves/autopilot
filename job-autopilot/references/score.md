@@ -48,8 +48,18 @@ Decide `apply` with your own judgment, and be **liberal**. A long-shot applicati
 
 Separately, **never apply to a banned company**: the employer, or the client a recruiter is hiring for, is one of `banned_companies`. That includes spelling variants, subsidiaries and "via" postings. Use `skip_reason: "banned"` for these.
 
-When in doubt, apply. Set `apply: false` only for one of the three cases above, or a banned company, with:
-- `skip_reason`: `mismatch`, `location_explicit`, `not_remote`, `contract_type` or `banned`
+For case 2, choose between two reasons:
+- **`legal_requirement`**: citizenship, permanent residency, security clearance, export control (ITAR), or a
+  stated need for work authorization in a specific country. These are legal rules.
+- **`location_explicit`**: the location or residency wording itself ("must be based in the US", "US residents
+  only", "we can't hire outside Canada").
+
+  JDs are often written by automated systems and wrong. When the company is later found to have engineers in the
+  candidate's country or region (the people check), the script overrides a `location_explicit` skip and queues the
+  role. It never overrides a `legal_requirement` skip.
+
+When in doubt, apply. Set `apply: false` only for one of the cases above, or a banned company, with:
+- `skip_reason`: `mismatch`, `location_explicit`, `legal_requirement`, `not_remote`, `contract_type` or `banned`
 - `skip_evidence`: the JD's exact words, at most 140 characters
 
 With `title_only` confidence you rarely have enough to skip, so skip only an obvious mismatch.
@@ -63,4 +73,4 @@ Append one line per role to the output file straight away, using `python -c` wit
 
 Never re-read a finished JD or go back to earlier entries. When you're done, check that there is exactly one valid line per input entry, and fix any that are missing or duplicated.
 
-Final message: `score batch <n>: <count> roles - <a> apply, <s> skip (<mismatch>/<location>/<not remote>)`.
+Final message: `score batch <n>: <count> roles - <a> apply, <s> skip (<mismatch>/<location>/<legal>/<not remote>)`.

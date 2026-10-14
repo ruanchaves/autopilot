@@ -456,6 +456,7 @@
     <button class="view" id="v-best" data-view="best">Best leads</button>
     <button class="view" id="v-open" data-view="open">Open to <span data-country></span></button>
     <button class="view" id="v-latam" data-view="latam">Tagged <span data-country></span> or <span data-region></span></button>
+    <button class="view" id="v-target" data-view="target">Tier A targets</button>
     <button class="view" id="v-todo" data-view="todo">Not classified yet</button>
   </div>
 
@@ -497,6 +498,7 @@
       <button class="view" data-seg="questions" aria-pressed="false">Questions for you <small id="s-questions"></small></button>
     </div>
     <p class="lede" id="auto-note"></p>
+    <p class="lede" id="auto-reports" hidden></p>
     <div class="toolbar">
       <input class="search" id="aq" type="search" placeholder="Search title or company" aria-label="Search autopilot lists">
       <span class="count" id="auto-count"></span>
@@ -513,7 +515,8 @@
       <li><strong>Autopilot · Outreach</strong> is the recruiter pipeline, separate from applications: recruiters found on LinkedIn, scored on whether they hire in <span data-region></span> or worldwide, are active, and post roles and pay like your target, with the exact message sent to each, the search that found them, and what they did next (accepted, replied, interested, declined). "Which searches work" above the list shows that funnel per search and per closing style.</li>
       <li><strong><span data-country></span> eligibility</strong> is read from the job description text. "Open" means it names <span data-country></span>, <span data-region></span> or worldwide eligibility; "Restricted" means it states a visa, citizenship or residency requirement (e.g. "must live in the US"); "Nothing stated" means neither. Roles without JD text are "Not classified".</li>
       <li><strong>Resume fit</strong> rates the JD against <code id="resume-name"></code>. Only roles classified "Open" or "Nothing stated" are rated.</li>
-      <li><strong><span data-country></span> hiring check</strong> is one Google search per company, <code id="bz-query"></code>, first page only, run for the green and yellow roles with nothing stated (results are cached per company, so other roles from a checked company show them too). A match shows the company employs people there; it doesn't prove the role is open to <span data-country></span>. "No match" means only that the first page had none.</li>
+      <li><strong>Engineers outside the US</strong> (the people check) is the only evidence these pages accept that a company hires outside the US: Google searches such as <code id="bz-query"></code>, never LinkedIn's own search. A result counts only when it shows an engineering title, the company as current employer, and a location outside the US. JD location labels are often wrong, so they don't count. Verdicts are cached per company (90 days when engineers were found, 30 when none were), so every role from a checked company shows them. "None found" means only that the searched pages had none.</li>
+      <li><strong>Target tier</strong> (job-autopilot): <em>A</em> = pay at the target (posted, or estimated from the company's quotes to you, its other postings, or its type) and engineers in <span data-country></span> or <span data-region></span>; <em>B</em> = one of the two proven; <em>C</em> = neither. The autopilot fills tier A forms first. Each run's report, linked from the Autopilot tab, explains every decision.</li>
       <li><strong>Sweep batch</strong> is the day a sweep ran. A role found again by a later sweep belongs to every batch that found it, so picking one batch shows everything that sweep turned up. The preset views keep the batch you picked; "Clear filters" resets it.</li>
       <li><strong>Region</strong> comes from the JD classification when there is one, otherwise from the posted location tag. <strong>Seniority</strong> is read from the title. <strong>Posted</strong> age is measured from when this page was built (<span id="built"></span>).</li>
       <li><strong>Best match first</strong> sorts by eligibility (open, nothing stated, not classified, restricted), then resume fit, then the <span data-country></span> check, then newest.</li>
@@ -532,8 +535,12 @@ document.querySelectorAll("[data-region]").forEach(e => { e.textContent = REGION
 const ELIG = { open: [`Open to ${COUNTRY}/${REGION}/worldwide`, "good"], none: ["Nothing stated", "weak"],
                restricted: ["Visa/citizenship/residency restriction", "bad"], unclassified: ["Not classified", "none"] };
 const FIT = { green: ["Green", "good"], yellow: ["Yellow", "weak"], red: ["Red", "bad"], unrated: ["Not rated", "none"] };
-const BZ = { good: [`Engineer located in ${COUNTRY}`, "good"], weak: ["Engineer found elsewhere", "weak"],
-             bad: ["No match on page 1", "bad"], blocked: ["Not checked (CAPTCHA)", "none"], none: ["Not checked", "none"] };
+const BZ = { good: [`Engineers in ${COUNTRY}/${REGION}`, "good"], weak: ["Engineers only elsewhere outside the US", "weak"],
+             bad: ["None found outside the US", "bad"], blocked: ["Not checked (CAPTCHA)", "none"], none: ["Not checked", "none"] };
+// job-autopilot's target tiers (target.py): A = pay at target + engineers in the candidate's country/region
+const TIER = { A: ["Tier A", "good"], B: ["Tier B", "weak"], C: ["Tier C", "none"], "": ["No tier", "none"] };
+const PAYT = { posted_target: "Posted ≥ target", likely_target: "Likely ≥ target", unclear: "Pay unclear",
+               posted_near: "Posted under target", likely_below: "Likely under target", posted_below: "Posted under floor", "": "Not estimated" };
 const JD = { fetched: "Fetched", signup: "Sign-up wall", failed: "Failed", not_fetched: "Not fetched" };
 const POSTED = { "24h": "Last 24 h", "48h": "24–48 h", "7d": "2–7 days", older: "Over 7 days", unknown: "Date unknown" };
 
@@ -648,7 +655,11 @@ const GROUPS = [
   { key: "batch", title: "Sweep batch", get: r => r.batches || [], opts: BATCHES, label: batchLabel },
   { key: "elig", title: `${COUNTRY} eligibility`, get: r => [r.elig], opts: ["open", "none", "restricted", "unclassified"], label: v => ELIG[v][0] },
   { key: "fit", title: "Resume fit", get: r => [r.fit], opts: ["green", "yellow", "red", "unrated"], label: v => FIT[v][0] },
-  { key: "bz", title: `${COUNTRY} hiring check`, get: r => [r.bz === "blocked" ? "none" : r.bz], opts: ["good", "weak", "bad", "none"], label: v => BZ[v][0] },
+  { key: "bz", title: "Engineers outside the US", get: r => [r.bz === "blocked" ? "none" : r.bz], opts: ["good", "weak", "bad", "none"], label: v => BZ[v][0] },
+  ...(ROLES.some(r => r.tier) ? [
+    { key: "tier", title: "Target tier", get: r => [r.tier || ""], opts: ["A", "B", "C", ""], label: v => TIER[v][0] },
+    { key: "payTier", title: "Pay (posted or estimated)", get: r => [r.payTier || ""], opts: Object.keys(PAYT), label: v => PAYT[v] },
+  ] : []),
   { key: "region", title: "Region", get: r => [r.region], opts: [...new Set([COUNTRY, REGION, "Brazil", "LATAM", "Worldwide", "US", "Canada", "Europe", "India", "Other", "Unclear"])], label: v => v },
   { key: "seniority", title: "Seniority", get: r => [r.seniority], opts: ["Junior/Entry", "Mid", "Senior", "Staff", "Principal/Lead", "Not stated"], label: v => v },
   { key: "source", title: "Source", get: r => r.sources || [], opts: ["LinkedIn Jobs", "Remote Rocketship", "Company job pages (ATS) via Google", "Job boards via Google", "Remote-job feeds", "VC portfolio boards"], label: v => v },
@@ -661,6 +672,7 @@ const VIEWS = {
   best: { elig: ["open", "none"], fit: ["green", "yellow"] },
   open: { elig: ["open"] },
   latam: { region: [COUNTRY, REGION] },
+  target: { tier: ["A"] },
   todo: { elig: ["unclassified"] },
 };
 
@@ -668,7 +680,7 @@ const COLUMNS = [
   { key: "loc", label: "Location", on: true },
   { key: "elig", label: `${COUNTRY} eligibility`, on: true },
   { key: "fit", label: "Resume fit", on: true },
-  { key: "bz", label: `${COUNTRY} hiring check`, on: true },
+  { key: "bz", label: "Engineers outside the US", on: true },
   { key: "src", label: "Source · JD", on: false },
 ];
 
@@ -760,7 +772,7 @@ function fmtPosted(r) {
 function cells(r) {
   const [el, elc] = ELIG[r.elig] || ELIG.unclassified, [ft, ftc] = FIT[r.fit] || FIT.unrated, [bz, bzc] = BZ[r.bz] || BZ.none;
   const d = decisions.get(r.id);
-  const meta = [r.score != null ? `score ${r.score}` : "", fmtPosted(r), (r.found || []).map(p => FOUND[p] || p).join(" + "),
+  const meta = [r.tier ? `tier ${r.tier}` : "", r.payTier ? PAYT[r.payTier] || r.payTier : "", r.score != null ? `score ${r.score}` : "", fmtPosted(r), (r.found || []).map(p => FOUND[p] || p).join(" + "),
                 BATCHES.length > 1 && r.batches && r.batches.length ? "batch " + r.batches.map(b => b.slice(5)).join(" + ") : "",
                 r.seniority && r.seniority !== "Not stated" ? r.seniority : "", r.comp || "",
                 d ? `${d.status} ${d.at.slice(0, 10)}` : "", r.stale ? "not in today's sweep" : ""]
@@ -781,7 +793,7 @@ function cells(r) {
       const parts = r.bzEvidence.split(" | ");
       note = `<p class="note"><q>${esc(trunc(parts[0], 80))}</q>${parts.length > 2 ? "<br>" + esc(trunc(parts.slice(2).join(" | "), 80)) : ""}</p>`;
     }
-    out.push(`<td data-label="${COUNTRY} hiring check"><div class="cell bzc"><span class="pill ${bzc}">${esc(bz)}</span>${note}${r.bzUrl ? `<a href="${esc(r.bzUrl)}" target="_blank" rel="noopener">Google search ↗</a>` : ""}</div></td>`);
+    out.push(`<td data-label="Engineers outside the US"><div class="cell bzc"><span class="pill ${bzc}">${esc(bz)}</span>${note}${r.bzUrl ? `<a href="${esc(r.bzUrl)}" target="_blank" rel="noopener">Evidence ↗</a>` : ""}</div></td>`);
   }
   if (state.cols.src) out.push(`<td data-label="Source · JD"><div class="cell">${(r.sources || []).map(s => `<span class="tag">${esc(s)}</span>`).join("")}<span class="meta"><span>JD: ${esc(JD[r.jd] || "")}</span></span></div></td>`);
   const st = d ? d.status : "";
@@ -801,7 +813,7 @@ function render() {
   if (state.cols.loc) heads.push(["", "Location"]);
   if (state.cols.elig) heads.push(["", `${COUNTRY} eligibility`]);
   if (state.cols.fit) heads.push(["", "Resume fit"]);
-  if (state.cols.bz) heads.push(["", `${COUNTRY} hiring check`]);
+  if (state.cols.bz) heads.push(["", "Engineers outside the US"]);
   if (state.cols.src) heads.push(["", "Source · JD"]);
   heads.push(["c-act", "Decision"]);
   document.getElementById("head").innerHTML = heads.map(([c, t]) => `<th scope="col" class="${c}">${t}</th>`).join("");
@@ -855,6 +867,7 @@ function applyView(name, keepBatch = true) {
   state.q = ""; document.getElementById("q").value = "";
   render();
 }
+document.getElementById("v-target").hidden = !ROLES.some(r => r.tier);
 const viewEls = [...document.querySelectorAll(".view")];
 viewEls.forEach(b => {
   b.addEventListener("click", () => applyView(b.dataset.view));
@@ -878,6 +891,12 @@ document.getElementById("sort").value = state.sort;
 // The Outreach view is filled by recruiter-outreach (META.recruiters): ranked recruiter leads and messages sent.
 const AP = META.autopilot;
 const RC = META.recruiters;
+// every autopilot run publishes its own report (why each role was selected or rejected); link the latest ones
+if (AP && (AP.reports || []).length) {
+  const el = document.getElementById("auto-reports");
+  el.innerHTML = "Run reports: " + AP.reports.map(r => `<a href="${esc(r.report_url)}" target="_blank" rel="noopener">${esc((r.started || r.id).slice(0, 16).replace("T", " "))}</a>`).join(" · ");
+  el.hidden = false;
+}
 const overrides = new Map(), answers = new Map(), submitted = new Map();
 const auto = { seg: ["decisions", "apps", "outreach", "questions"].includes(saved.seg) ? saved.seg : "decisions", q: "", chip: "all" };
 const REASON = { mismatch: "Clear mismatch", location_explicit: "Explicit location / citizenship rule", not_remote: "Not fully remote",
@@ -1208,7 +1227,7 @@ document.getElementById("lede").textContent =
   `${c("open")} say they're open to ${COUNTRY}, ${REGION} or worldwide, ${c("none")} state nothing about eligibility, ` +
   `${c("restricted")} carry a visa, citizenship or residency restriction, and ${c("unclassified")} have no JD text classified yet.`;
 document.getElementById("resume-name").textContent = META.resume || "the configured resume (none set, so no role is rated)";
-document.getElementById("bz-query").textContent = `<company> ${META.term} ${COUNTRY.toLowerCase()} site:linkedin.com`;
+document.getElementById("bz-query").textContent = `engineer "<company>" ${COUNTRY} site:linkedin.com/in`;
 document.getElementById("built").textContent = META.built;
 render();
 </script>

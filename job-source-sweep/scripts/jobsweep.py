@@ -137,6 +137,7 @@ def load_profile(name: str, home: str = "~/jobsweep") -> dict:
     profile["_include"] = [re.compile(p, re.I) for p in profile.get("include", [])]
     profile["_exclude"] = [re.compile(p, re.I) for p in profile.get("exclude", [])]
     profile["_loc_exclude"] = [re.compile(p, re.I) for p in profile.get("location_exclude", [])]
+    profile["_home"] = home
     return profile
 
 
@@ -575,8 +576,29 @@ def fetch_yc(f: Fetcher, src: dict, profile: dict, cat: dict) -> list[dict]:
     return out
 
 
+def fetch_company_boards(f: Fetcher, src: dict, profile: dict, cat: dict) -> list[dict]:
+    """Postings like the target role on companies' own ATS boards (<home>/boards.json, see companies.py): boards found
+    from earlier role links and from recruiter-outreach's funded-company registry, re-read through the ATS APIs when
+    older than `max_age_hours`. Each row carries the board's own posted date, location and pay. Onsite postings are
+    left out; region labels are kept as hints only."""
+    import companies
+    home = profile.get("_home") or userconfig.home()
+    companies.discover_boards(home)
+    companies.refresh_boards(home, float(src.get("max_age_hours", 20)), profile.get("_deadline"))
+    out = []
+    for e in companies.boards(home).values():
+        for x in e.get("roles") or []:
+            if not x.get("target") or x.get("region") == "onsite":
+                continue
+            pay = x.get("pay_usd_month")
+            out.append(row(src, x.get("title"), e.get("name"), x.get("location"), x.get("posted"), x.get("url"),
+                           compensation=f"~USD {pay:,}/month (board)" if pay else "",
+                           region_hint=x.get("region"), board=f'{e["ats"]["kind"]}:{e["ats"]["slug"]}'))
+    return out
+
+
 ADAPTERS = {"json": fetch_json, "rss": fetch_rss, "getro": fetch_getro, "consider": fetch_consider,
-            "hn": fetch_hn, "yc": fetch_yc}
+            "hn": fetch_hn, "yc": fetch_yc, "boards": fetch_company_boards}
 
 
 def sweep(cat: dict, profile: dict, ids: list[str] | None):
@@ -616,28 +638,45 @@ def cmd_http(args) -> int:
     print("-" * 70)
     with target.open("w", encoding="utf-8") as fh:
         for src, rows, error in sweep(cat, profile, args.sources):
+            # one funnel line per source: what it offered and what each filter removed (read by merge and by
+            # job-autopilot's run report)
+            funnel = {"kind": "funnel", "source": src["id"], "label": src["label"], "lane": "http",
+                      "query": src.get("url", ""), "fetched": len(rows), "title_ok": 0, "in_window": 0, "kept": 0,
+                      "status": "ok", "error": ""}
             if error:
                 print(f"{src['id']:<22} {'-':>5} {'-':>8} {'-':>9}  FAILED: {error[:60]}", flush=True)
                 fh.write(json.dumps({"kind": "coverage", "source": src["id"], "complete": False,
                                      "error": error}) + "\n")
+                fh.write(json.dumps({**funnel, "status": "failed", "error": error[:300]}) + "\n")
                 continue
-            title_hits = kept = 0
+            # a source may look further back than the sweep (company boards: a target company's role posted
+            # three weeks ago is still worth an application); merge honours the row's own window_start
+            src_start = window(max(args.days, float(src.get("window_days") or 0)))[0]
+            title_hits = in_win = kept = 0
             for r in rows:
                 if not r["title"] or not title_ok(profile, r["title"]):
                     continue
                 title_hits += 1
-                ok, iso = in_window(r["posted"], start)
-                if not ok or not location_ok(profile, r["location"]):
+                ok, iso = in_window(r["posted"], src_start)
+                if not ok:
+                    continue
+                in_win += 1
+                if not location_ok(profile, r["location"]):
                     continue
                 r.update(posted_iso=iso, captured=stamp)
+                if src_start < start:
+                    r["window_start"] = src_start.strftime("%Y-%m-%dT%H:%MZ")
                 fh.write(json.dumps(r, ensure_ascii=False) + "\n")
                 kept += 1
             total += kept
             note = src.get("attribution", "")
+            funnel.update(title_ok=title_hits, in_window=in_win, kept=kept)
             if src["id"] in PARTIAL:
                 note = "PARTIAL: stopped at --budget"
+                funnel.update(status="partial", error="stopped at the time budget")
                 fh.write(json.dumps({"kind": "coverage", "source": src["id"], "complete": False,
                                      "error": "stopped at the time budget"}) + "\n")
+            fh.write(json.dumps(funnel) + "\n")
             fh.flush()
             print(f"{src['id']:<22} {kept:>5} {len(rows):>8} {title_hits:>9}  {note}", flush=True)
     print(f"\n{total} rows -> {target}")
@@ -761,7 +800,14 @@ def cmd_merge(args) -> int:
     merged: dict[str, dict] = {}
     by_pair: dict[tuple, str] = {}
     gaps, dropped = [], 0
-    for path in sorted(p for p in out_dir.glob("*.jsonl") if p.name != "verdicts.jsonl"):
+    # per-source funnel for the run report: rows each source handed to merge and what merge did with them
+    funnel: dict[str, dict] = {}
+    tasks, fetched = [], {}
+
+    def fun(label: str) -> dict:
+        return funnel.setdefault(label, {"rows_in": 0, "skipped_source": 0, "location_excluded": 0, "title_dropped": 0,
+                                         "outside_window": 0, "duplicate": 0, "unique": 0, "new": 0})
+    for path in sorted(p for p in out_dir.glob("*.jsonl") if p.name != "verdicts.jsonl" and not p.name.startswith("people_out_")):
         for line in path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
@@ -770,25 +816,42 @@ def cmd_merge(args) -> int:
             except json.JSONDecodeError:
                 print(f"skipping bad line in {path.name}: {line[:80]}", file=sys.stderr)
                 continue
+            if r.get("kind") == "funnel":
+                fetched[r.get("label") or r.get("source")] = r
+                continue
             if r.get("kind") == "coverage":
+                tasks.append({**r, "file": path.name})
                 if not r.get("complete", True):
                     gaps.append(r)
                 continue
             if not r.get("title") or not r.get("url"):
                 continue
+            label = r.get("source_label") or r.get("source")
+            f = fun(label)
+            f["rows_in"] += 1
             # Settings changed after rows were collected still apply: skipped sources
             # and the profile's location filter are enforced here as well as at fetch time.
-            if r.get("source") in profile["skip_sources"] or not location_ok(profile, r.get("location", "")):
+            if r.get("source") in profile["skip_sources"]:
                 dropped += 1
+                f["skipped_source"] += 1
+                continue
+            if not location_ok(profile, r.get("location", "")):
+                dropped += 1
+                f["location_excluded"] += 1
                 continue
             # Post titles are paraphrased by whoever read the post; everything
             # else is a real job title and gets the same filter as the feeds.
             if r.get("source") != "linkedin_posts" and not title_ok(profile, r["title"]):
                 dropped += 1
+                f["title_dropped"] += 1
                 continue
-            ok, iso = in_window(r.get("posted"), start)
+            row_start = start
+            if r.get("window_start"):
+                row_start = min(start, parse_date(r["window_start"])[0] or start)
+            ok, iso = in_window(r.get("posted"), row_start)
             if not ok:
                 dropped += 1
+                f["outside_window"] += 1
                 continue
             r["posted_iso"] = r.get("posted_iso") or iso
             key = _norm_url(r["url"])
@@ -796,14 +859,15 @@ def cmd_merge(args) -> int:
             existing = key if key in merged else (by_pair.get(pair) if pair[0] else None)
             if existing:
                 keep = merged[existing]
-                label = r.get("source_label") or r.get("source")
+                f["duplicate"] += 1
                 if label not in keep["sources"]:
                     keep["sources"].append(label)
                 for field in ("company", "location", "posted_iso", "compensation", "eligibility", "signal"):
                     if not keep.get(field) and r.get(field):
                         keep[field] = r[field]
                 continue
-            r["sources"] = [r.get("source_label") or r.get("source")]
+            r["sources"] = [label]
+            f["unique"] += 1
             merged[key] = r
             if pair[0]:
                 by_pair[pair] = key
@@ -813,25 +877,32 @@ def cmd_merge(args) -> int:
         hkey = _norm_url(r["url"])
         first = history.get(hkey, today)
         r["new"] = first == today
+        r["first_seen"] = first
         history[hkey] = first
+        if r["new"]:
+            fun(r["sources"][0])["new"] += 1
     history_path.write_text(json.dumps(history, indent=0), encoding="utf-8")
     rows.sort(key=lambda r: r.get("posted_iso", ""), reverse=True)
     rows.sort(key=lambda r: not r["new"])
 
-    # Brazil verdicts: fold this run's verdicts.jsonl into the shared cache,
-    # then stamp every row whose company has a cached verdict.
-    term = profile.get("country_check_term", "engineer")
-    cache, verify_gaps = ingest_verdicts(args.home, out_dir)
+    # People check (companies.py): fold this run's people_out_*.jsonl into people_checks.json, then stamp every row
+    # whose company has a verdict: brazil (the candidate's country) / latam / non_us / none.
+    import companies
+    pc = companies.ingest_people(args.home, sorted(out_dir.glob("people_out_*.jsonl")))
+    people = companies.people_checks(args.home)
     for r in rows:
-        v = cache.get(verdict_key(term, r.get("company", "")))
+        v = people.get(companies.key_of(r.get("company", "")))
         if v:
-            r.update(brazil=v["flag"], brazil_checked=v["checked"], brazil_evidence=v["search_url"],
-                     brazil_located=v.get("brazil_located"))
-    gaps += verify_gaps
+            ev = (v.get("evidence") or [{}])[0]
+            r.update(people=v["level"], people_checked=v.get("checked", ""), people_evidence=ev.get("url", ""))
+    gaps += [{"task": f"people check: {x}", "reason": "no verdict", "complete": False} for x in pc["not_cached"]]
     (out_dir / "results.json").write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+    (out_dir / "funnel.json").write_text(json.dumps(
+        {"date": today, "profile": profile["slug"], "window_start": start.strftime("%Y-%m-%dT%H:%MZ"),
+         "fetched": fetched, "merge": funnel, "tasks": tasks}, indent=1, ensure_ascii=False), encoding="utf-8")
 
-    cols = ["new", "posted_iso", "brazil", "title", "company", "location", "compensation", "eligibility",
-            "signal", "sources", "url", "brazil_evidence", "brazil_located", "brazil_checked"]
+    cols = ["new", "posted_iso", "first_seen", "people", "title", "company", "location", "compensation", "eligibility",
+            "signal", "sources", "url", "people_evidence", "people_checked"]
     with (out_dir / "results.csv").open("w", encoding="utf-8", newline="") as fh:
         writer = csv.writer(fh)
         writer.writerow(cols)
@@ -846,10 +917,12 @@ def cmd_merge(args) -> int:
              f"{len(rows)} unique postings, {sum(r['new'] for r in rows)} new; {dropped} dropped by date/title.", ""]
     if gaps:
         lines += ["## Coverage gaps", ""] + [f"- {g.get('source') or g.get('task')}: {g.get('error') or g.get('reason') or 'incomplete'}" for g in gaps] + [""]
-    lines += [f"| New | Posted | {userconfig.country()} | Title | Company | Location | Sources |", "|---|---|---|---|---|---|---|"]
+    lines += ["| New | Posted | Engineers outside the US | Title | Company | Location | Sources |", "|---|---|---|---|---|---|---|"]
     for r in rows:
-        flag = r.get("brazil")
-        brazil = f"[{'🟢' if flag == 'green' else '🔴'}]({r['brazil_evidence']})" if flag else ""
+        flag = r.get("people")
+        mark = {"brazil": f"🟢 {userconfig.country()}", "latam": f"🟢 {userconfig.region()}", "non_us": "🟡 elsewhere",
+                "none": "🔴 none found"}.get(flag, "")
+        brazil = f"[{mark}]({r['people_evidence']})" if flag and r.get("people_evidence") else mark
         lines.append(f"| {'★' if r['new'] else ''} | {cell(r.get('posted_iso') or '?')} | {brazil} | "
                      f"[{cell(r['title'])}]({r['url']}) | {cell(r.get('company'))} | "
                      f"{cell(r.get('location'))[:60]} | {cell(', '.join(r['sources']))} |")
@@ -859,23 +932,18 @@ def cmd_merge(args) -> int:
     for r in rows:
         for s in r["sources"]:
             by_source[s] = by_source.get(s, 0) + 1
-    brazil_counts = {f: sum(r.get("brazil") == f for r in rows) for f in ("green", "red")}
+    people_counts = {f: sum(r.get("people") == f for r in rows) for f in companies.LEVELS}
     print(json.dumps({"unique": len(rows), "new": sum(r["new"] for r in rows), "dropped": dropped,
-                      "brazil": brazil_counts, "gaps": gaps, "by_source": dict(sorted(by_source.items(), key=lambda kv: -kv[1])),
+                      "people": people_counts, "funnel": str(out_dir / "funnel.json"), "gaps": gaps, "by_source": dict(sorted(by_source.items(), key=lambda kv: -kv[1])),
                       "csv": str(out_dir / "results.csv"), "markdown": str(out_dir / "results.md")},
                      indent=2, ensure_ascii=False))
     return 0
 
 
-# -------------------------------------------------------- country verification
+# -------------------------------------------------------- people check
 #
-# ONE Google query per company, `<company> <term> <country> site:linkedin.com` (the country is
-# config.yaml candidate.country), first page only. Green =
-# a LinkedIn /in/ profile on that page shows a <term> connected to the company.
-# Red = the page was read completely and has none. Anything else is not a verdict.
-# Verdicts are cached per (term, company) across runs and profiles, and carry the country they were
-# searched for; a verdict for another country is ignored. (Row/verdict keys keep the historical
-# "brazil_*" names so existing caches stay valid.)
+# Whether engineers who work at a company live outside the US (companies.py, references/people-check.md). company_key
+# is the shared company normalisation; the verdicts live in <home>/people_checks.json.
 
 _SUFFIXES = re.compile(r"\b(inc|incorporated|llc|ltd|limited|gmbh|ag|sa|s\.a|sas|srl|bv|b\.v|plc|corp|"
                        r"corporation|co|company|ltda|oy|ab|as|pty|pvt|technologies|labs?)\b\.?", re.I)
@@ -886,85 +954,28 @@ def company_key(name: str) -> str:
     return _norm_text(_SUFFIXES.sub(" ", base))
 
 
-def verdict_key(term: str, company: str) -> str:
-    key = company_key(company)
-    return f"{term.lower()}|{key}" if key else ""
-
-
-def country_search_url(term: str, company: str) -> str:
-    return "https://www.google.com/search?q=" + urllib.parse.quote_plus(
-        f"{company} {term} {userconfig.country().lower()} site:linkedin.com")
-
-
-def ingest_verdicts(home: str, out_dir: Path) -> tuple[dict, list]:
-    path = fix_path(home) / "verdicts.json"
-    cache = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-    country = userconfig.country()
-    gaps, source = [], out_dir / "verdicts.jsonl"
-    if source.exists():
-        for line in source.read_text(encoding="utf-8").splitlines():
-            try:
-                v = json.loads(line.lstrip("\ufeff"))
-            except json.JSONDecodeError:
-                continue
-            key = v.get("key") or verdict_key(v.get("term", "engineer"), v.get("company", ""))
-            if v.get("status") == "complete" and v.get("flag") in ("green", "red") and key:
-                cache[key] = {"company": v.get("company"), "flag": v["flag"],
-                              "checked": v.get("checked") or NOW.strftime("%Y-%m-%d"),
-                              "search_url": v.get("search_url", ""), "detail": v.get("detail", ""),
-                              "evidence": v.get("evidence", [])[:3],
-                              "brazil_located": v.get("brazil_located"), "country": country}
-            elif key not in cache:
-                gaps.append({"task": f"{country} check: {v.get('company')}",
-                             "reason": v.get("status") or "no verdict", "complete": False})
-        path.write_text(json.dumps(cache, indent=1, ensure_ascii=False), encoding="utf-8")
-    # verdicts searched for another country (config.yaml changed) are not reused
-    usable = {k: v for k, v in cache.items() if (v.get("country") or "Brazil") == country}
-    return usable, gaps
-
-
 def cmd_verify_queue(args) -> int:
+    """The people check for this run's companies (companies.py, references/people-check.md): new rows' companies,
+    busiest first, without a fresh verdict. The subagents write people_out_*.jsonl into the run folder, which the
+    next merge folds into <home>/people_checks.json."""
+    import companies
     profile = load_profile(args.profile, args.home)
     out_dir = run_dir(args, profile)
     results = out_dir / "results.json"
     if not results.exists():
         sys.exit("run merge first")
     rows = json.loads(results.read_text(encoding="utf-8"))
-    term = profile.get("country_check_term", "engineer")
-    cache, _ = ingest_verdicts(args.home, out_dir)
-    cutoff = (NOW - timedelta(days=args.ttl)).strftime("%Y-%m-%d")
-    done_this_run = set()
-    if (out_dir / "verdicts.jsonl").exists():
-        for line in (out_dir / "verdicts.jsonl").read_text(encoding="utf-8").splitlines():
-            try:
-                v = json.loads(line.lstrip("\ufeff"))
-            except json.JSONDecodeError:
-                continue
-            if v.get("status") == "complete":  # blocked/failed ones are retried
-                done_this_run.add(v.get("key"))
-
-    wanted: dict[str, dict] = {}
-    no_company = cached = 0
+    counts: dict[str, int] = {}
+    names: dict[str, str] = {}
     for r in rows:
         if not (r.get("new") or args.all):
             continue
-        key = verdict_key(term, r.get("company", ""))
-        if not key:
-            no_company += 1
-            continue
-        hit = cache.get(key)
-        if hit and hit["checked"] >= cutoff:
-            cached += 1
-            continue
-        if key in done_this_run:
-            continue
-        entry = wanted.setdefault(key, {"company": r["company"], "key": key, "term": term,
-                                        "postings": 0, "search_url": country_search_url(term, r["company"])})
-        entry["postings"] += 1
-    queue = sorted(wanted.values(), key=lambda e: -e["postings"])
-    plan = {"verdicts_file": str(out_dir / "verdicts.jsonl"), "term": term,
-            "queue": queue[: args.limit], "remaining_after_cap": max(0, len(queue) - args.limit),
-            "rows_with_cached_verdict": cached, "rows_without_company": no_company}
+        k = companies.key_of(r.get("company", ""))
+        if k:
+            counts[k] = counts.get(k, 0) + 1
+            names[k] = r["company"]
+    wanted = [{"company": names[k]} for k in sorted(counts, key=lambda k: -counts[k])]
+    plan = companies.people_queue(args.home, wanted, args.limit, out_dir)
     (out_dir / "verify-queue.json").write_text(json.dumps(plan, indent=1), encoding="utf-8")
     print(json.dumps(plan, indent=1, ensure_ascii=False))
     return 0
@@ -1047,6 +1058,8 @@ def main() -> int:
         p.set_defaults(fn=fn)
     import enrich  # jds, enrich-queue, explorer (step 8 of SKILL.md)
     enrich.add_commands(sub)
+    import companies  # boards, people-queue, people-ingest
+    companies.add_commands(sub)
     args = parser.parse_args()
     return args.fn(args)
 
