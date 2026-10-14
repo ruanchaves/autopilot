@@ -26,6 +26,7 @@ import os
 import re
 import sys
 import threading
+import urllib.parse
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
@@ -201,6 +202,8 @@ def jsonld_description(page: str) -> str | None:
 class JDFetcher:
     def __init__(self):
         self.f = js.Fetcher(UA)
+        self._himalayas_feed: dict | None = None
+        self._himalayas_lock = threading.Lock()
 
     def get(self, url: str, accept: str = "text/html,application/xhtml+xml,*/*;q=0.8") -> str:
         return self.f.get(url, interval=HOST_INTERVAL, headers={"Accept": accept, "Accept-Language": "en-US,en;q=0.9"})
@@ -273,7 +276,37 @@ class JDFetcher:
         d = re.search(r'class="show-more-less-html__markup[^"]*"[^>]*>(.*?)</div>', page, re.S)
         return to_text(d.group(1)) if d else None
 
-    HANDLERS = [("greenhouse.io", "greenhouse"), ("lever.co", "lever"), ("ashbyhq.com", "ashby"),
+    # Himalayas serves its job pages with HTTP 403 to scripts (seen 2026-10-11), but its public feed
+    # API carries each job's full description. Load the newest HIMALAYAS_PAGES pages once (the same
+    # depth the sweep reads, ~1 s apart) and look the role up by its application link.
+    HIMALAYAS_PAGES = 80
+
+    def himalayas(self, url):
+        if "himalayas.app/companies/" not in url:
+            return None
+        with self._himalayas_lock:
+            if self._himalayas_feed is None:
+                feed, cursor = {}, ""
+                for _ in range(self.HIMALAYAS_PAGES):
+                    api = "https://himalayas.app/jobs/api?limit=20"
+                    if cursor:
+                        api += "&cursor=" + urllib.parse.quote(cursor, safe="")
+                    d = json.loads(self.f.get(api, interval=1.0, headers={"Accept": "application/json"}))
+                    jobs = d.get("jobs") or []
+                    for j in jobs:
+                        for k in ("applicationLink", "guid"):
+                            if j.get(k):
+                                feed[js._norm_url(j[k])] = j
+                    cursor = d.get("nextCursor") or ""
+                    if not jobs or not cursor:
+                        break
+                self._himalayas_feed = feed
+        j = self._himalayas_feed.get(js._norm_url(url))
+        if not j:
+            raise RuntimeError(f"not in the newest {self.HIMALAYAS_PAGES} feed pages")
+        return to_text(j.get("description") or "")
+
+    HANDLERS = [("himalayas.app", "himalayas"), ("greenhouse.io", "greenhouse"), ("lever.co", "lever"), ("ashbyhq.com", "ashby"),
                 ("myworkdayjobs.com", "workday"), ("smartrecruiters.com", "smartrecruiters"),
                 ("apply.workable.com", "workable"), ("oraclecloud.com", "oracle"), ("linkedin.com", "linkedin")]
 

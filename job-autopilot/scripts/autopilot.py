@@ -554,6 +554,18 @@ def balance_queue(q: list[dict]) -> list[dict]:
     return out
 
 
+def too_old(r: dict, max_age_days: int | None) -> bool:
+    """With --max-age-days, a role is left out of this run's queue when its posting date is older
+    than that, or, when it has no posting date, when no sweep inside that window found it."""
+    if not max_age_days:
+        return False
+    cutoff = NOW - timedelta(days=max_age_days)
+    parsed, _ = js.parse_date(r.get("posted_iso") or "")
+    if parsed:
+        return parsed < cutoff
+    return max(r.get("batches") or [""]) < cutoff.strftime("%Y-%m-%d")
+
+
 def cmd_queue(args) -> int:
     roles = all_roles(args.home, args.batches)
     sc = role_scores(args.home, roles)
@@ -567,7 +579,7 @@ def cmd_queue(args) -> int:
     apps = recent_applications(existing, st)
     q, skipped = [], {"rejected": 0, "final": 0, "banned": 0, "rejected_company": 0, "in_applika": 0,
                       "applied_company": 0, "not_worth_applying": 0, "needs_you": 0, "waiting_answers": 0,
-                      "load_retries": 0}
+                      "load_retries": 0, "too_old": 0}
     for r in roles:
         e = ledger.get(r["id"], {})
         status = e.get("status")
@@ -622,6 +634,9 @@ def cmd_queue(args) -> int:
             continue
         if status == "failed_load" and e.get("load_failures", 0) >= st["max_load_retries"]:
             skipped["load_retries"] += 1
+            continue
+        if too_old(r, args.max_age_days):
+            skipped["too_old"] += 1
             continue
         q.append({"id": r["id"], "key": r["key"], "title": r["title"], "company": r["company"], "url": r["url"],
                   "location": r["location"], "score": sc.get(r["id"]), "accepted": dec.get(r["id"]) == "accepted",
@@ -1286,6 +1301,7 @@ def main() -> int:
     p.add_argument("--batch-size", type=int, default=20); p.add_argument("--decisions"); p.set_defaults(fn=cmd_score_queue)
     sub.add_parser("score-ingest").set_defaults(fn=cmd_score_ingest)
     p = sub.add_parser("queue"); p.add_argument("--batches", type=int, default=14); p.add_argument("--decisions")
+    p.add_argument("--max-age-days", type=int, help="leave out postings older than this (this run only)")
     p.set_defaults(fn=cmd_queue)
     p = sub.add_parser("tailor-queue"); p.add_argument("--n", type=int, default=6); p.set_defaults(fn=cmd_tailor_queue)
     sub.add_parser("pace-start").set_defaults(fn=cmd_pace_start)
