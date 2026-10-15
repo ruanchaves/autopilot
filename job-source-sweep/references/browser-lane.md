@@ -1,6 +1,8 @@
 # Browser lane
 
-Everything here runs in the user's signed-in Chrome through the `claude-in-chrome` tools. Every URL comes from `plan.json`. Never write these URLs by hand, because the plan already encodes the role and the date window.
+Everything here runs in the user's signed-in Chrome through the `claude-in-chrome` tools. Load them in one ToolSearch call that includes `mcp__claude-in-chrome__list_connected_browsers` and `mcp__claude-in-chrome__select_browser`. Every URL comes from `plan.json`. Never write these URLs by hand, because the plan already encodes the role and the date window.
+
+**Browser selection, before anything else.** The user's job-hunt Chrome is the one on `browser_os` in `config.yaml` (Windows). Right after loading the tools, call `list_connected_browsers`; if more than one browser is connected, or the one `inUse` is not on that OS, call `select_browser` with the deviceId whose `osPlatform` is that OS before opening any tab. **Never work in, or let the session attach to, the macOS Chrome** (user rule 2026-10-15): if no browser on the configured OS is connected, stop and report `browser unavailable` instead of using another one. Re-check after any tool error that says the tab or browser is gone, because the extension can reconnect to the other Chrome mid-run.
 
 ## Token and time discipline, read first
 
