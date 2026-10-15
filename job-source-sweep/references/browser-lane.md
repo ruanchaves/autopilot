@@ -156,24 +156,35 @@ The page is a list of **company cards** (about 20 per page), each holding one or
 
 ## yc_waas
 
-Y Combinator's Work at a Startup search (`workatastartup.com/jobs?role=eng&query=...&remote=yes&sortBy=created_desc`) is client-rendered behind a free account: a guest gets 30 fixed cards, the same whatever the query, and a banner such as "2,897 more roles behind a free account. Sign up to see more". The HTTP source `yc_jobs` already reads those public samples, so this task is only worth running signed in. If the header shows "Log in" / "Sign up" or that banner, record `login wall` and stop the task without signing up; the run report then tells the user that a free Work at a Startup account unlocks the search.
+Y Combinator's Work at a Startup search is client-rendered behind a free account: a guest gets 30 fixed cards and a banner such as "2,897 more roles behind a free account". The task URL is the signed-in **companies** list (`workatastartup.com/companies?role=eng&query=...&usVisaNotRequired=true&layout=list-compact&sortBy=created_desc...`): tested on 2026-10-15, it honours the query (353 startups for "ai engineer", 106 for "machine learning") and the visa filter, and infinite-scrolls through every match. The `/jobs` page ignores the query and always shows the same 30 cards, so never use it. If the header shows "Log in" / "Sign up", or the page redirects to the landing page, record `login wall` and stop the task without signing up; if the extension is attached to a browser other than the user's signed-in one (`list_connected_browsers`), say so in your final line.
 
-Signed in, the page is a grid of **job cards**, each an anchor to `/jobs/<numeric id>`. Wait about 5 seconds after navigation, then run:
+The page lists **company cards**, each with up to 2 job rows (a "See all N jobs ›" link covers the rest). Wait about 5 seconds after navigation, then run:
 
 ```js
 (() => {
+  const cl = (s) => (s || '').replace(/[^\/a-zA-Z0-9_-].*$/, '');
+  const isCo = (a) => /^\/companies\//.test(a.getAttribute('href') || '') && !/\/website/.test(a.getAttribute('href')) && /\([A-Z]\d{2}\)/.test(a.innerText);
   const rows = [];
-  document.querySelectorAll('a.group[href^="/jobs/"]').forEach((card) => {
-    const href = (card.getAttribute('href') || '').split('?')[0];
-    if (!/^\/jobs\/\d+$/.test(href)) return;
-    const ps = card.querySelectorAll('p');
-    const meta = (card.querySelector('h3 + p') || ps[ps.length - 1] || {}).innerText || '';
-    const parts = meta.split('·').map((s) => s.trim());
-    rows.push({ path: href, title: ((card.querySelector('h3') || {}).innerText || '').trim(),
-      company: ((ps[0] || {}).innerText || '').trim(), jobtype: parts[0] || '',
-      location: parts.slice(1).filter((x) => !/^\$/.test(x)).join(' · '),
-      pay: (meta.match(/\$[\d.,]+[kK]?(?:\s*-\s*\$?[\d.,]+[kK]?)?/) || [''])[0],
-      remote: /remote/i.test(meta) ? 'Remote' : '' });
+  document.querySelectorAll('div.cursor-pointer').forEach((el) => {
+    const v = [...el.querySelectorAll('a')].find((a) => /view job/i.test(a.innerText));
+    if (!v) return;
+    let card = el;
+    while (card && ![...card.querySelectorAll('a')].some(isCo)) card = card.parentElement;
+    const ca = card && [...card.querySelectorAll('a')].find(isCo);
+    const ta = el.querySelector('a.font-medium');
+    const sp = [...el.querySelectorAll('span.capitalize')].map((s) => s.innerText.trim()).filter(Boolean);
+    rows.push({
+      path: cl(new URL(v.href).pathname),
+      title: ta ? ta.innerText.trim() : '',
+      company: ca ? ca.innerText.replace(/\s+/g, ' ').trim() : '',
+      company_path: ca ? cl(ca.getAttribute('href')) : '',
+      location: sp[0] || '',
+      pay: sp.find((s) => /[$€£₹]|\d\s*[kK]/.test(s)) || '',
+      jobtype: sp.find((s) => /^(fulltime|parttime|contract|intern)/i.test(s)) || '',
+      remote: /remote/i.test(sp[0] || '') ? 'remote' : '',
+      visa: sp.find((s) => /visa|citizen|sponsor/i.test(s)) || '',
+      exp: sp.find((s) => /years?|new grad/i.test(s)) || '',
+    });
   });
   const seen = (window.__jwSeen = window.__jwSeen || new Set());
   const fresh = rows.filter((r) => r.title && !seen.has(r.path));
@@ -182,11 +193,10 @@ Signed in, the page is a grid of **job cards**, each an anchor to `/jobs/<numeri
 })();
 ```
 
-- Row fields: `source` `yc_waas`, `source_label` `YC Work at a Startup`, `url` = `https://www.workatastartup.com` + `path`, `company`, `location` (with `jobtype` prepended when it isn't "Full-time", for example `Contract · Remote (US)`), `compensation` = `pay`, `signal` = `YC`. Cards show no posting date: leave `posted` empty, and `merge` keeps rows with no date.
-- The snippet was written against the guest page (2026-10-15); the signed-in grid is expected to use the same cards. If it returns 0 on a page that clearly lists jobs, take one screenshot of your own tab, adjust the card selector, and note the change in your final line.
-- Guests can't filter: drop rows whose `remote` is empty yourself when the profile is remote-only. Signed in, the URL's `remote=yes` already filters.
-- More results load by scrolling (real wheel events through the `computer` tool), 30 cards at a time. Stop when 2 scrolls add no new rows or the page cap is reached (3 scrolls in standard mode, 6 in full).
-- Never click Apply, Save, "Interested" or the AI search box; the URL already encodes the query.
+- Row fields: `source` `yc_waas`, `source_label` `YC Work at a Startup`, `url` = `https://www.workatastartup.com` + `path`, `company` = the company name without its batch suffix (`Zudo (W23)` → `Zudo`), `signal` = `YC <batch>` from that suffix, `location` (with `jobtype` prepended when it isn't `fulltime`, for example `contract · Remote (US)`), `compensation` = `pay` (keep the currency code), `eligibility` = `visa` when present. The list shows no posting date: leave `posted` empty, and `merge` keeps rows with no date. The list is only roughly newest-first (job ids descend), so don't stop at an old-looking row.
+- The user's profile is remote-only and outside the US, so drop rows whose `location` has no "Remote"; keep rows that name the user's country or region.
+- More results load by **infinite scroll**: each batch adds 10 companies (about 19 job rows) once you are near the bottom. Scroll with real wheel events through the `computer` tool, about 10 ticks (1,000 px) per scroll, 3 or 4 scrolls per batch, then wait 3 seconds and rerun the snippet. Stop when 2 consecutive batches add no new rows, or at the cap: 3 batches in standard mode, 12 in full.
+- Never click Apply, Save, "Interested", a company card or the AI search box; the URL already encodes the query and filters.
 
 ## google_shard
 

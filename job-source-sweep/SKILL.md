@@ -92,10 +92,10 @@ Every mode starts with the HTTP lane, and its results are shown **before** any b
 | Mode | Browser tasks | Page caps | Wall-clock cap |
 |---|---|---|---|
 | `quick` | none | none | ~1 min |
-| `standard` | LinkedIn Jobs (first keyword); LinkedIn posts (first keyword); Rocketship; Wellfound (every role slug); YC Work at a Startup (first query); each Google shard with the **first** `google_query` only | LinkedIn Jobs: 2 pages. Posts: 30. Rocketship: 2 pages. Wellfound: 3 pages. Work at a Startup: 3 scrolls. Each shard: 2 SERPs. | 20 min |
-| `full` | every task in `plan.json` | LinkedIn Jobs: 5 pages. Posts: 60. Wellfound: 6 pages. Work at a Startup: 6 scrolls. Each shard: 5 SERPs. | 60 min |
+| `standard` | LinkedIn Jobs (first keyword); LinkedIn posts (first keyword); Rocketship; Wellfound (every role slug); YC Work at a Startup (first query); each Google shard with the **first** `google_query` only | LinkedIn Jobs: 2 pages. Posts: 30. Rocketship: 2 pages. Wellfound: 3 pages. Work at a Startup: 3 scroll batches (about 55 jobs). Each shard: 2 SERPs. | 20 min |
+| `full` | every task in `plan.json` | LinkedIn Jobs: 5 pages. Posts: 60. Wellfound: 6 pages. Work at a Startup: 12 scroll batches. Each shard: 5 SERPs. | 60 min |
 
-Run the tasks in `plan.json` order: Wellfound and Work at a Startup come before the Google shards on purpose, because they are the boards where funded startups post pay and remote policy with no staffing layer in between, and the Google shards are what the wall-clock cap should cut first. Work at a Startup needs the user signed in to a free account (`references/browser-lane.md`, `yc_waas`); a login wall is a coverage gap to report, not something to work around.
+Run the tasks in `plan.json` order: Wellfound and Work at a Startup come before the Google shards on purpose, because they are the boards where funded startups post pay and remote policy with no staffing layer in between, and the Google shards are what the wall-clock cap should cut first. Work at a Startup needs the user signed in to a free account (`references/browser-lane.md`, `yc_waas`); a login wall is a coverage gap to report, not something to work around. The task reads the signed-in **companies** list, which honours the query and the "US visa not required" filter and scrolls through every match; the `/jobs` page ignores the query (tested 2026-10-15). If the extension is attached to another browser than the signed-in one, switch with `select_browser` before the task.
 
 `deep` is an add-on to any browser mode: it opens Google-shard postings to read their JSON-LD. Only do it when asked, for at most ~30 postings.
 

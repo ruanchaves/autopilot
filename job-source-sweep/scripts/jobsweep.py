@@ -827,13 +827,16 @@ def cmd_plan(args) -> int:
         tasks.append({"task": "wellfound", "label": f"Wellfound: {slug}",
                       "url": f"https://wellfound.com/role/{'r/' if remote else ''}{slug}"})
     for query in yc_waas_queries(profile):
-        # Work at a Startup's real search (about 3,000 engineering jobs) needs the user's signed-in session; the
-        # public pages the HTTP source `yc_jobs` reads embed only fixed samples.
-        params = {"role": "eng", "query": query, "sortBy": "created_desc"}
-        if remote:
-            params["remote"] = "yes"
+        # Work at a Startup's real search needs the user's signed-in session; the public pages the HTTP source
+        # `yc_jobs` reads embed only fixed samples. Tested signed in on 2026-10-15: the /companies list honours
+        # the query and the visa filter and scrolls through every match (353 startups for "ai engineer"), while
+        # /jobs ignores the query and shows the same 30 cards. jobType=any keeps contract roles; there is no
+        # remote filter, so the location text ("Remote (US)") carries it.
+        params = {"role": "eng", "query": query, "sortBy": "created_desc", "layout": "list-compact", "jobType": "any",
+                  "usVisaNotRequired": "true", "demographic": "any", "hasEquity": "any", "hasSalary": "any",
+                  "industry": "any", "interviewProcess": "any", "tab": "any"}
         tasks.append({"task": "yc_waas", "label": f"YC Work at a Startup: {query}",
-                      "url": "https://www.workatastartup.com/jobs?" + urllib.parse.urlencode(params)})
+                      "url": "https://www.workatastartup.com/companies?" + urllib.parse.urlencode(params)})
     tasks = [t for t in tasks if t["task"] not in skip_tasks]
     for shard in cat["google_shards"]:
         hosts = [h for h in shard["hosts"] if h["site"] not in skip_hosts]
