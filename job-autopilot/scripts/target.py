@@ -59,6 +59,16 @@ COMPANY_TYPES = ("funded_startup", "product_company", "big_company", "staff_aug"
 # `likely_below` whatever the HQ (2026-10-15; before that US-HQ ones were "unclear" and reached tier B). US
 # consultancies employ their engineers directly, so they stay "unclear".
 HIGH_PAY_HQ = {"united states", "usa", "us", "u.s.", "united states of america", "canada"}
+# Sectors that pay global USD whatever the HQ (2026-10-15): web3 employers sit in Switzerland, Singapore, the Cayman
+# Islands or Dubai and hire worldwide in USD or stablecoins, so the HQ rule above would push every one of them to
+# "likely below". A web3 company is one the company-type pass tagged (sector), a board the catalogue seeded as web3,
+# or a role from a web3 source (Cryptocurrency Jobs, web3.career, the crypto VC boards).
+GLOBAL_PAY_SECTORS = {"web3"}
+WEB3_SOURCES = re.compile(r"^(cryptocurrency jobs|web3 jobs|solana portfolio|electric capital portfolio|dragonfly portfolio)$", re.I)  # exact labels: a Google shard label naming web3.career tagged every Arc/DailyRemote row
+# A JD body that says the role is open worldwide. A region label alone is not evidence (user rule 2026-10-14);
+# this needs the words in the eligibility evidence, which the classifier quotes from the JD.
+WORLDWIDE = re.compile(r"worldwide|anywhere|globally|global(ly)? distributed|any (country|location|time ?zone)|"
+                       r"no (geographic|location) restrictions|from any", re.I)
 MIDDLEMAN_TYPES = ("staff_aug", "marketplace", "task_platform")
 TYPE_PAY = {  # (type, US/Canada HQ?) -> tier
     ("funded_startup", True): "likely_target", ("funded_startup", False): "likely_target",
@@ -75,8 +85,25 @@ TYPE_PAY = {  # (type, US/Canada HQ?) -> tier
 DIRECT_SOURCES = re.compile(r"HN Who is hiring|Work at a Startup|portfolio|Company job boards|Wellfound", re.I)
 
 
-def type_pay(ctype: str, hq: str) -> str:
-    return TYPE_PAY.get((ctype, (hq or "").strip().lower() in HIGH_PAY_HQ), "unclear")
+def type_pay(ctype: str, hq: str, sector: str = "") -> str:
+    high = (hq or "").strip().lower() in HIGH_PAY_HQ or (sector in GLOBAL_PAY_SECTORS and ctype != "local_company")
+    return TYPE_PAY.get((ctype, high), "unclear")
+
+
+def sector_of(role: dict, ctx: dict) -> str:
+    """The company's sector when it matters for pay ("web3"), from the company-type pass, the seeded boards, the
+    row itself (sweep sources tag their rows) or the source labels; else ""."""
+    k = norm(role.get("company", ""))
+    t = ctx["types"].get(k) or {}
+    if t.get("sector"):
+        return t["sector"]
+    if k in ctx.get("sectors", {}):
+        return ctx["sectors"][k]
+    if role.get("sector"):
+        return role["sector"]
+    if any(WEB3_SOURCES.search(s or "") for s in role.get("sources") or []):
+        return "web3"
+    return ""
 SENIOR = re.compile(r"\b(senior|sr\.?|staff|principal|lead|founding|head)\b", re.I)
 FUNDED_SRC = re.compile(r"portfolio|work at a startup|y ?combinator", re.I)
 FUNDED_DAYS = 180
@@ -114,9 +141,10 @@ def context(home: str, roles: list[dict], st: dict, scores: dict | None = None) 
     for e in enrich.read_json(hp / "recruiters" / "funded_companies.json", {}).values():
         dates = [x.get("date") for x in e.get("funding") or [] if x.get("date")]
         funded[norm(e.get("name", ""))] = max(dates) if dates else "portfolio"
+    sectors = {k: e["sector"] for k, e in co.boards(home).items() if e.get("sector")}
     return {"st": st, "target": float(st["pay_target_usd_month"]), "floor": float(st.get("pay_skip_below_usd_month") or 0),
             "ceil": ceil, "pay_by_company": by_company, "types": company_types(home), "funded": funded,
-            "people": co.people_checks(home), "scores": scores}
+            "people": co.people_checks(home), "scores": scores, "sectors": sectors}
 
 
 def company_types(home: str) -> dict:
@@ -170,11 +198,16 @@ def pay_tier(role: dict, sp: dict | None, ctx: dict, use_posted: bool = True) ->
     if t.get("confidence") == "guess":
         t = {**t, "type": "unknown"}  # a guess from the name or a vague JD doesn't move the estimate
     ctype = t.get("type") or co.name_type(company) or "unknown"
-    tier = type_pay(ctype, t.get("hq_country", ""))
+    sector = sector_of(role, ctx)
+    tier = type_pay(ctype, t.get("hq_country", ""), sector)
     detail = f"company type: {ctype.replace('_', ' ')}" + (f", HQ {t['hq_country']}" if t.get("hq_country") else "") + \
+        (f", {sector} (global USD pay)" if sector in GLOBAL_PAY_SECTORS else "") + \
         (f" ({t['evidence']})" if t.get("evidence") else "")
     if tier != "unclear":
         return {"tier": tier, "source": "company type", "detail": detail}
+    # 3b. a web3 employer of unknown type with a senior title: the sector's premium applies unless it is a middleman
+    if sector in GLOBAL_PAY_SECTORS and ctype not in MIDDLEMAN_TYPES and SENIOR.search(role.get("title", "")):
+        return {"tier": "likely_target", "source": "sector + seniority", "detail": f"{sector} employer, senior title"}
     # 4. a recent round (registry, the company-type pass, or a VC/YC board) with a senior title
     since = (NOW - timedelta(days=FUNDED_DAYS)).strftime("%Y-%m-%d")
     rnd = ctx["funded"].get(k) or ((t.get("funding") or {}).get("date") or "")
@@ -210,15 +243,28 @@ def pay_points(pt: dict) -> int:
 
 # -------------------------------------------------------------------- tiers
 
-def tier_of(pay: str, people: str | None) -> str:
+def tier_of(pay: str, people: str | None, worldwide: bool = False) -> str:
+    """worldwide: the JD body says the role is open worldwide (hires_worldwide). It stands in for the people check
+    when that found nothing yet or only non-US engineers; a check that found no engineers outside the US at all
+    still caps the role at tier B."""
     p = 2 if pay in PAY_OK else 0 if pay in PAY_BAD else 1
     r = 2 if people in REGION_OK else 0 if people == "none" else 1
+    if worldwide and people != "none":
+        r = 2
     return "A" if p + r == 4 else "B" if p + r == 3 else "C"
 
 
-def tier_reason(pay: dict, people: str | None, tier: str) -> str:
+def hires_worldwide(elig: dict | None) -> bool:
+    """True when the eligibility classifier found the JD explicitly open (category 1) and quoted worldwide wording."""
+    e = elig or {}
+    return e.get("category") == 1 and bool(WORLDWIDE.search(e.get("evidence") or ""))
+
+
+def tier_reason(pay: dict, people: str | None, tier: str, worldwide: bool = False) -> str:
     ppl = {"brazil": f"engineers in {userconfig.country()}", "latam": f"engineers elsewhere in {userconfig.region()}",
            "non_us": "engineers only elsewhere outside the US", "none": "no engineers outside the US found"}.get(people, "people check not run yet")
+    if worldwide and people not in REGION_OK and people != "none":
+        ppl = f"JD says it hires worldwide ({ppl})"
     return f"Tier {tier}: pay {pay['tier'].replace('_', ' ')}; {ppl}"
 
 
@@ -259,6 +305,7 @@ def ingest_company_types(home: str, files: list[Path]) -> dict:
                 bad.append(f'{d.get("company")}: {d.get("type")}')
                 continue
             cache[k] = {"company": d.get("company"), "type": d["type"], "hq_country": d.get("hq_country", ""),
+                        "sector": d.get("sector") if d.get("sector") in GLOBAL_PAY_SECTORS else "",
                         "pays_in": d.get("pays_in", ""), "funding": d.get("funding") or None,
                         "evidence": (d.get("evidence") or "")[:200], "checked": TODAY, "web": bool(d.get("web_checked")),
                         "confidence": d.get("confidence") if d.get("confidence") in ("known", "jd", "web", "guess") else "guess"}

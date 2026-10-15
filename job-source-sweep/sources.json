@@ -122,7 +122,23 @@
       "kind": "rss",
       "url": "https://cryptocurrencyjobs.co/index.xml",
       "title_pattern": "^(?P<title>.+?)\\s+at\\s+(?P<company>.+)$",
-      "min_interval": 60
+      "min_interval": 60,
+      "sector": "web3",
+      "_note": "Site-wide RSS (every category, ~50 newest posts); the title filter keeps the on-role ones. The /ai/ category page is relevance-sorted and months stale (checked 2026-10-15), so the feed stays. sector: web3 marks its rows for the autopilot's pay estimate (web3 pays global USD)."
+    },
+    {
+      "id": "web3career",
+      "label": "Web3 Jobs",
+      "kind": "web3career",
+      "url": "https://web3.career",
+      "pages": [
+        "/ai-jobs?remote=true",
+        "/machine-learning-jobs?remote=true"
+      ],
+      "page_count": 2,
+      "sector": "web3",
+      "min_interval": 3,
+      "_note": "web3.career's category pages, server-rendered (checked 2026-10-15): 15 rows per page with the posting's own date, company, location and pay; 'Estimated salary' figures are dropped. The JSON API needs an emailed token, which the HTML makes unnecessary. Earlier this host was only reached through a Google site: shard, which found one role in three weeks."
     },
     {
       "id": "hn_hiring",
@@ -169,7 +185,190 @@
       "url": "<home>/boards.json",
       "window_days": 21,
       "max_age_hours": 20,
-      "_note": "Companies' own Ashby/Greenhouse/Lever/Workable boards (scripts/companies.py): every company whose role link pointed at one, plus recruiter-outreach's funded-company registry. Each board is re-read through its public API at most every max_age_hours; postings like the target role (target title term + engineering word) come back with the board's own date, location and pay. window_days: a target company's role posted up to three weeks ago is still worth applying to."
+      "_note": "Companies' own Ashby/Greenhouse/Lever/Workable boards (scripts/companies.py): every company whose role link pointed at one, plus recruiter-outreach's funded-company registry. Each board is re-read through its public API at most every max_age_hours; postings like the target role (target title term + engineering word) come back with the board's own date, location and pay. window_days: a target company's role posted up to three weeks ago is still worth applying to.",
+      "seed": [
+        {
+          "name": "Consensys",
+          "kind": "greenhouse",
+          "slug": "consensys",
+          "sector": "web3"
+        },
+        {
+          "name": "OKX",
+          "kind": "greenhouse",
+          "slug": "okx",
+          "sector": "web3"
+        },
+        {
+          "name": "Ripple",
+          "kind": "greenhouse",
+          "slug": "ripple",
+          "sector": "web3"
+        },
+        {
+          "name": "Fireblocks",
+          "kind": "greenhouse",
+          "slug": "fireblocks",
+          "sector": "web3"
+        },
+        {
+          "name": "Aptos Labs",
+          "kind": "greenhouse",
+          "slug": "aptoslabs",
+          "sector": "web3"
+        },
+        {
+          "name": "Gemini",
+          "kind": "greenhouse",
+          "slug": "gemini",
+          "sector": "web3"
+        },
+        {
+          "name": "Figure",
+          "kind": "greenhouse",
+          "slug": "figure",
+          "sector": "web3"
+        },
+        {
+          "name": "Alpaca",
+          "kind": "greenhouse",
+          "slug": "alpaca",
+          "sector": "web3"
+        },
+        {
+          "name": "BitGo",
+          "kind": "greenhouse",
+          "slug": "bitgo",
+          "sector": "web3"
+        },
+        {
+          "name": "Blockchain.com",
+          "kind": "greenhouse",
+          "slug": "blockchain",
+          "sector": "web3"
+        },
+        {
+          "name": "Bitpanda",
+          "kind": "greenhouse",
+          "slug": "bitpanda",
+          "sector": "web3"
+        },
+        {
+          "name": "Galaxy",
+          "kind": "greenhouse",
+          "slug": "galaxy",
+          "sector": "web3"
+        },
+        {
+          "name": "Jump Trading",
+          "kind": "greenhouse",
+          "slug": "jumptrading",
+          "sector": "web3"
+        },
+        {
+          "name": "Uniswap Labs",
+          "kind": "ashby",
+          "slug": "uniswap",
+          "sector": "web3"
+        },
+        {
+          "name": "Phantom",
+          "kind": "ashby",
+          "slug": "phantom",
+          "sector": "web3"
+        },
+        {
+          "name": "Paradigm",
+          "kind": "ashby",
+          "slug": "paradigm",
+          "sector": "web3"
+        },
+        {
+          "name": "Mysten Labs",
+          "kind": "ashby",
+          "slug": "mystenlabs",
+          "sector": "web3"
+        },
+        {
+          "name": "Jito Labs",
+          "kind": "ashby",
+          "slug": "jito-labs",
+          "sector": "web3"
+        },
+        {
+          "name": "Rain",
+          "kind": "ashby",
+          "slug": "rain",
+          "sector": "web3"
+        },
+        {
+          "name": "Lightspark",
+          "kind": "ashby",
+          "slug": "lightspark",
+          "sector": "web3"
+        },
+        {
+          "name": "Crypto.com",
+          "kind": "lever",
+          "slug": "crypto",
+          "sector": "web3"
+        },
+        {
+          "name": "Offchain Labs",
+          "kind": "lever",
+          "slug": "offchainlabs",
+          "sector": "web3"
+        },
+        {
+          "name": "Anchorage Digital",
+          "kind": "lever",
+          "slug": "anchorage",
+          "sector": "web3"
+        },
+        {
+          "name": "Animoca Brands",
+          "kind": "lever",
+          "slug": "animocabrands",
+          "sector": "web3"
+        },
+        {
+          "name": "Immutable",
+          "kind": "lever",
+          "slug": "immutable",
+          "sector": "web3"
+        },
+        {
+          "name": "Coinbase",
+          "kind": "greenhouse",
+          "slug": "coinbase",
+          "sector": "web3"
+        },
+        {
+          "name": "Binance",
+          "kind": "greenhouse",
+          "slug": "binance",
+          "sector": "web3"
+        },
+        {
+          "name": "Kraken",
+          "kind": "greenhouse",
+          "slug": "kraken.com",
+          "sector": "web3"
+        },
+        {
+          "name": "Alchemy",
+          "kind": "greenhouse",
+          "slug": "alchemy",
+          "sector": "web3"
+        },
+        {
+          "name": "Circle",
+          "kind": "greenhouse",
+          "slug": "circle",
+          "sector": "web3"
+        }
+      ],
+      "_seed_note": "Boards the sweep reads from the first run, before any role link points at them. These are the web3 employers with public Greenhouse/Lever/Ashby boards verified on 2026-10-15; sector tags the company for the autopilot's pay estimate. Chainlink, Polygon, Ledger and the foundations use private ATSs and are reached through the Getro crypto boards and web3.career instead."
     },
     {
       "id": "getro_generalcatalyst",
@@ -254,6 +453,31 @@
       "kind": "getro",
       "network_id": 1680,
       "board": "jobs.pointnine.com"
+    },
+    {
+      "id": "getro_solana",
+      "label": "Solana portfolio",
+      "kind": "getro",
+      "network_id": 858,
+      "board": "jobs.solana.com",
+      "sector": "web3",
+      "_note": "Crypto VC and ecosystem boards (added 2026-10-15): web3 companies hire worldwide in USD, so they are a pay lane, not a niche. Their rows carry sector: web3 for the autopilot's pay estimate."
+    },
+    {
+      "id": "getro_electriccapital",
+      "label": "Electric Capital portfolio",
+      "kind": "getro",
+      "network_id": 1640,
+      "board": "jobs.electriccapital.com",
+      "sector": "web3"
+    },
+    {
+      "id": "getro_dragonfly",
+      "label": "Dragonfly portfolio",
+      "kind": "getro",
+      "network_id": 1118,
+      "board": "jobs.dragonfly.xyz",
+      "sector": "web3"
     },
     {
       "id": "consider_sequoia",
@@ -466,7 +690,7 @@
     },
     {
       "id": "boards_b",
-      "label": "Boards: Arc, DailyRemote, Web3.career, Crypto Careers, Remote.com",
+      "label": "Boards: Arc, DailyRemote, Crypto Careers, Remote.com",
       "hosts": [
         {
           "label": "Arc",
@@ -479,11 +703,6 @@
           "host": "dailyremote.com"
         },
         {
-          "label": "Web3.career",
-          "site": "web3.career",
-          "host": "web3.career"
-        },
-        {
           "label": "Crypto Careers",
           "site": "crypto-careers.com",
           "host": "crypto-careers.com"
@@ -493,7 +712,8 @@
           "site": "remote.com",
           "host": "remote.com"
         }
-      ]
+      ],
+      "_note": "web3.career left this shard on 2026-10-15: it is now the HTTP source `web3career`."
     },
     {
       "id": "boards_c",

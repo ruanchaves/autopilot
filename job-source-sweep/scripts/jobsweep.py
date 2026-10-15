@@ -306,6 +306,8 @@ def text_of(value) -> str:
 
 
 def row(src: dict, title, company, location, posted, url, **extra) -> dict:
+    if src.get("sector"):  # e.g. web3: the autopilot's pay estimate treats the sector as a global-USD lane
+        extra.setdefault("sector", src["sector"])
     return {"source": src["id"], "source_label": src["label"],
             "title": text_of(title)[:200], "company": text_of(company)[:120],
             "location": text_of(location)[:160], "posted": text_of(posted)[:60],
@@ -445,6 +447,53 @@ def fetch_getro(f: Fetcher, src: dict, profile: dict, cat: dict) -> list[dict]:
                                item.get("locations"), item.get("created_at"), link,
                                compensation=_salary(item)))
             if len(items) < 20:
+                break
+    return out
+
+
+_W3_ROW = re.compile(r'<tr[^>]*class="[^"]*table_row[^"]*"(.*?)</tr>', re.S)
+_W3_TITLE = re.compile(r'href="(/[^"]+/\d+)"[^>]*>\s*<h2[^>]*>\s*(.*?)\s*</h2>', re.S)
+_W3_COMPANY = re.compile(r'<h3[^>]*>\s*(.*?)\s*</h3>', re.S)
+_W3_LOC = re.compile(r'class=job-location-mobile>(.*?)</span>\s*</div>', re.S)
+_W3_TIME = re.compile(r'<time datetime="([^"]+)"')
+_W3_PAY = re.compile(r'class="[^"]*text-salary[^"]*"[^>]*>\s*(.*?)\s*</p>', re.S)
+
+
+def fetch_web3career(f: Fetcher, src: dict, profile: dict, cat: dict) -> list[dict]:
+    """web3.career category pages (server-rendered table rows). Estimated salaries (the 'estimated_star' marker) are
+    left out: only pay the posting states is pay."""
+    seen, out = set(), []
+    for path in src.get("pages") or ["/ai-jobs?remote=true"]:
+        for page in range(1, int(src.get("page_count", 1)) + 1):
+            if time.time() > profile.get("_deadline", float("inf")):
+                PARTIAL.add(src["id"])
+                return out
+            url = f"{src['url']}{path}{'&' if '?' in path else '?'}page={page}" if page > 1 else f"{src['url']}{path}"
+            body = f.get(url, interval=src.get("min_interval", 0),
+                         headers={"User-Agent": cat.get("browser_user_agent") or f.user_agent, "Accept": "text/html"})
+            rows = _W3_ROW.findall(body)
+            if not rows:
+                if page == 1:
+                    raise SourceError(f"no job rows on {url}")
+                break
+            for chunk in rows:
+                m = _W3_TITLE.search(chunk)
+                if not m:
+                    continue
+                link = src["url"] + m.group(1)
+                if link in seen:
+                    continue
+                seen.add(link)
+                company = _W3_COMPANY.search(chunk)
+                loc = _W3_LOC.search(chunk)
+                location = re.sub(r"<[^>]+>", " ", loc.group(1)) if loc else ""
+                location = re.sub(r"\s*,\s*", ", ", re.sub(r"\s+", " ", location.replace("\U0001F4CD", ""))).strip(" ,")
+                when = _W3_TIME.search(chunk)
+                pay = _W3_PAY.search(chunk)
+                comp = "" if (not pay or "estimated_star" in chunk) else re.sub(r"<[^>]+>", "", pay.group(1)).strip()
+                out.append(row(src, m.group(2), company.group(1) if company else "", location,
+                               when.group(1) if when else "", link, compensation=comp))
+            if len(rows) < 15:
                 break
     return out
 
@@ -657,12 +706,14 @@ def fetch_company_boards(f: Fetcher, src: dict, profile: dict, cat: dict) -> lis
             pay = x.get("pay_usd_month")
             out.append(row(src, x.get("title"), e.get("name"), x.get("location"), x.get("posted"), x.get("url"),
                            compensation=f"~USD {pay:,}/month (board)" if pay else "",
-                           region_hint=x.get("region"), board=f'{e["ats"]["kind"]}:{e["ats"]["slug"]}'))
+                           region_hint=x.get("region"), board=f'{e["ats"]["kind"]}:{e["ats"]["slug"]}',
+                           sector=e.get("sector", "")))
     return out
 
 
 ADAPTERS = {"json": fetch_json, "rss": fetch_rss, "getro": fetch_getro, "consider": fetch_consider,
-            "hn": fetch_hn, "yc": fetch_yc, "a16z": fetch_a16z, "boards": fetch_company_boards}
+            "hn": fetch_hn, "yc": fetch_yc, "a16z": fetch_a16z, "boards": fetch_company_boards,
+            "web3career": fetch_web3career}
 
 
 def sweep(cat: dict, profile: dict, ids: list[str] | None):
@@ -946,7 +997,7 @@ def cmd_merge(args) -> int:
                 f["duplicate"] += 1
                 if label not in keep["sources"]:
                     keep["sources"].append(label)
-                for field in ("company", "location", "posted_iso", "compensation", "eligibility", "signal"):
+                for field in ("company", "location", "posted_iso", "compensation", "eligibility", "signal", "sector"):
                     if not keep.get(field) and r.get(field):
                         keep[field] = r[field]
                 continue

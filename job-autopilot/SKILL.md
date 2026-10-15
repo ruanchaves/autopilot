@@ -156,6 +156,16 @@ hire outside the US. Every role gets two judgements:
 **Tier A** is pay at target (posted or likely) plus engineers in the candidate's country or region. **Tier B** has
 one of the two proven and the other unknown. **Tier C** is the rest.
 
+Two rules added on 2026-10-15 for the web3 lane, where employers hire worldwide in USD or stablecoins:
+- **Sector pay.** A company with `sector: web3` (the company-type pass, a seeded board in `boards.json`, a row from a
+  web3 source, or a web3 source label) is estimated as if US-headquartered: a Swiss, Singaporean or Cayman web3
+  product company is "likely target", not "likely below". Middlemen and local companies keep their tier. A web3
+  employer of unknown type with a senior title is "likely target" too (`target.py`, step 3b).
+- **Hires worldwide.** When the eligibility classifier found the JD explicitly open and quoted worldwide wording from
+  its body ("worldwide", "anywhere", "globally distributed"...), that stands in for the people check: pay at target
+  makes the role tier A even before anyone is found there (`tier_reason` says "JD says it hires worldwide"). A people
+  check that found no engineers outside the US at all still caps it at tier B. A region label alone never counts.
+
 How the total is built:
 - The subagents return four parts: core AI/LLM match (35), requirement coverage (25), seniority (15) and domain/stack (10).
 - The script adds location eligibility: open 15, not stated 10, restricted 0, unclassified 7.

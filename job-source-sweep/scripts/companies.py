@@ -286,11 +286,13 @@ def discover_boards(home: str, batches: int = 14) -> dict:
         else:
             by_board[b] = k
 
-    def add(company: str, ats: dict | None, via: str) -> None:
+    def add(company: str, ats: dict | None, via: str, sector: str = "") -> None:
         nonlocal added
         k = key_of(company)
         if not k or not ats or name_type(company):
             return
+        if sector and k in reg and not reg[k].get("sector"):
+            reg[k]["sector"] = sector  # a seed can tag a board the sweep already found
         b = (ats["kind"], ats["slug"].lower())
         if b in by_board and by_board[b] != k:
             other = by_board[b]
@@ -305,8 +307,15 @@ def discover_boards(home: str, batches: int = 14) -> dict:
         if cur and cur.get("ats") and not cur.get("board_error"):
             return  # keep the first working board; a second slug is usually a mirror
         reg[k] = {**(cur or {}), "name": company, "ats": ats, "found_via": via, "found_at": (cur or {}).get("found_at") or TODAY}
+        if sector:
+            reg[k]["sector"] = sector
         reg[k].pop("board_checked_at", None)
         added += cur is None
+
+    # boards the catalogue seeds (sources.json company_boards.seed): read from the first run, before any role link
+    for s in next((x.get("seed") or [] for x in js.load_catalogue()["http"] if x.get("id") == "company_boards"), []):
+        if (s.get("kind") or "").lower() in BOARD_KINDS and s.get("slug"):
+            add(s.get("name", ""), {"kind": s["kind"].lower(), "slug": s["slug"]}, "catalogue seed", s.get("sector", ""))
 
     try:
         roles = enrich.collect_roles(home, None, enrich.run_dates(home, batches))

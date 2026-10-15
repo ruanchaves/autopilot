@@ -32,6 +32,8 @@ Also record:
   - Take it from the JD, or from the batch entry's `listed_pay`.
   - `pay_min_usd_month` and `pay_max_usd_month` are numbers, or `null` when the posting states no pay. Don't estimate pay for roles that don't state it.
   - Convert annual pay by dividing by 12, hourly by multiplying by 160, and other currencies at today's approximate rate.
+  - Pay in USDC, USDT or another dollar stablecoin is USD. A token or equity allocation on top is not pay: mention
+    it in `pay_note` ("$120k + tokens") and leave it out of the numbers.
   - For a single figure, use it for both.
   - `pay_note` holds the posting's own words, such as `"$150k-$190k/yr"`.
   - The script turns pay into a ranking bonus and applies the user's pay floor, so you don't skip for pay yourself.

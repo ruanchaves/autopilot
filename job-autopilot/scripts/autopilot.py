@@ -284,7 +284,9 @@ def evaluate(home: str, roles: list[dict], st: dict | None = None) -> dict[str, 
     out = {}
     for r in roles:
         sp = scores.get(r["key"])
-        cat = (cache.get(r["key"], {}).get("elig") or {}).get("category")
+        el = cache.get(r["key"], {}).get("elig") or {}
+        cat = el.get("category")
+        worldwide = tg.hires_worldwide(el)
         pt = tg.pay_tier(r, sp, ctx)
         pv = ctx["people"].get(co.key_of(r.get("company", ""))) or {}
         # only verdicts judged with the company's context count (co.METHODS); an older one, which may be a namesake
@@ -292,12 +294,13 @@ def evaluate(home: str, roles: list[dict], st: dict | None = None) -> dict[str, 
         people = pv.get("level") if pv.get("method") in co.METHODS else None
         ctype = tg.company_type_of(r, ctx)
         ok, why, evidence = apply_decision(sp or {}, st, pt, people, ctype) if (sp or ctype["type"] != "unknown") else (True, "", "")
-        tier = tg.tier_of(pt["tier"], people)
+        tier = tg.tier_of(pt["tier"], people, worldwide)
         if why == "location_overridden" and tier == "A":
             tier = "B"
         out[r["id"]] = {"score": total_score(sp, cat, target, pt), "pay": pt, "people": people, "company_type": ctype,
                         "people_evidence": (pv.get("evidence") or [{}])[0] if pv else {}, "people_checked": pv.get("checked", ""),
-                        "tier": tier, "tier_reason": tg.tier_reason(pt, people, tier),
+                        "tier": tier, "tier_reason": tg.tier_reason(pt, people, tier, worldwide), "worldwide": worldwide,
+                        "sector": tg.sector_of(r, ctx),
                         "ok": ok, "why": why, "evidence": evidence, "elig": cat, "parts": sp}
     return out
 
@@ -633,7 +636,7 @@ def source_group(labels: list[str]) -> str:
                                             r"breezy|recruitee|jobvite|pinpoint|teamtailor|personio|rippling|bamboo|gem|"
                                             r"successfactors", low):
         return "ATS pages via Google"
-    if low.startswith("google") or "/" in low or re.search(r"dailyremote|remote\.com|web3|arc\.dev|cryptocareers", low):
+    if low.startswith("google") or "/" in low or re.search(r"dailyremote|remote\.com|web3\.career|arc\.dev|cryptocareers", low):
         return "Job boards via Google"
     return label
 

@@ -114,7 +114,7 @@ flowchart TD
     setup -- yes --> ask["interactive setup<br/>→ edits config.yaml"] --> http
     setup -- no --> http
 
-    http["HTTP lane · jobsweep http<br/>Himalayas, Remote OK, Jobgether, Working Nomads, Remotive,<br/>We Work Remotely, NoDesk, HN Who is hiring (whole thread), YC public job pages,<br/>a16z board, 12 Getro VC networks, 5 Consider boards, companies' own ATS boards"] --> merge1["jobsweep merge<br/>dedupe by URL then company+title,<br/>title filter, date window, new-since-last-run"]
+    http["HTTP lane · jobsweep http<br/>Himalayas, Remote OK, Jobgether, Working Nomads, Remotive,<br/>We Work Remotely, NoDesk, Cryptocurrency Jobs, web3.career, HN Who is hiring (whole thread), YC public job pages,<br/>a16z board, 15 Getro VC networks (incl. Solana, Electric Capital, Dragonfly), 5 Consider boards, companies' own ATS boards (30 web3 employers seeded)"] --> merge1["jobsweep merge<br/>dedupe by URL then company+title,<br/>title filter, date window, new-since-last-run"]
     merge1 --> table1["first table shown to the user"]
     table1 --> plan["jobsweep plan<br/>browser tasks for the mode"]
     plan --> browser["Browser lane · parallel Chrome subagents<br/>LinkedIn Jobs · LinkedIn posts · Remote Rocketship ·<br/>Wellfound · YC Work at a Startup (signed in) · Google site: shards (19 ATS + 15 boards)"]
