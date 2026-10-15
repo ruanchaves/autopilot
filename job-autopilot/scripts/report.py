@@ -141,7 +141,25 @@ def source_rows(sweeps: list[dict], role_stats: dict) -> list[dict]:
                 rows.append({"run": s["run"], "source": label, "lane": "browser", "query": "", "status": "not run",
                              "error": "no coverage line: the task was not run (time cap, CAPTCHA or skipped)",
                              "rows_in": 0, "unique": 0, "new": 0, "selected": 0, "rejected": 0, "considered": 0})
+        # HTTP sources in the catalogue that this sweep never fetched: a partial `jobsweep http <ids>` run leaves
+        # HN, YC and the VC boards out silently otherwise (the 2026-10-14 run fetched three sources of 29)
+        if fetched:
+            for label, sid in http_catalogue().items():
+                if label not in seen and sid not in skipped_sources():
+                    rows.append({"run": s["run"], "source": label, "lane": "http", "query": "", "status": "not run",
+                                 "error": "not fetched by this sweep: the HTTP lane was run for a subset of sources",
+                                 "rows_in": 0, "unique": 0, "new": 0, "selected": 0, "rejected": 0, "considered": 0})
+                    seen.add(label)
     return rows
+
+
+def http_catalogue() -> dict[str, str]:
+    """label -> id of every HTTP source in sources.json."""
+    return {src["label"]: src["id"] for src in js.load_catalogue().get("http") or []}
+
+
+def skipped_sources() -> set[str]:
+    return set((userconfig.load().get("sweep") or {}).get("skip_sources") or [])
 
 
 def build(home: str, run: str, batches: int = 14) -> dict:

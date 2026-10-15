@@ -36,6 +36,7 @@ This skill runs job-source-sweep, ranks everything it finds, and prepares applic
 | `autopilot.cover_letter` | `required`: write one when the form requires it or the posting asks for one. `always`: wherever a form accepts one. `target`: `always` for tier A roles, `required` for the rest. `never`. |
 | `autopilot.target_mode` | `prefer` (default): the queue takes tier A first, then B, then C. `only`: tier C roles are left out of the queue (they still show on the dashboard and in the run report). |
 | `autopilot.people_check_limit` | Companies the people check looks at per run (default 100, best candidates first). Their searches go through the search layer (`search:` in config.yaml: the ddgs library in its own virtualenv, `max_queries_per_run` 300). Only companies it can't settle go to Chrome. |
+| `autopilot.skip_company_types` | Company types whose roles are never prepared (default `staff_aug`, `marketplace`, `task_platform`): the staffing, nearshore and marketplace middlemen. `[]` turns the rule off. |
 | `autopilot.max_load_retries` | Type-3 failures before a role is given up. |
 | `autopilot.tailor_ahead` | Tailored CVs kept ready ahead of the fill loop. |
 | `autopilot.tailor` | `true`: tailor the resume per role with the tailor-resume skill. `false`: skip tailoring and upload `resume.pdf` as-is (set by first-run setup when the skill isn't installed). |
@@ -81,7 +82,9 @@ Run `jobsweep config` (the sweep's script) and read `setup_done`. Run this secti
 
 Invoke the **job-source-sweep** skill and follow it through step 8e: HTTP lane, browser lane, merge, JDs, eligibility, fit, and the explorer. Use the user's saved sweep settings unless they say otherwise. Skip its final reply; this skill reports at the end.
 
-**The browser lane always runs.** The sweep's `max_new_roles` stop rule does not apply inside autopilot: the HTTP feeds alone (Himalayas above all) pass any cap within a minute, and stopping there leaves the queue full of one source. So ignore the role cap, run **every** browser task of the configured mode (LinkedIn Jobs, LinkedIn posts, Remote Rocketship, Wellfound and all Google shards) under the mode's page and wall-clock caps, and only record a browser task as a coverage gap for the reasons the sweep itself names: Chrome unavailable, a CAPTCHA or login wall, or the wall-clock cap. The user asked for this on 2026-10-02 after a run that applied only to Himalayas listings.
+**The whole HTTP lane runs, every run.** Run `jobsweep http` with no source ids, so HN Who is hiring, YC, the a16z board, the Getro and Consider VC boards and the companies' own boards are all read. The 2026-10-14 run fetched three sources of 29 and silently lost every direct-hire source; the run report now marks unfetched HTTP sources "not run", and a run that shows any must say so in the reply. The user's goal (2026-10-15) is roles at the companies that pay, found where they post themselves: HN, YC, VC portfolio boards and their own ATS boards, not through staffing or nearshore middlemen.
+
+**The browser lane always runs.** The sweep's `max_new_roles` stop rule does not apply inside autopilot: the HTTP feeds alone (Himalayas above all) pass any cap within a minute, and stopping there leaves the queue full of one source. So ignore the role cap, run **every** browser task of the configured mode (LinkedIn Jobs, LinkedIn posts, Remote Rocketship, Wellfound, YC Work at a Startup and all Google shards) under the mode's page and wall-clock caps, and only record a browser task as a coverage gap for the reasons the sweep itself names: Chrome unavailable, a CAPTCHA or login wall, or the wall-clock cap. The user asked for this on 2026-10-02 after a run that applied only to Himalayas listings. A Work at a Startup login wall means the user has no free account there yet: say so in the report, since that account unlocks about 2,900 YC engineering jobs.
 
 **Skip the sweep's own country check (its step 7 and 8d).** The people check in step 3 replaces it inside the autopilot and runs on the companies that matter most for the target. The HTTP lane already includes the `company_boards` source: companies' own Ashby, Greenhouse, Lever and Workable boards, read through their public APIs, with each posting's own date, location and pay.
 
@@ -102,8 +105,11 @@ Invoke the **job-source-sweep** skill and follow it through step 8e: HTTP lane, 
    Never use LinkedIn's own search (user rule 2026-10-14).
    1. **Fetch.** Run `autopilot people-queue` in the background (`run_in_background`). It takes about 5 seconds per
       query, so 100 companies take up to about 35 minutes. It:
-      - takes up to `people_check_limit` companies (100) with no fresh verdict, ordered by pay: roles posting the
-        target first, then those likely at it, then the best score;
+      - takes up to `people_check_limit` companies (100) with no fresh verdict, ordered: pay at target (posted or
+        likely) first; inside that, companies found on direct-hire sources first (HN, YC, VC portfolio boards,
+        their own ATS boards, Wellfound: `target.DIRECT_SOURCES`), then by exact pay tier and best score. Before
+        2026-10-15 the direct sources were never reached (0 of 55 HN roles had a verdict), so they could never
+        make tier A;
       - fetches each company's search results through the search layer (`companies.Searcher`: ddgs's Yahoo engine,
         Bing's index, paced, cached for 30 days, capped by `search.max_queries_per_run`);
       - writes judge batches of 25.
@@ -124,7 +130,9 @@ Invoke the **job-source-sweep** skill and follow it through step 8e: HTTP lane, 
         Output file: `<out>`. country: `<country>`, region: `<region>`."
       - **When both engines block:** if that subagent reports Google and Yahoo blocked, stop. The rest stays queued.
       - **Afterwards:** run `autopilot people-ingest` again.
-6. Run `autopilot queue --decisions <decisions dir>`.
+6. Run `autopilot queue --decisions <decisions dir>`. Add `--max-age-days N` only when the user asks for a fresher
+   queue; a source's own `window_days` (HN 35, YC 45, a16z 14, company boards 21) always extends the cap for its
+   roles, so an age cap never drops the direct-hire sources the sweep kept on purpose.
 
 **Tiers (`target.py`).** The user's goal is roles paying at least `pay.target_usd_month` at companies that really
 hire outside the US. Every role gets two judgements:
@@ -132,7 +140,8 @@ hire outside the US. Every role gets two judgements:
   `unclear` or `likely_below`, from this evidence, strongest first:
   1. pay the company quoted the user (`recruiters/pay_ceilings.json`);
   2. the median pay of its other engineering postings (scores, boards, the funded-company registry);
-  3. the company type;
+  3. the company type (staffing firms, marketplaces and task platforms are `likely_below` whatever their HQ,
+     since what they post for US placements is not what they quoted the user);
   4. a recent funding round, or a VC/YC board, combined with a senior title.
 
   `paytier-backtest` checks this estimate against roles that did post pay. Its result is shown in the run report.
@@ -167,7 +176,13 @@ The script also skips:
 - companies with any applika application within `company_cooldown_days`;
 - companies that rejected the user within `rejection_cooldown_days`;
 - roles whose posted pay tops out below `pay_skip_below_usd_month`;
-- roles at companies whose own quotes to the user top out below the floor (`pay_gate`).
+- roles at companies whose own quotes to the user top out below the floor (`pay_gate`);
+- **middlemen** (`autopilot.skip_company_types`, default staffing firms, talent marketplaces and task platforms):
+  roles whose company the company-type subagent judged, or whose name gives away, as a staffing, nearshore or
+  marketplace layer between the candidate and the company that pays. They are shown as "not applying" with reason
+  `middleman`. Every such quote to the user was under the floor whatever the posting said
+  (`references/target-tier-research.md`); the user asked on 2026-10-15 to skip them. Consultancies stay in, since
+  they employ their engineers directly. The dashboard "apply" override still forces one through.
 
 **A JD's "US-based only" exclusion is overridden** when the people check found engineers in the candidate's country
 or region: the role is queued, capped at tier B, and the report shows the override. Citizenship, clearance, export

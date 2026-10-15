@@ -124,6 +124,9 @@ DEFAULT_SETTINGS = {
     # companies the people check looks at per run, best first. Searches go through the search layer (ddgs,
     # companies.Searcher; job-source-sweep search.* settings cap the queries); Chrome is only the fallback.
     "people_check_limit": 100,
+    # company types (company_types.json, or the name) whose roles are never prepared: the staffing, nearshore
+    # and marketplace middlemen between the candidate and the company that pays. [] turns the rule off.
+    "skip_company_types": ["staff_aug", "marketplace", "task_platform"],
     # filled in from config.yaml by settings(): banned_companies (current employers/clients, never
     # applied to), pay_target_usd_month / pay_skip_below_usd_month (pay section), and the tracker
     # section (applika_enabled, rejection_cooldown_days, rejection_neutral_feedback,
@@ -248,10 +251,14 @@ LEGAL = re.compile(r"citizen|clearance|green card|itar|export control|authori[sz
                    r"visa|sponsor|permanent resident|legal entity|w-?2 only|ssn", re.I)
 
 
-def apply_decision(parts: dict, st: dict, pt: dict | None = None, people: str | None = None) -> tuple[bool, str, str]:
-    """The model's liberal apply call, the user's pay floor on posted pay, and the pay gate from the company's own
-    quotes. A "US-based only" kind of exclusion is overridden when the people check found engineers in the
+def apply_decision(parts: dict, st: dict, pt: dict | None = None, people: str | None = None,
+                   ctype: dict | None = None) -> tuple[bool, str, str]:
+    """The model's liberal apply call, the user's pay floor on posted pay, the pay gate from the company's own
+    quotes, and the middleman rule (`skip_company_types`: staffing, nearshore and marketplace companies, whatever
+    they post). A "US-based only" kind of exclusion is overridden when the people check found engineers in the
     candidate's country or region (the role is then capped at tier B); legal requirements never are."""
+    if ctype and ctype.get("type") in (st.get("skip_company_types") or []):
+        return False, "middleman", f"company type {ctype.get('detail') or ctype['type']}: a staffing, nearshore or marketplace layer, not the company that pays"
     if parts.get("apply") is False:
         why, evidence = parts.get("skip_reason", ""), parts.get("skip_evidence", "")
         if why == "location_explicit" and people in tg.REGION_OK and not LEGAL.search(evidence):
@@ -283,11 +290,12 @@ def evaluate(home: str, roles: list[dict], st: dict | None = None) -> dict[str, 
         # only verdicts judged with the company's context count (co.METHODS); an older one, which may be a namesake
         # (AZX Lab for AZX), waits for its re-check (people-queue --recheck)
         people = pv.get("level") if pv.get("method") in co.METHODS else None
-        ok, why, evidence = apply_decision(sp, st, pt, people) if sp else (True, "", "")
+        ctype = tg.company_type_of(r, ctx)
+        ok, why, evidence = apply_decision(sp or {}, st, pt, people, ctype) if (sp or ctype["type"] != "unknown") else (True, "", "")
         tier = tg.tier_of(pt["tier"], people)
         if why == "location_overridden" and tier == "A":
             tier = "B"
-        out[r["id"]] = {"score": total_score(sp, cat, target, pt), "pay": pt, "people": people,
+        out[r["id"]] = {"score": total_score(sp, cat, target, pt), "pay": pt, "people": people, "company_type": ctype,
                         "people_evidence": (pv.get("evidence") or [{}])[0] if pv else {}, "people_checked": pv.get("checked", ""),
                         "tier": tier, "tier_reason": tg.tier_reason(pt, people, tier),
                         "ok": ok, "why": why, "evidence": evidence, "elig": cat, "parts": sp}
@@ -667,11 +675,26 @@ def balance_queue(q: list[dict]) -> list[dict]:
     return out
 
 
+_SOURCE_WINDOWS: dict[str, int] = {}
+
+
+def source_window(labels: list[str] | None) -> int:
+    """The longest `window_days` of the role's HTTP sources (sources.json): HN threads, YC boards and company
+    boards keep roles for weeks on purpose, and a queue age cap must not drop what the sweep kept."""
+    if not _SOURCE_WINDOWS:
+        for src in js.load_catalogue().get("http") or []:
+            _SOURCE_WINDOWS[src["label"]] = int(src.get("window_days") or 0)
+        _SOURCE_WINDOWS.setdefault("", 0)
+    return max((_SOURCE_WINDOWS.get(s, 0) for s in labels or []), default=0)
+
+
 def too_old(r: dict, max_age_days: int | None) -> bool:
     """With --max-age-days, a role is left out of this run's queue when its posting date is older
-    than that, or, when it has no posting date, when no sweep inside that window found it."""
+    than that, or, when it has no posting date, when no sweep inside that window found it. A source's
+    own window_days (sources.json) extends the cap for its roles."""
     if not max_age_days:
         return False
+    max_age_days = max(max_age_days, source_window(r.get("sources")))
     cutoff = NOW - timedelta(days=max_age_days)
     parsed, _ = js.parse_date(r.get("posted_iso") or "")
     if parsed:
@@ -692,7 +715,7 @@ def cmd_queue(args) -> int:
     rej = recent_rejections(existing, st)
     apps = recent_applications(existing, st)
     q, skipped = [], {"rejected": 0, "final": 0, "banned": 0, "rejected_company": 0, "in_applika": 0,
-                      "applied_company": 0, "not_worth_applying": 0, "needs_you": 0, "waiting_answers": 0,
+                      "applied_company": 0, "not_worth_applying": 0, "middleman": 0, "needs_you": 0, "waiting_answers": 0,
                       "load_retries": 0, "too_old": 0, "tier_c_only_mode": 0}
     logged = []
     for r in roles:
@@ -741,9 +764,10 @@ def cmd_queue(args) -> int:
             ok, why, evidence = v["ok"], v["why"], v["evidence"]
             if not ok and e.get("override") != "apply":
                 ledger[r["id"]] = {**e, **base, "status": "not_applying", "detail": f"{why}: {evidence}".strip(": ")}
-                skipped["not_worth_applying"] += 1
+                skipped["middleman" if why == "middleman" else "not_worth_applying"] += 1
                 drop(why or "not_worth_applying", evidence,
-                     "script (pay rule)" if why in ("pay_below_target", "pay_gate") else "scoring subagent", "not_applying")
+                     "script (pay rule)" if why in ("pay_below_target", "pay_gate") else
+                     "script (company type)" if why == "middleman" else "scoring subagent", "not_applying")
                 continue
         if dec.get(r["id"]) == "rejected":
             skipped["rejected"] += 1
@@ -1527,7 +1551,10 @@ def cmd_paytier_backtest(args) -> int:
 
 def cmd_people_queue(args) -> int:
     """People-check batches (job-source-sweep/references/people-check.md): companies of roles still worth applying
-    to, target pay first (posted, then likely), then the best score."""
+    to. Order: pay at target (posted or likely) before the rest; inside each band the companies that post on
+    direct-hire sources (HN, YC, VC portfolios, their own boards, Wellfound: target.DIRECT_SOURCES) first, since
+    those are the roles the user wants in tier A; then the exact pay tier, then the best score. Middlemen never
+    get here: evaluate() already marks their roles not worth applying to."""
     st = settings(args.home)
     roles = all_roles(args.home, args.batches)
     ev = evaluate(args.home, roles, st)
@@ -1540,8 +1567,10 @@ def cmd_people_queue(args) -> int:
             continue
         if v["pay"]["tier"] == "posted_below" or is_banned(r["company"], st):
             continue
-        wanted.append({"company": r["company"], "why": f'{v["pay"]["tier"]}: {r["title"]}',
-                       "_rank": (rank.get(v["pay"]["tier"], 5), -(v["score"] or 0))})
+        direct = tg.is_direct_source(r.get("sources"))
+        wanted.append({"company": r["company"], "why": f'{v["pay"]["tier"]}{" (direct source)" if direct else ""}: {r["title"]}',
+                       "_rank": (0 if v["pay"]["tier"] in tg.PAY_OK else 1, 0 if direct else 1,
+                                 rank.get(v["pay"]["tier"], 5), -(v["score"] or 0))})
     wanted.sort(key=lambda w: w["_rank"])
     limit = args.limit or (int(st["people_check_limit"]) if args.mode == "search" else 10)
     res = co.people_queue(args.home, wanted, limit, work_dir(args.home), mode=args.mode, recheck=args.recheck)

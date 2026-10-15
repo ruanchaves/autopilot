@@ -154,6 +154,40 @@ The page is a list of **company cards** (about 20 per page), each holding one or
 - Paginate with `?page=2`, `?page=3` and so on, up to the page cap (3 in standard mode, 6 in full). Stop earlier when a page adds no new in-window rows.
 - Never click Apply or Save, and never change the "Show me" filters; the URL already encodes the role.
 
+## yc_waas
+
+Y Combinator's Work at a Startup search (`workatastartup.com/jobs?role=eng&query=...&remote=yes&sortBy=created_desc`) is client-rendered behind a free account: a guest gets 30 fixed cards, the same whatever the query, and a banner such as "2,897 more roles behind a free account. Sign up to see more". The HTTP source `yc_jobs` already reads those public samples, so this task is only worth running signed in. If the header shows "Log in" / "Sign up" or that banner, record `login wall` and stop the task without signing up; the run report then tells the user that a free Work at a Startup account unlocks the search.
+
+Signed in, the page is a grid of **job cards**, each an anchor to `/jobs/<numeric id>`. Wait about 5 seconds after navigation, then run:
+
+```js
+(() => {
+  const rows = [];
+  document.querySelectorAll('a.group[href^="/jobs/"]').forEach((card) => {
+    const href = (card.getAttribute('href') || '').split('?')[0];
+    if (!/^\/jobs\/\d+$/.test(href)) return;
+    const ps = card.querySelectorAll('p');
+    const meta = (card.querySelector('h3 + p') || ps[ps.length - 1] || {}).innerText || '';
+    const parts = meta.split('·').map((s) => s.trim());
+    rows.push({ path: href, title: ((card.querySelector('h3') || {}).innerText || '').trim(),
+      company: ((ps[0] || {}).innerText || '').trim(), jobtype: parts[0] || '',
+      location: parts.slice(1).filter((x) => !/^\$/.test(x)).join(' · '),
+      pay: (meta.match(/\$[\d.,]+[kK]?(?:\s*-\s*\$?[\d.,]+[kK]?)?/) || [''])[0],
+      remote: /remote/i.test(meta) ? 'Remote' : '' });
+  });
+  const seen = (window.__jwSeen = window.__jwSeen || new Set());
+  const fresh = rows.filter((r) => r.title && !seen.has(r.path));
+  fresh.forEach((r) => seen.add(r.path));
+  return JSON.stringify({ cards: rows.length, total_seen: seen.size, new: fresh });
+})();
+```
+
+- Row fields: `source` `yc_waas`, `source_label` `YC Work at a Startup`, `url` = `https://www.workatastartup.com` + `path`, `company`, `location` (with `jobtype` prepended when it isn't "Full-time", for example `Contract · Remote (US)`), `compensation` = `pay`, `signal` = `YC`. Cards show no posting date: leave `posted` empty, and `merge` keeps rows with no date.
+- The snippet was written against the guest page (2026-10-15); the signed-in grid is expected to use the same cards. If it returns 0 on a page that clearly lists jobs, take one screenshot of your own tab, adjust the card selector, and note the change in your final line.
+- Guests can't filter: drop rows whose `remote` is empty yourself when the profile is remote-only. Signed in, the URL's `remote=yes` already filters.
+- More results load by scrolling (real wheel events through the `computer` tool), 30 cards at a time. Stop when 2 scrolls add no new rows or the page cap is reached (3 scrolls in standard mode, 6 in full).
+- Never click Apply, Save, "Interested" or the AI search box; the URL already encodes the query.
+
 ## google_shard
 
 Each task is one Google query across several ATS hosts or job boards, already restricted to the date window with `tbs=cdr`. Results from different hosts are interleaved, and each hosts about 10 organic results per page.

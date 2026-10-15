@@ -52,20 +52,27 @@ COMPANY_TYPES = ("funded_startup", "product_company", "big_company", "staff_aug"
 # references/target-tier-research.md). Share of roles posting >= $10k/month:
 #   US/Canada HQ: funded startup 95%, big company 91%, product company 94%, consultancy 94%, staffing 100%, task platform 14%
 #   elsewhere:    funded startup 82%, big company 62%, product company 0% (n=4), consultancy 0%, staffing 20%
-# US staffing firms and consultancies post US salaries for US placements, while their quotes to the user for remote
-# LATAM work were under the floor (recruiter-outreach/references/pay-tier-research.md), so they stay "unclear";
-# marketplaces post "up to" ranges they don't pay the user (micro1: $130-160k posted, $7.5k quoted).
+# US staffing firms post US salaries for US placements, while every quote to the user for remote LATAM work, from
+# staffing firms, nearshore agencies and marketplaces alike, was under the floor (recruiter-outreach/references/
+# pay-tier-research.md; marketplaces post "up to" ranges they don't pay the user: micro1 $130-160k posted, $7.5k
+# quoted). What they post is therefore not what they'd pay this candidate, so the middleman types are
+# `likely_below` whatever the HQ (2026-10-15; before that US-HQ ones were "unclear" and reached tier B). US
+# consultancies employ their engineers directly, so they stay "unclear".
 HIGH_PAY_HQ = {"united states", "usa", "us", "u.s.", "united states of america", "canada"}
+MIDDLEMAN_TYPES = ("staff_aug", "marketplace", "task_platform")
 TYPE_PAY = {  # (type, US/Canada HQ?) -> tier
     ("funded_startup", True): "likely_target", ("funded_startup", False): "likely_target",
     ("big_company", True): "likely_target", ("big_company", False): "unclear",
     ("product_company", True): "likely_target", ("product_company", False): "likely_below",
     ("consultancy", True): "unclear", ("consultancy", False): "likely_below",
-    ("staff_aug", True): "unclear", ("staff_aug", False): "likely_below",
-    ("marketplace", True): "unclear", ("marketplace", False): "unclear",
+    ("staff_aug", True): "likely_below", ("staff_aug", False): "likely_below",
+    ("marketplace", True): "likely_below", ("marketplace", False): "likely_below",
     ("task_platform", True): "likely_below", ("task_platform", False): "likely_below",
     ("local_company", True): "likely_below", ("local_company", False): "likely_below",
 }
+# Sources where the poster is the hiring company itself, with no staffing or marketplace layer in between: the
+# people check takes their companies first (autopilot people-queue), since the user's goal is direct hires.
+DIRECT_SOURCES = re.compile(r"HN Who is hiring|Work at a Startup|portfolio|Company job boards|Wellfound", re.I)
 
 
 def type_pay(ctype: str, hq: str) -> str:
@@ -176,6 +183,24 @@ def pay_tier(role: dict, sp: dict | None, ctx: dict, use_posted: bool = True) ->
         why = f"funding round {rnd}" if rnd and rnd != "portfolio" else "VC/YC portfolio" if (vc or rnd) else ""
         return {"tier": "likely_target", "source": "funding + seniority", "detail": f"{why}, senior title"}
     return {"tier": "unclear", "source": "", "detail": "no posted pay and no evidence either way"}
+
+
+def company_type_of(role: dict, ctx: dict) -> dict:
+    """{type, confidence, detail} for the role's company: the company-type subagent's judgement when it isn't a
+    guess, else the type its name gives away (companies.name_type), else unknown."""
+    company = role.get("company", "")
+    t = ctx["types"].get(norm(company)) or {}
+    if t.get("type") and t.get("confidence") != "guess":
+        detail = f"{t['type'].replace('_', ' ')}" + (f": {t['evidence']}" if t.get("evidence") else "")
+        return {"type": t["type"], "confidence": t.get("confidence", ""), "detail": detail}
+    by_name = co.name_type(company)
+    if by_name:
+        return {"type": by_name, "confidence": "name", "detail": f"{by_name.replace('_', ' ')} (from the company name)"}
+    return {"type": t.get("type") or "unknown", "confidence": t.get("confidence", ""), "detail": ""}
+
+
+def is_direct_source(labels: list[str] | None) -> bool:
+    return any(DIRECT_SOURCES.search(s or "") for s in labels or [])
 
 
 def pay_points(pt: dict) -> int:

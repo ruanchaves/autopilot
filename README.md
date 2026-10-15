@@ -114,10 +114,10 @@ flowchart TD
     setup -- yes --> ask["interactive setup<br/>→ edits config.yaml"] --> http
     setup -- no --> http
 
-    http["HTTP lane · jobsweep http<br/>Himalayas, Remote OK, Jobgether, Working Nomads, Remotive,<br/>We Work Remotely, NoDesk, HN Who is hiring, YC jobs,<br/>12 Getro VC networks, 5 Consider boards"] --> merge1["jobsweep merge<br/>dedupe by URL then company+title,<br/>title filter, date window, new-since-last-run"]
+    http["HTTP lane · jobsweep http<br/>Himalayas, Remote OK, Jobgether, Working Nomads, Remotive,<br/>We Work Remotely, NoDesk, HN Who is hiring (whole thread), YC public job pages,<br/>a16z board, 12 Getro VC networks, 5 Consider boards, companies' own ATS boards"] --> merge1["jobsweep merge<br/>dedupe by URL then company+title,<br/>title filter, date window, new-since-last-run"]
     merge1 --> table1["first table shown to the user"]
     table1 --> plan["jobsweep plan<br/>browser tasks for the mode"]
-    plan --> browser["Browser lane · parallel Chrome subagents<br/>LinkedIn Jobs · LinkedIn posts · Remote Rocketship ·<br/>Wellfound · Google site: shards (19 ATS + 15 boards)"]
+    plan --> browser["Browser lane · parallel Chrome subagents<br/>LinkedIn Jobs · LinkedIn posts · Remote Rocketship ·<br/>Wellfound · YC Work at a Startup (signed in) · Google site: shards (19 ATS + 15 boards)"]
     browser --> merge2["jobsweep merge after each subagent"]
     merge2 --> stop{"wall-clock cap or<br/>max_new_roles reached?"}
     stop -- no --> browser
@@ -139,7 +139,7 @@ flowchart TD
 | Mode | Browser tasks | Caps | Time |
 |---|---|---|---|
 | `quick` | none | | ~1 min |
-| `standard` | LinkedIn Jobs and posts (first keyword), Rocketship, Wellfound, each Google shard with its first query | 2 pages per task, 2 SERPs per shard | ~20 min |
+| `standard` | LinkedIn Jobs and posts (first keyword), Rocketship, Wellfound, Work at a Startup (first query), each Google shard with its first query | 2 pages per task, 2 SERPs per shard | ~20 min |
 | `full` | every task in `plan.json` | 5 pages, 5 SERPs | ~60 min |
 
 **Role profiles.** `profiles/<slug>.json` holds the include and exclude regexes, the API and Google phrasings, and per-source options for one role. `_template.json` documents every field; `ai-engineer.json` is a worked example. Profiles created for you go to `<home>/profiles/` and take precedence. `jobsweep test-match` shows which titles a profile keeps and drops.

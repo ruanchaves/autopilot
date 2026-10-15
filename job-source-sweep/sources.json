@@ -132,17 +132,35 @@
       "threads": 2,
       "pages": 3,
       "min_interval": 1,
-      "_note": "Top-level comments of the newest 'Ask HN: Who is hiring?' threads via the public Algolia API. The first line 'Company | Role | Location | REMOTE' becomes company/title/location; url is the HN item, apply_url the first link in the post."
+      "_note": "Top-level comments of the newest 'Ask HN: Who is hiring?' threads via the public Algolia API. The first line is conventionally 'Company | Role | Location | REMOTE | ...'. Posts land all month long (2026-10-15: 2 of 179 on-role posts were inside a 2-day window, 90 inside 30 days), so the source keeps its own window_days; merge honours it and the autopilot queue never drops a role inside it.",
+      "window_days": 35
     },
     {
       "id": "yc_jobs",
       "label": "YC Work at a Startup",
       "kind": "yc",
-      "url": "https://www.ycombinator.com/jobs",
-      "role": "eng",
-      "pages": 3,
+      "url": "https://www.ycombinator.com",
+      "pages": [
+        "/jobs?role=eng&remote=yes",
+        "/jobs/role/software-engineer",
+        "/jobs/role/software-engineer/remote",
+        "/jobs/role/ai-engineer",
+        "/jobs/role/machine-learning-engineer",
+        "/jobs/location/remote"
+      ],
+      "waas": "https://www.workatastartup.com/jobs?role=eng&remote=yes",
+      "window_days": 45,
       "min_interval": 1,
-      "_note": "ycombinator.com/jobs is public and embeds the Work at a Startup results as Inertia data-page JSON (20 per page; query= and remote=yes work). The job url points at workatastartup.com."
+      "_note": "Public pages that embed Work at a Startup postings as Inertia data-page JSON. Checked 2026-10-15: ycombinator.com/jobs ignores query, page and remote and always embeds the same 20 featured jobs; each /jobs/role/<slug>[/remote] page embeds a fixed sample of ~30; the anonymous workatastartup.com/jobs page 30 more (no dates). The fetcher merges all of them. The full search (~2,900 engineering jobs) is behind a free Work at a Startup account: browser task yc_waas (plan.json) in the user's signed-in Chrome. YC postings stay open for months, hence window_days."
+    },
+    {
+      "id": "a16z_jobs",
+      "label": "Andreessen Horowitz portfolio",
+      "kind": "a16z",
+      "url": "https://jobs.a16z.com",
+      "min_interval": 2,
+      "_note": "jobs.a16z.com is server-rendered (18,000+ portfolio jobs): one search per api_query, 25 results by relevance, each card with the posting's own date, location, pay and the company's ATS apply link. Checked 2026-10-15: no page parameter works (start/p return mostly the same 25). Results are by relevance, not date, so a 2-day window keeps only a handful: window_days keeps the recent fortnight and new-since-last-run marks the rest.",
+      "window_days": 14
     },
     {
       "id": "company_boards",
@@ -577,9 +595,10 @@
   "_unreachable": {
     "_comment": "Checked 2026-10-01. Not sweepable without a browser or at all; listed so nobody re-adds them as HTTP sources.",
     "wellfound.com": "job search needs a signed-in session and is rendered client-side; it is a browser task (plan task 'wellfound').",
-    "jobs.a16z.com, jobs.greylock.com, speedrun-talent-network.com": "custom job sites without a JSON endpoint; Google rarely indexes their postings.",
     "jobs.foundersfund.com, jobs.nea.com, jobs.radical.vc, jobs.monashees.com": "no such hosts.",
     "jobs.indexventures.com": "TLS certificate mismatch.",
-    "hiring.cafe": "403 for non-browser clients."
+    "hiring.cafe": "403 for non-browser clients.",
+    "jobs.greylock.com, speedrun-talent-network.com": "custom job sites without a JSON endpoint; Greylock's search ignores the query and its cards carry no data (2026-10-15).",
+    "workatastartup.com (search)": "the signed-in search is client-rendered behind a free account; guests get 30 fixed cards. Browser task yc_waas; the HTTP source yc_jobs reads the public samples."
   }
 }

@@ -90,7 +90,8 @@ CONFIG_DEFAULTS = {
     "explorer_url": "",
 }
 BROWSER_TASKS = {"linkedin_jobs": "LinkedIn Jobs search", "linkedin_posts": "LinkedIn hiring posts",
-                 "rocketship": "Remote Rocketship", "wellfound": "Wellfound (signed-in Chrome)"}
+                 "rocketship": "Remote Rocketship", "wellfound": "Wellfound (signed-in Chrome)",
+                 "yc_waas": "YC Work at a Startup search (signed-in Chrome)"}
 
 
 def config_path(home: str) -> Path:
@@ -538,41 +539,104 @@ def fetch_hn(f: Fetcher, src: dict, profile: dict, cat: dict) -> list[dict]:
     return out
 
 
+def _inertia_props(body: str) -> dict:
+    m = re.search(r'data-page="([^"]+)"', body)
+    if not m:
+        raise SourceError("no data-page JSON on the page; the site changed")
+    return json.loads(html.unescape(m.group(1))).get("props") or {}
+
+
 def fetch_yc(f: Fetcher, src: dict, profile: dict, cat: dict) -> list[dict]:
-    """Y Combinator's public jobs page (Work at a Startup data), read from its Inertia data-page JSON."""
+    """Y Combinator postings from the public pages that embed Work at a Startup data as Inertia JSON.
+
+    Checked 2026-10-15: ycombinator.com/jobs ignores its query, page and remote parameters and always embeds the
+    same 20 featured jobs, each /jobs/role/<slug>[/remote] page a fixed sample of about 30, and the anonymous
+    workatastartup.com/jobs page 30 more. So this reads a fixed list of pages (`pages`, relative to `url`, plus
+    `waas`) and merges them; the full search of the ~3,000 engineering jobs needs the user's signed-in session,
+    which is the browser task `yc_waas`. YC postings stay open for months, hence `window_days`."""
+    base = src["url"].rstrip("/")
+    gap = src.get("min_interval", 1)
+    seen, out = set(), []
+    for page in src.get("pages") or ["/jobs?role=eng&remote=yes"]:
+        body = f.get(base + page, interval=gap, headers={"Accept": "text/html"})
+        jobs = _inertia_props(body).get("jobPostings")
+        if not isinstance(jobs, list):
+            raise SourceError("props.jobPostings missing; the page shape changed")
+        for j in jobs:
+            path = j.get("url") or ""
+            if not path or path in seen:
+                continue
+            seen.add(path)
+            age = re.sub(r"(?i)^(about|over|almost|less than)\s+", "", (j.get("createdAt") or "").strip())
+            posted = age if (not age or age.endswith("ago")) else f"{age} ago"
+            batch = j.get("companyBatchName") or ""
+            out.append(row(src, j.get("title"), j.get("companyName"), j.get("location"), posted,
+                           "https://www.workatastartup.com" + path,
+                           compensation=text_of(j.get("salaryRange")), signal=f"YC {batch}".strip()))
+    if src.get("waas"):
+        body = f.get(src["waas"], interval=gap, headers={"Accept": "text/html"})
+        for j in _inertia_props(body).get("jobs") or []:
+            jid = j.get("id")
+            path = f"/jobs/{jid}" if jid else ""
+            if not path or path in seen:
+                continue
+            seen.add(path)
+            batch = j.get("companyBatch") or ""
+            out.append(row(src, j.get("title"), j.get("companyName"), j.get("location"), "",
+                           "https://www.workatastartup.com" + path,
+                           compensation=text_of(j.get("salary")), signal=f"YC {batch}".strip()))
+    return out
+
+
+_A16Z_ARTICLE = re.compile(r"<article\b.*?</article>", re.S)
+_A16Z_COMPANY = re.compile(r'href="/jobs/([^/"]+)"[^>]*>([^<]+)</a>')
+_A16Z_TITLE = re.compile(r'<h2[^>]*>\s*<a[^>]+href="(/jobs/[^"]+)"[^>]*>(.*?)</a>', re.S)
+_A16Z_TIME = re.compile(r'<time[^>]+dateTime="([^"]+)"')
+_A16Z_PAY = re.compile(r"(\$[\d.,]+[KkMm]?\s*[–-]\s*\$[\d.,]+[KkMm]?|\$[\d.,]+[KkMm]?)")
+_A16Z_META = re.compile(r'<div class="mt-1.5 flex flex-wrap[^"]*">(.*?)</div>', re.S)
+_A16Z_APPLY = re.compile(r'<a href="(https?://[^"]+)"[^>]*target="_blank"[^>]*>.*?Apply', re.S)
+
+
+def fetch_a16z(f: Fetcher, src: dict, profile: dict, cat: dict) -> list[dict]:
+    """Andreessen Horowitz's portfolio job board (jobs.a16z.com), server-rendered: one search per api_query, 25
+    results by relevance (checked 2026-10-15: no working page parameter; `start` and `p` return mostly the same
+    25). Each card carries the posting's own date, location, pay and the company's ATS apply link."""
     queries = profile.get("api_queries") or [profile["role"]]
     queries = queries[: profile.get("_api_query_limit") or len(queries)]
-    remote = (profile.get("linkedin") or {}).get("remote", True)
+    base = src["url"].rstrip("/")
     seen, out = set(), []
     for query in queries:
-        for page in range(1, int(src.get("pages", 3)) + 1):
-            params = {"role": src.get("role", "eng"), "query": query, "page": page}
-            if remote:
-                params["remote"] = "yes"
-            body = f.get(src["url"] + "?" + urllib.parse.urlencode(params), interval=src.get("min_interval", 1),
-                         headers={"Accept": "text/html"})
-            m = re.search(r'data-page="([^"]+)"', body)
-            if not m:
-                raise SourceError("no data-page JSON on the page; the site changed")
-            jobs = dig(json.loads(html.unescape(m.group(1))), "props.jobPostings")
-            if not isinstance(jobs, list):
-                raise SourceError("props.jobPostings missing; the page shape changed")
-            fresh = 0
-            for j in jobs:
-                path = j.get("url") or ""
-                if not path or path in seen:
-                    continue
-                seen.add(path)
-                fresh += 1
-                age = re.sub(r"(?i)^(about|over|almost|less than)\s+", "", (j.get("createdAt") or "").strip())
-                posted = age if (not age or age.endswith("ago")) else f"{age} ago"
-                batch = j.get("companyBatchName") or ""
-                out.append(row(src, j.get("title"), j.get("companyName"), j.get("location"), posted,
-                               "https://www.workatastartup.com" + path,
-                               compensation=text_of(j.get("salaryRange")),
-                               signal=f"YC {batch}".strip()))
-            if len(jobs) < 20 or not fresh:
-                break
+        body = f.get(f"{base}/jobs?" + urllib.parse.urlencode({"q": query}), interval=src.get("min_interval", 2),
+                     headers={"Accept": "text/html"})
+        articles = _A16Z_ARTICLE.findall(body)
+        if not articles and "<article" not in body:
+            raise SourceError("no job cards on the page; the site changed")
+        for art in articles:
+            t = _A16Z_TITLE.search(art)
+            if not t:
+                continue
+            path, title = t.group(1), re.sub(r"<[^>]+>", "", t.group(2))
+            if path in seen:
+                continue
+            seen.add(path)
+            c = _A16Z_COMPANY.search(art)
+            company = html.unescape(c.group(2)) if c else path.split("/")[2].replace("-", " ").title()
+            when = _A16Z_TIME.search(art)
+            # the first meta line is "pay • Offers Equity · location · Posted N days ago", any part optional; a long
+            # location is cut with "…" and carried in full in the span's title attribute
+            meta = _A16Z_META.search(art)
+            parts = [re.sub(r"\s+", " ", x).strip() for x in re.sub(r"<[^>]+>", " ", meta.group(1)).split("·")] if meta else []
+            pay = next((m.group(1) for m in map(_A16Z_PAY.search, parts) if m), "")
+            loc = next((x for x in parts if x and not x.startswith("$") and not x.lower().startswith("posted")), "")
+            full = re.search(r'<span title="([^"]+)">', meta.group(1)) if meta else None
+            if full and "…" in loc:
+                loc = full.group(1)
+            apply_link = _A16Z_APPLY.search(art)
+            out.append(row(src, html.unescape(title), company, html.unescape(loc),
+                           when.group(1) if when else "", base + path,
+                           compensation=pay,
+                           apply_url=html.unescape(apply_link.group(1)) if apply_link else "",
+                           signal="a16z portfolio"))
     return out
 
 
@@ -598,7 +662,7 @@ def fetch_company_boards(f: Fetcher, src: dict, profile: dict, cat: dict) -> lis
 
 
 ADAPTERS = {"json": fetch_json, "rss": fetch_rss, "getro": fetch_getro, "consider": fetch_consider,
-            "hn": fetch_hn, "yc": fetch_yc, "boards": fetch_company_boards}
+            "hn": fetch_hn, "yc": fetch_yc, "a16z": fetch_a16z, "boards": fetch_company_boards}
 
 
 def sweep(cat: dict, profile: dict, ids: list[str] | None):
@@ -729,6 +793,15 @@ def wellfound_roles(profile: dict) -> list[str]:
     return (block or {}).get("roles") or [re.sub(r"[^a-z0-9]+", "-", profile["role"].lower()).strip("-")]
 
 
+def yc_waas_queries(profile: dict) -> list[str]:
+    """Search phrasings for the Work at a Startup browser task: the profile's `yc_waas.queries`, else the first
+    two api_queries. An explicit empty list turns the task off."""
+    block = profile.get("yc_waas")
+    if block is not None and not block.get("queries", True):
+        return []
+    return (block or {}).get("queries") or (profile.get("api_queries") or [profile["role"]])[:2]
+
+
 def cmd_plan(args) -> int:
     cat, profile = load_catalogue(), load_profile(args.profile, args.home)
     start, end = window(args.days)
@@ -753,6 +826,14 @@ def cmd_plan(args) -> int:
     for slug in wellfound_roles(profile):
         tasks.append({"task": "wellfound", "label": f"Wellfound: {slug}",
                       "url": f"https://wellfound.com/role/{'r/' if remote else ''}{slug}"})
+    for query in yc_waas_queries(profile):
+        # Work at a Startup's real search (about 3,000 engineering jobs) needs the user's signed-in session; the
+        # public pages the HTTP source `yc_jobs` reads embed only fixed samples.
+        params = {"role": "eng", "query": query, "sortBy": "created_desc"}
+        if remote:
+            params["remote"] = "yes"
+        tasks.append({"task": "yc_waas", "label": f"YC Work at a Startup: {query}",
+                      "url": "https://www.workatastartup.com/jobs?" + urllib.parse.urlencode(params)})
     tasks = [t for t in tasks if t["task"] not in skip_tasks]
     for shard in cat["google_shards"]:
         hosts = [h for h in shard["hosts"] if h["site"] not in skip_hosts]
