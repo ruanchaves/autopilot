@@ -139,7 +139,7 @@ flowchart TD
 | Mode | Browser tasks | Caps | Time |
 |---|---|---|---|
 | `quick` | none | | ~1 min |
-| `standard` | LinkedIn Jobs and posts (first keyword), Rocketship, Wellfound, Work at a Startup (first query), each Google shard with its first query | 2 pages per task, 2 SERPs per shard | ~20 min |
+| `standard` | LinkedIn Jobs (first keyword, every location) and posts (first keyword), Rocketship, Wellfound, Work at a Startup (first query), each Google shard with its first query | 2 pages per task, 2 SERPs per shard | ~20 min |
 | `full` | every task in `plan.json` | 5 pages, 5 SERPs | ~60 min |
 
 **Role profiles.** `profiles/<slug>.json` holds the include and exclude regexes, the API and Google phrasings, and per-source options for one role. `_template.json` documents every field; `ai-engineer.json` is a worked example. Profiles created for you go to `<home>/profiles/` and take precedence. `jobsweep test-match` shows which titles a profile keeps and drops.

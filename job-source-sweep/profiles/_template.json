@@ -8,6 +8,7 @@
     "linkedin.jobs_keywords": "LinkedIn Jobs keyword searches (one browser pass each).",
     "linkedin.posts_keywords": "LinkedIn post searches for people announcing openings.",
     "linkedin.location": "Optional LinkedIn location text, e.g. 'United States' or 'Brazil'. Omit for worldwide.",
+    "linkedin.locations": "Optional list of LinkedIn locations, one Jobs search per keyword per location, e.g. ['United States', 'Brazil', 'Mexico', 'Colombia', 'Argentina']. Overrides `location`. Name countries, not regions: 'Latin America' is not a reliable LinkedIn location. An entry can also be {\"location\": ..., \"geoId\": ...}; '' means no location.",
     "rocketship.titles": "Remote Rocketship job-title taxonomy values (must match their dropdown wording). Omit the block to skip Rocketship.",
     "include": "Case-insensitive regexes; a title must match at least one. This is the ONLY filter on feeds that ignore search terms, so make it cover every synonym and abbreviation.",
     "exclude": "Case-insensitive regexes; any match drops the title. Start from the noise list below and add seniority/management terms only if they are unwanted.",

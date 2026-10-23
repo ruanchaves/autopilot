@@ -805,15 +805,35 @@ def google_url(query: str, hosts: list[dict], start: datetime, end: datetime) ->
             + "&tbs=" + urllib.parse.quote_plus(tbs))
 
 
-def linkedin_jobs_url(profile: dict, keywords: str, days: float) -> str:
+def linkedin_locations(profile: dict) -> list[dict]:
+    """LinkedIn Jobs location variants, one search each: `linkedin.locations` (location text, or
+    {"location", "geoId"}), else the single `location` / `geoId`, else one search with no location. A region name
+    such as "Latin America" is not a reliable LinkedIn location, so a region is covered one country at a time
+    (Brazil, Mexico, ...); the same posting found under two locations merges on its /jobs/view/<id>/ URL."""
+    li = profile.get("linkedin") or {}
+    raw = li.get("locations")
+    if not raw:
+        raw = [{"location": li.get("location") or "", "geoId": li.get("geoId") or ""}]
+    out, seen = [], set()
+    for v in raw:
+        v = {"location": v} if isinstance(v, str) else v
+        loc, geo = (v.get("location") or "").strip(), str(v.get("geoId") or "").strip()
+        if (loc.casefold(), geo) not in seen:
+            seen.add((loc.casefold(), geo))
+            out.append({"location": loc, "geoId": geo})
+    return out
+
+
+def linkedin_jobs_url(profile: dict, keywords: str, days: float, where: dict | None = None) -> str:
     params = {"keywords": keywords, "f_TPR": f"r{int((days) * 86400)}", "sortBy": "DD"}
     li = profile.get("linkedin") or {}
     if li.get("remote", True):
         params["f_WT"] = "2"
-    if li.get("location"):
-        params["location"] = li["location"]
-    if li.get("geoId"):
-        params["geoId"] = li["geoId"]
+    where = where if where is not None else linkedin_locations(profile)[0]
+    if where.get("location"):
+        params["location"] = where["location"]
+    if where.get("geoId"):
+        params["geoId"] = where["geoId"]
     return "https://www.linkedin.com/jobs/search/?" + urllib.parse.urlencode(params)
 
 
@@ -864,8 +884,10 @@ def cmd_plan(args) -> int:
     remote = li.get("remote", True)
     tasks = []
     for kw in li.get("jobs_keywords") or [profile["role"]]:
-        tasks.append({"task": "linkedin_jobs", "label": f"LinkedIn Jobs: {kw}",
-                      "url": linkedin_jobs_url(profile, kw, args.days)})
+        for where in linkedin_locations(profile):
+            at = f" @ {where['location']}" if where["location"] else ""
+            tasks.append({"task": "linkedin_jobs", "label": f"LinkedIn Jobs: {kw}{at}", "keyword": kw,
+                          "location": where["location"], "url": linkedin_jobs_url(profile, kw, args.days, where)})
     for kw in li.get("posts_keywords") or [f"{profile['role']} hiring"]:
         if not remote:
             kw = re.sub(r"\s*\bremote\b", "", kw).strip()

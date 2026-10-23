@@ -37,7 +37,7 @@ The browser lane is where a sweep loses its time and tokens. Every tool result s
 
 ## linkedin_jobs
 
-The URL is already filtered to remote, the age window and newest first. Cards are virtualised: only about 7 of 25 render at first, and cards scrolled off-screen are emptied.
+The URL is already filtered to remote, the age window, newest first and the task's `location` (the profile runs one search per location: the United States plus one per country of the candidate's region, since a region name is not a reliable LinkedIn location). The location only picks which postings LinkedIn lists; it is not eligibility evidence, so don't copy it into `eligibility`. Cards are virtualised: only about 7 of 25 render at first, and cards scrolled off-screen are emptied.
 
 For each page: wait about 5 seconds, run the snippet, scroll the left list one wheel step, wait about 2 seconds, and run it again. Repeat until the `cards` count stops rising. Deduplicate on `job_id`.
 
