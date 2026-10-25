@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import hashlib
 import re
 import sys
 from collections import Counter
@@ -174,6 +175,12 @@ def eligibility(cand: dict, *texts: str) -> str:
 def post_key(url: str) -> str:
     m = re.search(r"urn:li:(activity|share|ugcPost):(\d+)", url or "")
     return f"{m[1]}:{m[2]}" if m else (url or "").strip().lower().rstrip("/")
+
+
+def text_key(who: str, text: str) -> str:
+    """Fallback post key when the search card exposed no post URL: the author plus a hash of the text."""
+    norm = re.sub(r"s+", " ", (text or "").strip().lower())[:300]
+    return f"{who}#text:{hashlib.sha1(norm.encode('utf-8')).hexdigest()[:12]}" if norm else ""
 
 
 def post_age_days(posted: str) -> int | None:
@@ -345,7 +352,8 @@ def cmd_ingest(args) -> int:
         if el == "unclear" and p.get("region_text"):
             el = eligibility(st["candidate"], p.get("region_text", ""))
         company = (p.get("company") or p.get("author_company") or "").strip()
-        post = {"key": post_key(p.get("url", "")), "url": p.get("url", ""), "posted": p.get("posted", ""),
+        key = post_key(p.get("url", "")) or text_key(who, text)  # cards without a post link: author + text
+        post = {"key": key, "url": p.get("url", ""), "posted": p.get("posted", ""),
                 "age_days": post_age_days(p.get("posted", "")), "roles": p.get("roles") or [], "company": company,
                 "pay_text": p.get("pay_text", ""), "pay_usd_month": pay, "pay_basis": basis,
                 "region_text": p.get("region_text", ""), "eligibility": el, "excerpt": text[:700],
