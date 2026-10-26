@@ -13,6 +13,7 @@ the leads still waiting for a judgement and `origin` stores the answers (names.p
     hiringposts.py origin       --result FILE        # the judge's countries -> leads.json, re-ranked
     hiringposts.py plan         [--n 40]             # today's tasks for the sender, best first, within the shared caps
     hiringposts.py check        --kind connect|inmail|message --profile URL [--company C]   # shared with recruiter-outreach
+    hiringposts.py lint         --kind connect|inmail|message --text "..." [--subject S]    # pre-send check: slop, asks, template reuse
     hiringposts.py record       --result FILE        # the sender's result: shared contacts.json + pacing + own statuses
     hiringposts.py status
 
@@ -525,12 +526,129 @@ def cmd_plan(args) -> int:
            "resume": str(js.fix_path((cfg.get("resume") or {}).get("base", ""))),
            "contacts_file": str(rc.rc_dir(args.home) / "contacts.json"),
            "message_reference": str(HERE.parents[1] / "references" / "message.md"),
+           "review_reference": str(HERE.parents[1] / "references" / "review.md"),
            "result": str(work_dir(args.home) / f"outreach-{NOW.strftime('%H%M%S')}.json")}
     path = work_dir(args.home) / f"plan-{NOW.strftime('%H%M%S')}.json"
     enrich.write_json(path, out, indent=1)
     return rc.emit({**{k: v for k, v in out.items() if k != "tasks"}, "task_file": str(path), "tasks_count": len(tasks),
                     "tasks_preview": [f"{t['degree'] or '?'} {t['name']} ({t['company'] or '-'}) ${t['rank']['pay_usd_month'] or 0:,} {t['rank']['eligibility']}"
                                       for t in tasks[:12]]})
+
+
+# ------------------------------------------------------------------ pre-send lint (references/review.md)
+
+LIMITS = {"connect": (300, 220), "inmail": (500, 400), "message": (500, 400)}   # (hard cap, comfortable length)
+
+# literal phrases that mark a generated or mass-sent note; each one fails the draft
+SLOP = [r"hope (this|you)('re| are| find|.{0,12}finds)", r"i came across", r"i('m| am) reaching out", r"reach out to you",
+        r"i wanted to (connect|reach|introduce)", r"i noticed (that|your)", r"i('m| am) (excited|thrilled|eager)",
+        r"i('d| would) love to", r"would be a (great|good|strong|perfect) fit", r"great fit", r"align(s|ed)? with",
+        r"resonat", r"leverag", r"synerg", r"cutting[- ]edge", r"state[- ]of[- ]the[- ]art", r"passionate", r"proven track record",
+        r"results[- ]driven", r"fast[- ]paced", r"wealth of experience", r"extensive experience", r"skill ?set", r"add value",
+        r"bring to the table", r"journey", r"landscape", r"elevate", r"empower", r"unlock", r"delve", r"spearhead", r"tailored",
+        r"impactful", r"innovative", r"dynamic", r"robust", r"seamless", r"highly motivated", r"self[- ]starter", r"team player",
+        r"i admire", r"love what you('re| are)", r"impressive", r"humbled", r"touch base", r"circle back", r"looking forward to",
+        r"(best|kind|warm) regards", r"\bcheers\b", r"\bdear\b", r"opportunity to contribute", r"my background",
+        r"would you be open", r"any (roles|positions|openings) (that|which)", r"let me know if", r"feel free to",
+        r"no worries if", r"whenever you (have|get) a (moment|chance)", r"\bkindly\b", r"open to (new )?opportunities\b(?! in| for)",
+        r"i believe", r"i think", r"\bjust\b", r"\bmaybe\b", r"a bit\b"]
+# pay must never appear in a first message
+PAY = re.compile(r"(\$\s?\d|\d\s?k\b|\busd\b|\bbrl\b|\beur\b|salary|\bpay\b|compensation|per (month|year|hour)|/(mo|month|yr|year|hr|hour)\b|negotiable|\brate\b)", re.I)
+TRIAD = re.compile(r"\b\w+(?:-\w+)?, \w+(?:-\w+)? and \w+(?:-\w+)?\b")
+NUMBERS = re.compile(r"\d[\d,.]*\+?\s?(m|k|yrs?|years?|%)?\b", re.I)
+POST_WORDS = re.compile(r"\b(post|hiring|role|opening|position|looking for)\b", re.I)
+
+
+def _grams(text: str, n: int = 4) -> set:
+    words = re.findall(r"[a-z0-9']+", text.lower())
+    return {" ".join(words[i:i + n]) for i in range(max(0, len(words) - n + 1))}
+
+
+def recent_sent(home: str, days: int = 60) -> list:
+    since = (NOW - timedelta(days=days)).isoformat()
+    return [v for v in rc.contacted(home).values()
+            if v.get("status") == "sent" and v.get("message") and (v.get("at") or "") >= since]
+
+
+def lint_message(text: str, kind: str, subject: str = "", sent: list | None = None, name: str = "") -> dict:
+    """Deterministic part of the pre-send review. problems fail the draft; warnings are for the reviewer's judgement."""
+    t = (text or "").strip()
+    problems, warnings = [], []
+    hard, soft = LIMITS.get(kind, (500, 400))
+    if not t:
+        problems.append("empty")
+    if len(t) > hard:
+        problems.append(f"{len(t)} chars, over the {hard} limit for {kind}")
+    elif len(t) > soft:
+        warnings.append(f"{len(t)} chars; aim for {soft} or fewer")
+    low = t.lower()
+    for pat in SLOP:
+        m = re.search(pat, low)
+        if m:
+            problems.append(f"slop phrase: '{m.group(0)}'")
+    if "—" in t or "–" in t or " - " in t:
+        problems.append("dash used as punctuation; write a full sentence or a comma")
+    if t.count("!") > 1:
+        problems.append("more than one exclamation mark")
+    if t.endswith("?"):
+        problems.append("ends in a question; the close is a statement (open) or a CV offer (cv)")
+    m = rc.CALL_ASK.search(t)
+    if m:
+        problems.append(f"asks for a call: '{m.group(0)}'")
+    m = PAY.search(t)
+    if m:
+        problems.append(f"mentions pay: '{m.group(0)}'")
+    if not re.match(r"(hi|hey|hello|olá|ola|hola)\s+\S", t, re.I):
+        warnings.append("no first-name greeting at the start")
+    if name:
+        first = name.split()[0].lower()
+        if first and first not in low:
+            warnings.append(f"the first name '{name.split()[0]}' does not appear")
+    if not POST_WORDS.search(t):
+        problems.append("no why-them clause: name the post or the role in their words")
+    first_line = re.split(r"[.!?\n]", t, 1)[0]
+    if not POST_WORDS.search(first_line):
+        warnings.append("the post is not in the first sentence; recruiters read the first line only")
+    if len(TRIAD.findall(t)) >= 2:
+        warnings.append("two lists of three; one is enough, two is a rhythm tell")
+    nums = NUMBERS.findall(t)
+    if len(nums) > 2:
+        warnings.append(f"{len(nums)} numbers; keep one, two at most")
+    sentences = [x for x in re.split(r"(?<=[.!?])\s+", t) if x]
+    if kind == "connect" and len(sentences) > 4:
+        warnings.append(f"{len(sentences)} sentences in a connection note; three is the shape")
+    if kind != "connect" and len(sentences) > 6:
+        warnings.append(f"{len(sentences)} sentences; three to five")
+    if kind == "inmail":
+        if not subject:
+            problems.append("InMail without a subject")
+        elif len(subject.split()) > 6:
+            warnings.append(f"subject has {len(subject.split())} words; 'Re: your <role> post' or shorter")
+    # template reuse: 4-gram overlap with messages already sent (any skill, last 60 days)
+    g = _grams(t)
+    best, who = 0.0, ""
+    for v in sent or []:
+        og = _grams(v["message"])
+        if not g or not og:
+            continue
+        share = len(g & og) / len(g)
+        if share > best:
+            best, who = share, v.get("name") or v.get("profile_url", "")
+    if best >= 0.5:
+        problems.append(f"template reuse: {best:.0%} of this note's 4-word phrases were already sent to {who}")
+    elif best >= 0.3:
+        warnings.append(f"{best:.0%} of this note's phrases were already sent to {who}; reshape the second sentence or the close")
+    return {"ok": not problems, "chars": len(t), "problems": problems, "warnings": warnings,
+            "reuse": {"share": round(best, 2), "with": who}}
+
+
+def cmd_lint(args) -> int:
+    text = args.text
+    if args.file:
+        text = js.fix_path(args.file).read_text(encoding="utf-8-sig")
+    res = lint_message(text, args.kind, args.subject or "", recent_sent(args.home), args.name or "")
+    res["verdict"] = "send" if res["ok"] else "rewrite"
+    return rc.emit(res)
 
 
 def cmd_record(args) -> int:
@@ -542,6 +660,7 @@ def cmd_record(args) -> int:
     rc.cmd_record(args)
     leads = load(args.home, "leads.json", {})
     sent = skipped = deferred = 0
+    flags = {}
     for c in res.get("contacts") or []:
         who = rc.norm_profile(c.get("profile_url", ""))
         v = leads.get(who)
@@ -549,6 +668,9 @@ def cmd_record(args) -> int:
             continue
         if c.get("status") == "sent":
             sent += 1
+            lint = lint_message(c.get("message", ""), c.get("channel") or "message", c.get("subject", ""), None, c.get("name", ""))
+            if lint["problems"]:
+                flags[c.get("name") or who] = lint["problems"]
             v.update(status="contacted", contact={"at": NOW.isoformat(), "channel": c.get("channel"), "subject": c.get("subject", ""),
                                                   "message": c.get("message", ""), "cta": c.get("cta", "")})
         elif rc.deferred(c):
@@ -560,7 +682,8 @@ def cmd_record(args) -> int:
     save(args.home, "leads.json", leads)
     p = rc.pacing(args.home)
     return rc.emit({"own_sent": sent, "own_skipped": skipped, "own_deferred": deferred, "quotas": rc.quotas(p, st),
-                    "inmail_credits": p.get("inmail_credits")})
+                    "inmail_credits": p.get("inmail_credits"),
+                    "lint_flags": flags})   # sent messages that failed the pre-send lint; the sender should have rewritten them
 
 
 def cmd_status(args) -> int:
@@ -601,6 +724,9 @@ def main() -> int:
     p = sub.add_parser("plan"); p.add_argument("--n", type=int, default=40); p.set_defaults(fn=cmd_plan)
     p = sub.add_parser("check"); p.add_argument("--kind", required=True, choices=["connect", "inmail", "message"])
     p.add_argument("--profile", required=True); p.add_argument("--company", default=""); p.set_defaults(fn=rc.cmd_check)
+    p = sub.add_parser("lint"); p.add_argument("--kind", required=True, choices=["connect", "inmail", "message"])
+    p.add_argument("--text", default=""); p.add_argument("--file", default=""); p.add_argument("--subject", default="")
+    p.add_argument("--name", default=""); p.set_defaults(fn=cmd_lint)
     p = sub.add_parser("record"); p.add_argument("--result", required=True); p.set_defaults(fn=cmd_record)
     sub.add_parser("status").set_defaults(fn=cmd_status)
     args = ap.parse_args()

@@ -19,6 +19,15 @@ Each entry in `tasks` is a post author, not a probed recruiter. There are no `sc
 - **When the author is the hiring manager or founder** (the headline says CTO, founder, head of AI, engineering manager), write engineer to engineer: the role or the problem in one clause, then one technical proof point. No recruiter phrasing.
 - **When the author is a company page** (a `/company/` URL), skip the task as `skipped` with detail "company page": there is no person to write to.
 
+## Review before every send
+
+Nothing is inserted into LinkedIn until the draft has passed two checks, in this order:
+
+1. **`hiringposts lint --kind <connect|inmail|message> --name "<their name>" --text "<draft>"`** (add `--subject` for an InMail; the command prefix is in your prompt). It fails the draft on the phrases that mark a generated note, dashes, a question at the end, a call request, any pay mention, a missing why-them clause, and template reuse (the share of 4-word phrases already sent to someone else in the last 60 days, across both outreach skills). `verdict: rewrite` means rewrite; `warnings` are read and usually acted on. A draft is never trimmed to dodge a check: fix the sentence the check named.
+2. **The reviewer's read, from `<hp>/references/review.md`** (`review_reference` in your task file): read the draft as the recipient would, on a phone, in two seconds. Who, what, why them in the first line; one detail only a reader of this post could know; one proof point, one number; a close that cannot be refused; nothing the candidate could not back; and not the shape of the last three notes you sent today.
+
+Rewrite until both pass, then run `lint` once more on the final text. When the day's notes start sharing a second sentence or a close, change the structure for the next one (proof point first, logistics first, a different story from `candidate.stories`), not only the words. Put the final lint `reuse.share` into the result as `reuse` for each sent contact; `hiringposts record` lints every sent message again and reports `lint_flags` for any that slipped through.
+
 ## Order and channel
 
 Strictly the order of `tasks`: the list is already ranked by posted pay and then by region eligibility. For each task run `hiringposts check --kind <kind> --profile <url> --company "<company>"` (the command prefix is in your prompt) and obey it exactly as the recruiter rules say: a 1st-degree lead gets a plain message; otherwise a connection request with a note while requests remain; then InMail while the compose window shows credits; then `deferred`. Don't reorder to use up a channel: a 2nd-degree lead ranked above a 1st-degree lead is contacted first.
