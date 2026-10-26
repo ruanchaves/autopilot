@@ -606,7 +606,7 @@ def lint_message(text: str, kind: str, subject: str = "", sent: list | None = No
             warnings.append(f"the first name '{name.split()[0]}' does not appear")
     if not POST_WORDS.search(t):
         problems.append("no why-them clause: name the post or the role in their words")
-    first_line = re.split(r"[.!?\n]", t, 1)[0]
+    first_line = re.split(r"[.!?\n]", t, maxsplit=1)[0]
     if not POST_WORDS.search(first_line):
         warnings.append("the post is not in the first sentence; recruiters read the first line only")
     if len(TRIAD.findall(t)) >= 2:
