@@ -1,6 +1,6 @@
 ---
 name: job-autopilot
-description: Job hunting on autopilot, up to the Submit button. Runs the full /job-source-sweep, gives every role a 0-100 global fit score, estimates its pay when none is posted, checks via search-engine site:linkedin.com searches (never LinkedIn search) whether the company has engineers in the user's country or region, and queues tier A (target pay + engineers there) first, decides liberally which roles are worth applying to (skipping only clear mismatches, explicit location/citizenship exclusions, non-remote roles and excluded contract types), then works down the ranking - tailoring the resume for each role with /tailor-resume (automatic mode, JD-specific summary), filling the application completely through the company ATS form, LinkedIn Easy Apply or an email draft, drafting and attaching a short cover letter when the form requires one, and STOPPING before Submit with the tab left open for the user. By default it never submits; config.yaml autopilot.auto_submit: true lets it click Submit itself. It answers every form question from the resume and context, marking estimates for the user to confirm, keeps every answer so a question is asked only once, and asks the user only the few things it can't estimate (IDs, authorisation, documents). The user reviews each filled form on the role explorer's Autopilot tab, submits it, and marks it Submitted; only then is it registered in applika via WSL. Each run ends with a report artifact explaining every decision: sources and queries, why each role was selected or rejected, posting ages. It paces work per site, records every outcome, and never applies to the user's current employers (banned_companies in the repo's config.yaml, where every personal setting lives). It does no LinkedIn outreach; that is the separate /recruiter-outreach skill. On first use it runs an interactive setup (submit policy, cover letters, channels, tracker, caps) and reruns it on "set up" or "reconfigure". Use when the user wants to sweep and prepare applications automatically, continue or resume the apply loop, retry failed applications, confirm which filled applications they submitted, or see which applications are ready, submitted or failed.
+description: Job hunting on autopilot, up to the Submit button. Runs the full /job-source-sweep, gives every role a 0-100 global fit score, queues them best score first, balanced across the sources that found them, decides liberally which roles are worth applying to (skipping only clear mismatches, explicit location/citizenship exclusions, non-remote roles and excluded contract types), then works down the ranking - tailoring the resume for each role with /tailor-resume (automatic mode, JD-specific summary), filling the application completely through the company ATS form, LinkedIn Easy Apply or an email draft, drafting and attaching a short cover letter when the form requires one, and STOPPING before Submit with the tab left open for the user. By default it never submits; config.yaml autopilot.auto_submit: true lets it click Submit itself. It answers every form question from the resume and context, marking estimates for the user to confirm, keeps every answer so a question is asked only once, and asks the user only the few things it can't estimate (IDs, authorisation, documents). The user reviews each filled form on the role explorer's Autopilot tab, submits it, and marks it Submitted; only then is it registered in applika via WSL. Each run ends with a report artifact explaining every decision: sources and queries, why each role was selected or rejected, posting ages. It paces work per site, records every outcome, and never applies to the user's current employers (banned_companies in the repo's config.yaml, where every personal setting lives). It does no LinkedIn outreach; that is the separate /recruiter-outreach skill. On first use it runs an interactive setup (submit policy, cover letters, channels, tracker, caps) and reruns it on "set up" or "reconfigure". Use when the user wants to sweep and prepare applications automatically, continue or resume the apply loop, retry failed applications, confirm which filled applications they submitted, or see which applications are ready, submitted or failed.
 ---
 
 # Job autopilot
@@ -33,8 +33,7 @@ This skill runs job-source-sweep, ranks everything it finds, and prepares applic
 | `autopilot.max_minutes` | Wall-clock cap for the fill loop. |
 | `autopilot.max_ready` | Filled forms (open tabs) waiting for the user. The loop stops at this many. |
 | `autopilot.auto_submit` | `false` (default): fill and stop in front of Submit; the user submits and confirms. `true`: the subagent clicks Submit itself, records the confirmation it saw, and those applications are registered in applika without a confirmation step. |
-| `autopilot.cover_letter` | `required`: write one when the form requires it or the posting asks for one. `always`: wherever a form accepts one. `target`: `always` for tier A roles, `required` for the rest. `never`. |
-| `autopilot.target_mode` | `prefer` (default): the queue takes tier A first, then B, then C. `only`: tier C roles are left out of the queue (they still show on the dashboard and in the run report). |
+| `autopilot.cover_letter` | `required`: write one when the form requires it or the posting asks for one. `always`: wherever a form accepts one. `never`. (`target`, from the removed tier system, reads as `required`.) |
 | `autopilot.people_check_limit` | Companies the people check looks at per run (default 100, best candidates first). Their searches go through the search layer (`search:` in config.yaml: the ddgs library in its own virtualenv, `max_queries_per_run` 300). Only companies it can't settle go to Chrome. |
 | `autopilot.skip_company_types` | Company types whose roles are never prepared (empty since 2026-10-27, the user's rule; was `staff_aug`, `marketplace`, `task_platform`): the staffing, nearshore and marketplace middlemen. `[]` turns the rule off. |
 | `autopilot.max_load_retries` | Type-3 failures before a role is given up. |
@@ -89,91 +88,33 @@ Invoke the **job-source-sweep** skill and follow it through step 8e: HTTP lane, 
 
 **Two lanes get extra depth, because they produced the interviews (2026-10-27).** The Jeeves interview came from the Lever Google shard (posting 25 hours old at fill time) and the Askable one from LinkedIn Jobs (3 hours old). So `jobsweep plan` now runs LinkedIn Jobs with every keyword and the direct-hire shards (`ats_lever`, `ats_greenhouse`, `ats_ashby`) with the top phrasings, each lane with its own minutes budget (`config.yaml` `sweep.lane_caps`), and the HTTP lane's `ats_search` source repeats the direct-host searches without Chrome, with real posting dates. Copy each task's `caps` into its subagent prompt. The run report's **outcomes** table (per source lane: applied, replied, interview, offer, rejected) is what decides where the next depth goes; keep it fed with `autopilot outcome` (step 6).
 
-**Skip the sweep's own country check (its step 7 and 8d).** The people check in step 3 replaces it inside the autopilot and runs on the companies that matter most for the target. The HTTP lane already includes the `company_boards` source: companies' own Ashby, Greenhouse, Lever and Workable boards, read through their public APIs, with each posting's own date, location and pay.
+**Skip the sweep's own country check (its step 7 and 8d).** The autopilot runs no people check of its own since 2026-10-27 (the tier system that needed it is gone); the cached verdicts in `people_checks.json`, written by the sweep's country check and by recruiter-outreach, still feed the location override in step 3. The HTTP lane already includes the `company_boards` source: companies' own Ashby, Greenhouse, Lever and Workable boards, read through their public APIs, with each posting's own date, location and pay.
 
 ## 3. Score and rank
 
 1. Run `autopilot score-queue --decisions <decisions dir>`. It queues every role from the last 14 sweep batches that isn't yet scored against the current rubric, apart from rejected and finished roles. **It checks applika (a fresh list) before considering any role**: a role already in applika is marked applied (`skipped_in_applika`); a role at a company with any applika application within `company_cooldown_days` (180 days) is marked `skipped` with that application's date and role (`skipped_applied_company`); a role at a company that rejected the user within `rejection_cooldown_days` is marked `skipped` with the rejection's date and feedback (`skipped_rejected_company`). None of these are scored. If `applika_error` is non-empty, handle it as described under `queue` below before scoring; never score without the applika check unless the user says so.
 2. Launch one subagent per batch **in parallel** (`general-purpose`, `model: "sonnet"`, no browser) with this prompt: "Read `<ap>/references/score.md` and follow it. Context file: `<context>`. Batch file: `<batch>`. Output file: `<out>`. Reply only with the final message it specifies."
 3. Run `autopilot score-ingest`.
-4. **Company types, for the pay estimate.** Run `autopilot company-queue`. For each batch, launch a parallel subagent
-   (`general-purpose`, `model: "sonnet"`, no browser) with the prompt: "Read `<ap>/references/company-type.md` and
-   follow it exactly, including reading the jd_file of every company that isn't widely known and setting
-   `confidence` honestly. Batch file: `<batch>`. Output file: `<out>`. Reply only with the final message it
-   specifies." Then run `autopilot company-ingest`.
-   - **What it records:** one judgement per company, cached for good: funded startup, product company, big company,
-     staffing firm, consultancy, marketplace, task platform or local employer.
-   - **When there is nothing to do:** on a normal day only the new companies are pending, usually one or two batches.
-5. **People check.** Searching is done by a script; a subagent judges what it found. Chrome is only the fallback.
-   Never use LinkedIn's own search (user rule 2026-10-14).
-   1. **Fetch.** Run `autopilot people-queue` in the background (`run_in_background`). It takes about 5 seconds per
-      query, so 100 companies take up to about 35 minutes. It:
-      - takes up to `people_check_limit` companies (100) with no fresh verdict, ordered: pay at target (posted or
-        likely) first; inside that, companies found on direct-hire sources first (HN, YC, VC portfolio boards,
-        their own ATS boards, Wellfound: `target.DIRECT_SOURCES`), then by exact pay tier and best score. Before
-        2026-10-15 the direct sources were never reached (0 of 55 HN roles had a verdict), so they could never
-        make tier A;
-      - fetches each company's search results through the search layer (`companies.Searcher`: ddgs's Yahoo engine,
-        Bing's index, paced, cached for 30 days, capped by `search.max_queries_per_run`);
-      - writes judge batches of 25.
-
-      Use `--recheck` once to re-judge verdicts made before this method. Until then they don't count toward tiers.
-      If its output says the canary failed or the search halted, the engines are blocking: judge what was fetched,
-      and let the Chrome fallback take the top companies.
-   2. **Judge.** Launch one subagent per batch, **in parallel**, with no browser (`general-purpose`,
-      `model: "sonnet"`).
-      - **Prompt:** "Read `<repo>/job-source-sweep/references/people-judge.md` and follow it exactly. Batch file:
-        `<batch>`. Output file: `<out>`. country: `<country>`, region: `<region>`."
-      - **What the judge does:** rejects namesakes using what we know about each company (AZX Lab is not AZX). It
-        marks what it can't settle as `needs_google`.
-   3. Run `autopilot people-ingest`.
-   4. **Chrome fallback.** Run `autopilot people-queue --mode chrome`, which takes at most 10 companies marked
-      `needs_google`, mostly where Bing had no LinkedIn results. Run its batch with **one** Chrome subagent:
-      - **Prompt:** "Read `<repo>/job-source-sweep/references/people-check.md` and follow it. Batch file: `<batch>`.
-        Output file: `<out>`. country: `<country>`, region: `<region>`."
-      - **When both engines block:** if that subagent reports Google and Yahoo blocked, stop. The rest stays queued.
-      - **Afterwards:** run `autopilot people-ingest` again.
-6. Run `autopilot queue --decisions <decisions dir>`. Add `--max-age-days N` only when the user asks for a fresher
+4. Run `autopilot queue --decisions <decisions dir>`. Add `--max-age-days N` only when the user asks for a fresher
    queue; a source's own `window_days` (HN 35, YC 45, a16z 14, company boards 21) always extends the cap for its
    roles, so an age cap never drops the direct-hire sources the sweep kept on purpose.
 
-**Tiers (`target.py`).** The user's goal is roles paying at least `pay.target_usd_month` at companies that really
-hire outside the US. Every role gets two judgements:
-- **Pay tier.** `posted_target` / `posted_near` / `posted_below` when pay is posted. Otherwise `likely_target`,
-  `unclear` or `likely_below`, from this evidence, strongest first:
-  1. pay the company quoted the user (`recruiters/pay_ceilings.json`);
-  2. the median pay of its other engineering postings (scores, boards, the funded-company registry);
-  3. the company type (staffing firms, marketplaces and task platforms are `likely_below` whatever their HQ,
-     since what they post for US placements is not what they quoted the user);
-  4. a recent funding round, or a VC/YC board, combined with a senior title.
-
-  `paytier-backtest` checks this estimate against roles that did post pay. Its result is shown in the run report.
-- **People check.** `brazil` (engineers in `candidate.country`), `latam` (elsewhere in `candidate.region`),
-  `non_us`, `none` or unchecked.
-  - **Why only this evidence:** a JD's location label is written by automated systems and is often wrong, so engineers
-    actually working there from outside the US are the only evidence of where a company hires.
-  - **Where it comes from:** Google `site:linkedin.com/in` searches (Yahoo when Google blocks), never LinkedIn search
-    (`references/target-tier-research.md`).
-
-**Tier A** is pay at target (posted or likely) plus engineers in the candidate's country or region. **Tier B** has
-one of the two proven and the other unknown. **Tier C** is the rest.
-
-Two rules added on 2026-10-15 for the web3 lane, where employers hire worldwide in USD or stablecoins:
-- **Sector pay.** A company with `sector: web3` (the company-type pass, a seeded board in `boards.json`, a row from a
-  web3 source, or a web3 source label) is estimated as if US-headquartered: a Swiss, Singaporean or Cayman web3
-  product company is "likely target", not "likely below". Middlemen and local companies keep their tier. A web3
-  employer of unknown type with a senior title is "likely target" too (`target.py`, step 3b).
-- **Hires worldwide.** When the eligibility classifier found the JD explicitly open and quoted worldwide wording from
-  its body ("worldwide", "anywhere", "globally distributed"...), that stands in for the people check: pay at target
-  makes the role tier A even before anyone is found there (`tier_reason` says "JD says it hires worldwide"). A people
-  check that found no engineers outside the US at all still caps it at tier B. A region label alone never counts.
+**No tiers (2026-10-27).** The target tiers of 2026-10-14 (a pay estimate from the company's type, headquarters,
+sibling postings and funding, a people check per run, and an A/B/C rank built from them) were removed at the user's
+request: too complex to trust. What is left is evidence the role or the company gave itself:
+- **posted pay**, through the score (below) and the floor (`pay.skip_below_usd_month`);
+- **the company's own quotes to the user** (`recruiters/pay_ceilings.json`): a highest quote under the floor holds the
+  role back (`pay_gate`);
+- **the location override** (below), from cached people-check verdicts (`people_checks.json`, written by the sweep's
+  country check and recruiter-outreach, never by this skill) or a JD body that says it hires worldwide.
+`references/target-tier-research.md` keeps the study for the record.
 
 How the total is built:
 - The subagents return four parts: core AI/LLM match (35), requirement coverage (25), seniority (15) and domain/stack (10).
 - The script adds location eligibility: open 15, not stated 10, restricted 0, unclassified 7.
 - Each hard blocker multiplies the score by 0.6, at most twice.
 - Roles rated from the title alone are capped at 60.
-- **Pay:** +10 when the whole posted range is at or above the target, +6 when its top is, −10 when its top is below. With no posted pay, `likely_target` adds 6 and `likely_below` takes 8.
+- **Pay:** +10 when the whole posted range is at or above the target, +6 when its top is, −10 when its top is below. No posted pay changes nothing.
 - **Freshness:** +5 for postings up to 3 days old, +2 up to a week. Early applications get far more responses.
 
 The goal is interviews at or above `pay.target_usd_month`, so pay and freshness move roles up the queue.
@@ -189,19 +130,18 @@ The script also skips:
 - companies with any applika application within `company_cooldown_days`;
 - companies that rejected the user within `rejection_cooldown_days`;
 - roles whose posted pay tops out below `pay_skip_below_usd_month`;
-- roles at companies whose own quotes to the user top out below the floor (`pay_gate`);
-- **middlemen, only if configured** (`autopilot.skip_company_types`, and `skip_company_types_unless_pay_at_target`
-  for types skipped only while posted pay is under the target). **Both are empty since 2026-10-27: the user said
-  nothing should be skipped for its company type** (the 2026-10-15 rule skipped staffing firms, marketplaces and
-  task platforms; then Askable, a task platform, led to an interview). The company type still feeds the pay estimate
-  and the tiers (`target.py`), so middlemen rank lower rather than disappear. When a list is set, a type guessed from
-  the company name alone never skips (Deel was once skipped as a "marketplace" by name); those roles are scored.
+- roles at companies whose own quotes to the user top out below the floor (`pay_gate`).
 
-**A JD's "US-based only" exclusion is overridden** when the people check found engineers in the candidate's country
-or region: the role is queued, capped at tier B, and the report shows the override. Citizenship, clearance, export
+**Nothing is skipped for its company type** (user rule 2026-10-27). The 2026-10-15 rule skipped staffing firms,
+marketplaces and task platforms; then Askable, a task platform, led to an interview, and the rule and the company
+types behind it are gone.
+
+**A JD's "US-based only" exclusion is overridden** when a cached people-check verdict shows engineers in the
+candidate's country or region, or the JD body says it hires worldwide: the role is queued and the report shows the
+override. Citizenship, clearance, export
 control and work-authorization requirements are legal, not labels, and still skip. These show up as "not applying" or "skipped" on the dashboard, with the JD's own words or the rejection. Everything else is queued. The queue also leaves out roles the user rejected, roles already applied to or discarded, filled forms waiting for the user, and roles waiting on the user's answers.
 
-**The queue takes tier A first, then B, then C** (`target_mode: prefer`; with `only`, tier C is left out). **Inside each tier it is balanced across sources, not sorted by score alone** (user rule 2026-10-02, kept inside tiers on 2026-10-14). Within a tier, `queue` groups the roles by the source that found them (LinkedIn Jobs, Himalayas, HN Who is hiring, each VC portfolio network, Wellfound, Remote Rocketship, the Google ATS and job-board shards, and so on), sorts each group best score first, then deals the groups out round-robin: the best LinkedIn role, the best Himalayas role, the best HN role, and so on, before any source's second-best. Unscored roles go last within their group. Each queue entry carries its `source`, `tier`, `pay_tier` and `people`, and `status` shows the queue's mix per tier and per source. A score-only queue fills up with whichever feed is largest. Never re-sort the queue by score.
+**The queue is best score first, balanced across sources, not sorted by score alone** (user rule 2026-10-02). `queue` groups the roles by the source that found them (LinkedIn Jobs, Himalayas, the ATS shards, the VC boards as one group...) and deals them out round-robin, each source best score first, as long as a source's best remaining role is within 25 points of the best role left anywhere; so one big feed can't take the run over, and a weak role never jumps a much stronger one.
 
 `queue` checks applika first, so roles you applied to outside this skill are marked applied and never prepared again, companies with any application in the last `company_cooldown_days` are skipped (`skipped.applied_company`), and companies that rejected you recently are skipped (`skipped.rejected_company`, with the companies in `rejected_companies`). `next` repeats the company check against the cached applika list (refreshed by every `applika-sync` that registers something), so a company registered mid-run gets no second form. Forms already filled and waiting for the user are left alone. The user can still force one role through by overriding it to "apply" on the dashboard. If its output has a non-empty `applika_error`, read it. If it looks like an authentication problem, run `wsl.exe -e bash -lc 'applika login'` and run `queue` again. Otherwise, tell the user and carry on without the applika check.
 
@@ -220,16 +160,16 @@ Repeat until you stop:
 
 1. Run `autopilot next`, up to `browser_parallel` times (config.yaml, default 3): each call claims a different role for 30 minutes, so the fills run **in parallel**, one Chrome subagent per role, each in its own tab (Chrome is not a serial resource; every tool takes a `tabId`). Launch them in one message. For each `role`:
    - **`role`:** launch a Chrome subagent (`general-purpose`, `model: "sonnet"`) with the prompt: "Read `<ap>/references/apply.md` and follow it. You fill the form completely." followed by "You never submit." when `auto_submit` is false, or "auto_submit is true: submit after the full fill and record the confirmation you see." when it is true, then:
-     - the role JSON (it includes `tailored_pdf`, `tailored_folder`, `jd_file`, `previous_attempt`, `tier` and `salary_answer`, the number to give when the posted range reaches the target)
+     - the role JSON (it includes `tailored_pdf`, `tailored_folder`, `jd_file`, `previous_attempt` and `salary_answer`, the number to give when the posted range reaches the target)
      - `candidate` from the `next` output (the applicant's facts from `config.yaml`)
      - `answer_bank`: `<home>/autopilot/answer-bank.json`
-     - `allowed_channels`, `cover_letter_policy` and `auto_submit`, from the `next` output (with `cover_letter: target`, `next` already resolved the policy for this role's tier)
+     - `allowed_channels`, `cover_letter_policy` and `auto_submit`, from the `next` output
      - the exact `autopilot` command prefix, and `cover_letter_py`: the same prefix with `cover_letter.py` in place of `autopilot.py`
      - `result_file`: `<home>/autopilot/work/<date>/apply_result_<id>.json`
      
-     As each finishes, run `autopilot record --result <result_file>` (it releases the claim) and tell the user one line: the company, the tier, the outcome, how many answers were estimated, and whether a cover letter was written. Then call `next` again to keep `browser_parallel` fills in flight.
-     - **Blocked tier A roles:** a tier A role whose form can't be filled (an account wall, or load failures) is
-       written to `autopilot/target_roles.json`.
+     As each finishes, run `autopilot record --result <result_file>` (it releases the claim) and tell the user one line: the company, the score, the outcome, how many answers were estimated, and whether a cover letter was written. Then call `next` again to keep `browser_parallel` fills in flight.
+     - **Blocked well-scored roles:** a role scored 75 or better whose form can't be filled (an account wall, or load
+       failures) is written to `autopilot/target_roles.json`.
      - **Hand-off:** recruiter-outreach's company lane reads that file and reaches the company directly.
      - **No contact from here:** this skill still contacts no one.
    - **`need_tailor`:** wait for the tailoring subagents, or start more.
@@ -280,18 +220,16 @@ Engineer roles for São Paulo and Mexico City were the first case).
    It contains:
    - every source and browser task, with the query it ran, its status, and what each filter removed;
    - the decision funnel;
-   - the selected roles in queue order, with tier, pay evidence, people-check evidence, score parts, sources and
+   - the selected roles in queue order, with posted pay, the people-check verdict, score parts, sources and
      posting age;
    - every rejected role, with the step, reason, evidence and who decided (script rule, scoring subagent, applika,
      the user);
    - each posting's estimated age and how it was estimated: the ATS or JSON-LD date, the date the source gave, or the
      first time the sweep saw it, shown as a minimum. Likely reposts are flagged;
-   - the changes since the last run, and the pay-estimate backtest.
+   - the changes since the last run, and the outcomes table per source lane (applied, replied, interview, offer,
+     rejected, ghosted; `autopilot outcome`).
 2. Publish `report.html` as a **new** artifact every run (never over an earlier run's report), with `icon: "report"`.
    Then run `autopilot run-report --published-url <url>`, which records the link in `runs.json`.
-3. Before publishing, run `autopilot paytier-backtest` when `company-ingest` added companies this run. The report
-   shows its verdict.
-
 Then keep the chat reply short:
 - The run report link, first.
 - The number of forms filled and ready for the user, by channel, each with its company, score and tab title. Say plainly that none were submitted and that the tabs are open in Chrome. With `auto_submit` true, list the applications submitted (with their confirmations) separately from the forms left open.
@@ -303,7 +241,7 @@ Then keep the chat reply short:
 - Roles deferred by pacing, and roles skipped because the company rejected the user recently (the count, and the companies if few).
 - Applications the user confirmed since last time, and the applika registrations.
 - The dashboard link.
-- The queue by tier (`queue` → `by_tier`), the people checks run (verdicts, and which engines blocked), and the next few roles in the queue with their tiers.
+- The queue by source (`queue` → `by_source`) and the next few roles in the queue with their scores.
 
 ## Daily mode (2026-10-27)
 
@@ -323,13 +261,13 @@ All of this is in `<home>/autopilot/`:
 - `answer-bank.json`: the profile (a mirror of `candidate` in `config.yaml`), answered questions (the user's own, and estimated ones awaiting confirmation), pending questions, and confirmed, denied and pending skills. Dashboard answers are merged in at preflight, and a question answered once is reused on every later form with the same meaning.
 - `ledger.json`: every role's status, attempts, tailored CV, every answer typed into its form, free-text answers, cover letter, tab title, applika id and `outcome` (replied / interview / offer / rejected / ghosted, from `autopilot outcome`).
 - `scores.json`, `queue.json`, `pacing.json`, and `work/<date>/` with the batches and result files.
-- `company_types.json` (one type per company), `paytier_backtest.json`, `target_roles.json` (blocked tier A roles for recruiter-outreach).
+- `target_roles.json` (blocked well-scored roles for recruiter-outreach's company lane). `company_types.json` and `paytier_backtest.json` are leftovers of the tier system removed on 2026-10-27 and are no longer read.
 - `runs/<run_id>/decisions.jsonl` and `report.html`/`report.json`; `runs.json` lists every run with its report link.
 
 Shared with the other skills, in `<home>`:
 - `boards.json`: companies' ATS boards and their postings.
-- `people_checks.json`: the people-check verdicts, with their search evidence, 90 days for a positive and 30 for none.
+- `people_checks.json`: the people-check verdicts, with their search evidence, 90 days for a positive and 30 for none. Written by the sweep's country check and by recruiter-outreach; the autopilot only reads them (location override).
 
-All of these come from `job-source-sweep/scripts/companies.py`. Recruiter-outreach's company lane reads the same people checks.
+All of these come from `job-source-sweep/scripts/companies.py`.
 
 `autopilot status` summarises them; `autopilot ready` lists the filled forms waiting for the user.

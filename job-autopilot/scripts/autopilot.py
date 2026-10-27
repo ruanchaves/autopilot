@@ -11,13 +11,8 @@ the subagent clicks Submit itself and records `applied` with the confirmation it
 
     autopilot.py score-queue   [--batches 14] [--batch-size 20] [--decisions DIR]
     autopilot.py score-ingest
-    autopilot.py company-queue [--batch-size 40] [--batches 14] [--backtest]   # company-type batches (references/company-type.md)
-    autopilot.py company-ingest
-    autopilot.py paytier-backtest                                 # how well the pay estimate predicts posted pay
-    autopilot.py people-queue  [--limit N] [--mode search|chrome] [--recheck]   # people check: search + judge
-                                                                  # batches, or the Chrome fallback
-    autopilot.py people-ingest
-    autopilot.py queue         [--batches 14] [--decisions DIR]   # tiers A/B/C, round-robin across sources inside each
+    autopilot.py queue         [--batches 14] [--decisions DIR]   # best score first, round-robin across sources
+    autopilot.py outcome       (--id ID --status S | --sync)       # replied/interview/offer/rejected/ghosted per application
     autopilot.py run-report    [--published-url URL]              # this run's report page (assets/run-report.html)
     autopilot.py tailor-queue  [--n 6]
     autopilot.py pace-start
@@ -39,9 +34,7 @@ candidate). Everything else lives in <home>/autopilot/:
     ledger.json        one entry per role id: status, attempts, tailored CV, answers given, cover letter, applika id
     pacing.json        per-host budgets that adapt between runs
     queue.json         the current apply order
-    company_types.json one judgement per company (funded startup, staffing firm...), for the pay estimate
-    paytier_backtest.json  the pay estimate checked against roles that posted pay
-    target_roles.json  tier A roles whose form couldn't be filled; recruiter-outreach's company lane reads it
+    target_roles.json  well-scored roles whose form couldn't be filled; recruiter-outreach's company lane reads it
     runs/<run_id>/     decisions.jsonl (every keep/drop/rank decision of the run, with its evidence), report.html
     runs.json          every run with its report link
     work/<date>/       batch files, tailor and apply result files
@@ -71,7 +64,7 @@ import jobsweep as js  # noqa: E402
 import enrich  # noqa: E402
 import companies as co  # noqa: E402  (ATS boards, people checks)
 import userconfig  # noqa: E402  (config.yaml at the repo root)
-import target as tg  # noqa: E402  (pay tier and target tiers, this folder)
+import target as tg  # noqa: E402  (quote gate and location override, this folder)
 
 NOW = datetime.now(timezone.utc)
 TODAY = NOW.strftime("%Y-%m-%d")
@@ -116,20 +109,12 @@ DEFAULT_SETTINGS = {
     # subagent clicks Submit itself and records `applied` with the confirmation it saw.
     "auto_submit": False,
     # cover letters: "required" = draft one only when the form requires it or the posting asks for
-    # one; "always" = draft one wherever a form accepts it; "target" = "always" for tier A roles and
-    # "required" for the rest; "never"
+    # one; "always" = draft one wherever a form accepts it; "never". ("target", from the removed tier
+    # system, is read as "required".)
     "cover_letter": "required",
-    # target tiers (target.py): "prefer" queues tier A, then B, then C; "only" leaves tier C out of the queue
-    "target_mode": "prefer",
-    # companies the people check looks at per run, best first. Searches go through the search layer (ddgs,
-    # companies.Searcher; job-source-sweep search.* settings cap the queries); Chrome is only the fallback.
-    "people_check_limit": 100,
-    # company types (company_types.json) whose roles are never prepared, and types skipped only while the posting's
-    # own pay stays under pay.target_usd_month. Both off since 2026-10-27: the user wants no role skipped for its
-    # company type (Askable, a task platform, led to an interview). The type still feeds the pay estimate and the
-    # tiers, so middlemen rank lower rather than disappear. A type guessed from the company name alone never skips.
-    "skip_company_types": [],
-    "skip_company_types_unless_pay_at_target": [],
+    # The target tiers (pay estimate + A/B/C) and the company-type pass were removed on 2026-10-27 (the user's
+    # rule: too complex). Only posted pay, the company's own quotes (quote gate) and cached people-check verdicts
+    # (location override) are used; nothing is skipped for its company type.
     # filled in from config.yaml by settings(): banned_companies (current employers/clients, never
     # applied to), pay_target_usd_month / pay_skip_below_usd_month (pay section), and the tracker
     # section (applika_enabled, rejection_cooldown_days, rejection_neutral_feedback,
@@ -233,8 +218,7 @@ def fresh_bonus(parts: dict) -> int:
     return 5 if days <= 3 else 2 if days <= 7 else 0
 
 
-def total_score(parts: dict | None, elig_cat, target: float = 10000, pt: dict | None = None) -> int | None:
-    """pt: the role's pay tier (target.pay_tier); with no posted pay, likely_target adds 6 and likely_below takes 8."""
+def total_score(parts: dict | None, elig_cat, target: float = 10000) -> int | None:
     if not parts:
         return None
     s = sum(max(0, min(PART_MAX[k], float(parts.get(k, 0)))) for k in PART_MAX)
@@ -243,8 +227,6 @@ def total_score(parts: dict | None, elig_cat, target: float = 10000, pt: dict | 
     if parts.get("confidence") == "title_only":
         s = min(s, 60)
     s += pay_bonus(parts, target) + fresh_bonus(parts)
-    if pt and not (parts.get("pay_max") or parts.get("pay_min")):
-        s += tg.pay_points(pt)
     return round(max(0, min(100, s)))
 
 
@@ -254,60 +236,43 @@ LEGAL = re.compile(r"citizen|clearance|green card|itar|export control|authori[sz
                    r"visa|sponsor|permanent resident|legal entity|w-?2 only|ssn", re.I)
 
 
-def apply_decision(parts: dict, st: dict, pt: dict | None = None, people: str | None = None,
-                   ctype: dict | None = None) -> tuple[bool, str, str]:
-    """The model's liberal apply call, the user's pay floor on posted pay, the pay gate from the company's own
-    quotes, and the middleman rule (`skip_company_types`: staffing, nearshore and marketplace companies, whatever
-    they post). A "US-based only" kind of exclusion is overridden when the people check found engineers in the
-    candidate's country or region (the role is then capped at tier B); legal requirements never are."""
+def apply_decision(parts: dict, st: dict, gate: str = "", people: str | None = None) -> tuple[bool, str, str]:
+    """The model's liberal apply call, the user's pay floor on posted pay, and the pay gate from the company's own
+    quotes (target.quote_gate). A "US-based only" kind of exclusion is overridden when the people check found
+    engineers in the candidate's country or region; legal requirements never are."""
     hi = parts.get("pay_max") or parts.get("pay_min")
-    t = (ctype or {}).get("type")
-    at_target = bool(hi and hi >= (st.get("pay_target_usd_month") or 0))
-    if t and ctype.get("confidence") != "name" and (
-            t in (st.get("skip_company_types") or [])
-            or (t in (st.get("skip_company_types_unless_pay_at_target") or []) and not at_target)):
-        return False, "middleman", f"company type {ctype.get('detail') or t}: a staffing, nearshore or marketplace layer, not the company that pays"
     if parts.get("apply") is False:
         why, evidence = parts.get("skip_reason", ""), parts.get("skip_evidence", "")
-        if why == "location_explicit" and people in tg.REGION_OK and not LEGAL.search(evidence):
+        if why == "location_explicit" and people in tg.REGION_OK | {"worldwide"} and not LEGAL.search(evidence):
             return True, "location_overridden", evidence
         return False, why, evidence
     if hi and st.get("pay_skip_below_usd_month") and hi < st["pay_skip_below_usd_month"]:
         return False, "pay_below_target", (f'Posted pay: {parts["pay_note"]} (~USD {round(hi):,}/month)' if parts.get("pay_note")
                                            else f"Posted pay tops out at ~USD {round(hi):,}/month")
-    if pt and pt.get("gate"):
-        return False, "pay_gate", pt.get("detail", "")
+    if gate:
+        return False, "pay_gate", gate
     return True, "", ""
 
 
 def evaluate(home: str, roles: list[dict], st: dict | None = None) -> dict[str, dict]:
-    """role id -> score, pay tier, people check, tier and apply decision, from the caches. Shared by queue, the
-    dashboard and the run report so all three show the same numbers."""
+    """role id -> score, people-check level (cached verdicts), quote gate and apply decision, from the caches. Shared
+    by queue, the dashboard and the run report so all three show the same numbers."""
     st = st or settings(home)
     cache = enrich.read_json(js.fix_path(home) / "classifications.json", {})
     scores = load(home, "scores.json", {})
-    ctx = tg.context(home, roles, st, scores)
-    target = st["pay_target_usd_month"]
+    ceil, people_by = tg.quotes(home), tg.people_level(home)
+    target, floor = st["pay_target_usd_month"], float(st.get("pay_skip_below_usd_month") or 0)
     out = {}
     for r in roles:
         sp = scores.get(r["key"])
         el = cache.get(r["key"], {}).get("elig") or {}
         cat = el.get("category")
-        worldwide = tg.hires_worldwide(el)
-        pt = tg.pay_tier(r, sp, ctx)
-        pv = ctx["people"].get(co.key_of(r.get("company", ""))) or {}
-        # only verdicts judged with the company's context count (co.METHODS); an older one, which may be a namesake
-        # (AZX Lab for AZX), waits for its re-check (people-queue --recheck)
-        people = pv.get("level") if pv.get("method") in co.METHODS else None
-        ctype = tg.company_type_of(r, ctx)
-        ok, why, evidence = apply_decision(sp or {}, st, pt, people, ctype) if (sp or ctype["type"] != "unknown") else (True, "", "")
-        tier = tg.tier_of(pt["tier"], people, worldwide)
-        if why == "location_overridden" and tier == "A":
-            tier = "B"
-        out[r["id"]] = {"score": total_score(sp, cat, target, pt), "pay": pt, "people": people, "company_type": ctype,
-                        "people_evidence": (pv.get("evidence") or [{}])[0] if pv else {}, "people_checked": pv.get("checked", ""),
-                        "tier": tier, "tier_reason": tg.tier_reason(pt, people, tier, worldwide), "worldwide": worldwide,
-                        "sector": tg.sector_of(r, ctx),
+        people = people_by.get(co.key_of(r.get("company", "")))
+        if people is None and tg.hires_worldwide(el):
+            people = "worldwide"  # the JD body says it hires anywhere: counts like engineers found there
+        gate = tg.quote_gate(r.get("company", ""), ceil, floor)
+        ok, why, evidence = apply_decision(sp or {}, st, gate, people) if (sp or gate) else (True, "", "")
+        out[r["id"]] = {"score": total_score(sp, cat, target), "people": people, "gate": gate,
                         "ok": ok, "why": why, "evidence": evidence, "elig": cat, "parts": sp}
     return out
 
@@ -623,6 +588,7 @@ def applika_exact(existing: list | None, e: dict):
 
 
 BALANCE_GAP = 25  # points; see balance_queue
+TARGET_ROLE_SCORE = 75  # a blocked form at this score or better is handed to recruiter-outreach's company lane
 
 
 def source_group(labels: list[str]) -> str:
@@ -646,15 +612,6 @@ def source_group(labels: list[str]) -> str:
     if low.startswith("google") or "/" in low or re.search(r"dailyremote|remote\.com|web3\.career|arc\.dev|cryptocareers", low):
         return "Job boards via Google"
     return label
-
-
-def tiered_queue(q: list[dict]) -> list[dict]:
-    """Tier A first, then B, then C (target.py); inside each tier the source round-robin below still applies, so one
-    big feed can't take over a tier."""
-    out = []
-    for t in ("A", "B", "C"):
-        out += balance_queue([x for x in q if x.get("tier", "C") == t])
-    return out
 
 
 def balance_queue(q: list[dict]) -> list[dict]:
@@ -726,8 +683,8 @@ def cmd_queue(args) -> int:
     apps = recent_applications(existing, st)
     inter = interviewing(ledger)  # a company that interviewed the user is worth its sibling roles (2026-10-27)
     q, skipped = [], {"rejected": 0, "final": 0, "banned": 0, "rejected_company": 0, "in_applika": 0,
-                      "applied_company": 0, "not_worth_applying": 0, "middleman": 0, "needs_you": 0, "waiting_answers": 0,
-                      "load_retries": 0, "too_old": 0, "tier_c_only_mode": 0}
+                      "applied_company": 0, "not_worth_applying": 0, "needs_you": 0, "waiting_answers": 0,
+                      "load_retries": 0, "too_old": 0}
     logged = []
     for r in roles:
         e = ledger.get(r["id"], {})
@@ -735,7 +692,7 @@ def cmd_queue(args) -> int:
         v = ev[r["id"]]
         base = {"id": r["id"], "key": r["key"], "title": r["title"], "company": r["company"], "url": r["url"],
                 "location": r["location"], "score": sc.get(r["id"]), "attempts": e.get("attempts", []),
-                "tier": v["tier"], "pay_tier": v["pay"]["tier"], "people": v["people"]}
+                "people": v["people"]}
 
         def drop(reason: str, evidence: str = "", by: str = "script", outcome: str = "skipped") -> None:
             logged.append(rec("queue", r, outcome, reason, evidence, by))
@@ -775,10 +732,9 @@ def cmd_queue(args) -> int:
             ok, why, evidence = v["ok"], v["why"], v["evidence"]
             if not ok and e.get("override") != "apply":
                 ledger[r["id"]] = {**e, **base, "status": "not_applying", "detail": f"{why}: {evidence}".strip(": ")}
-                skipped["middleman" if why == "middleman" else "not_worth_applying"] += 1
+                skipped["not_worth_applying"] += 1
                 drop(why or "not_worth_applying", evidence,
-                     "script (pay rule)" if why in ("pay_below_target", "pay_gate") else
-                     "script (company type)" if why == "middleman" else "scoring subagent", "not_applying")
+                     "script (pay rule)" if why in ("pay_below_target", "pay_gate") else "scoring subagent", "not_applying")
                 continue
         if dec.get(r["id"]) == "rejected":
             skipped["rejected"] += 1
@@ -808,38 +764,31 @@ def cmd_queue(args) -> int:
             skipped["too_old"] += 1
             drop("too_old", f'posted {r.get("posted_iso") or "?"}, older than {args.max_age_days} days')
             continue
-        if st.get("target_mode") == "only" and v["tier"] == "C" and not dec.get(r["id"]) == "accepted":
-            skipped["tier_c_only_mode"] += 1
-            drop("tier_c", v["tier_reason"])
-            continue
         q.append({"id": r["id"], "key": r["key"], "title": r["title"], "company": r["company"], "url": r["url"],
                   "location": r["location"], "score": sc.get(r["id"]), "accepted": dec.get(r["id"]) == "accepted",
-                  "source": source_group(r.get("sources")), "tier": v["tier"], "pay_tier": v["pay"]["tier"],
-                  "people": v["people"]})
-    q = tiered_queue(q)
+                  "source": source_group(r.get("sources")), "people": v["people"]})
+    q = balance_queue(q)
     for i, x in enumerate(q, 1):
-        v = ev[x["id"]]
-        logged.append(rec("queue", x, "queued", f"tier {x['tier']}",
-                          f"position {i}; {v['tier_reason']}; pay: {v['pay']['detail']}"))
+        sp = parts.get(x["key"]) or {}
+        logged.append(rec("queue", x, "queued", "queued",
+                          f"position {i}; score {x['score']}; " + (f"posted pay: {sp['pay_note']}" if sp.get("pay_note") else "no posted pay")))
     log(args.home, logged)
     save(args.home, "queue.json", q)
     for r in q:  # keep the ledger's copy of each queued role current, so the dashboard can list it
         e = ledger.setdefault(r["id"], {"id": r["id"], "status": "queued", "attempts": []})
-        e.update({k: r[k] for k in ("key", "title", "company", "url", "location", "score", "source", "tier", "pay_tier", "people")})
+        e.update({k: r[k] for k in ("key", "title", "company", "url", "location", "score", "source", "people")})
+        e.pop("tier", None), e.pop("pay_tier", None)
         if e.get("status") in (None, "failed_fill", "not_applying"):  # answers arrived / decision changed
             e["status"] = "queued"
     save(args.home, "ledger.json", ledger)
     by_source = Counter(x["source"] for x in q)
     return emit({"queued": len(q), "unscored": sum(1 for x in q if x["score"] is None), "skipped": skipped,
-                 "by_tier": dict(sorted(Counter(x["tier"] for x in q).items())),
-                 "by_pay_tier": dict(Counter(x["pay_tier"] for x in q).most_common()),
                  "by_people": dict(Counter(x["people"] or "unchecked" for x in q).most_common()),
-                 "target_mode": st.get("target_mode", "prefer"),
                  "by_source": dict(by_source.most_common()),
                  "rejected_companies": sorted({v["company"] for v in rej.values()}),
                  "applied_companies": len({v["applika_id"] for v in apps.values()}),
                  "applika_error": applika_err,
-                 "top": [f'{x["tier"]} {x["score"]} {x["title"]} @ {x["company"]} [{x["source"]}]' for x in q[:12]]})
+                 "top": [f'{x["score"]} {x["title"]} @ {x["company"]} [{x["source"]}]' for x in q[:12]]})
 
 
 def slug(text: str, n: int) -> str:
@@ -1044,9 +993,9 @@ def cmd_next(args) -> int:
         ledger.setdefault(r["id"], {"id": r["id"], "status": "queued", "attempts": []})["filling_since"] = NOW.isoformat()
         save(args.home, "ledger.json", ledger)
         policy = st["cover_letter"]
-        if policy == "target":  # tier A roles always get a letter; the rest only when the form asks
-            policy = "always" if r.get("tier") == "A" else "required"
-        log(args.home, [rec("fill", r, "started", f"tier {r.get('tier', '?')}", f"cover letter policy: {policy}")])
+        if policy == "target":  # the tier system is gone (2026-10-27); the old setting means "when the form asks"
+            policy = "required"
+        log(args.home, [rec("fill", r, "started", f"score {r.get('score', '?')}", f"cover letter policy: {policy}")])
         return emit({"banned_companies": st["banned_companies"], "cover_letter_policy": policy,
                      "auto_submit": bool(st.get("auto_submit")), "candidate": userconfig.profile(),
                      "role": {**r, "tailored_pdf": t["pdf"], "tailored_summary": t.get("summary", ""),
@@ -1211,12 +1160,12 @@ def cmd_record(args) -> int:
         out.update(status=e["status"], host=host)
         log(args.home, [rec("fill", {**e, "id": rid}, outcome, f"type {e.get('failure_type')}" if e.get("failure_type") else "",
                             res.get("detail", ""), "fill subagent")])
-        if outcome in ("failed_submit", "failed_load") and e.get("tier") == "A":
-            # a tier A role whose form couldn't be filled: recruiter-outreach's company lane reaches the company
-            # directly (its hiring manager or in-house recruiter). This skill still contacts no one.
+        if outcome in ("failed_submit", "failed_load") and (e.get("score") or 0) >= TARGET_ROLE_SCORE:
+            # a well-scored role whose form couldn't be filled: recruiter-outreach's company lane reaches the
+            # company directly (its hiring manager or in-house recruiter). This skill still contacts no one.
             tr = load(args.home, "target_roles.json", {})
             tr[rid] = {"id": rid, "title": e.get("title"), "company": e.get("company"), "url": e.get("url"),
-                       "apply_url": e.get("apply_url", ""), "pay_tier": e.get("pay_tier"), "people": e.get("people"),
+                       "apply_url": e.get("apply_url", ""), "score": e.get("score"), "people": e.get("people"),
                        "outcome": outcome, "detail": res.get("detail", "")[:300], "at": TODAY}
             save(args.home, "target_roles.json", tr)
             out["handed_to_recruiter_outreach"] = True
@@ -1509,14 +1458,11 @@ def cmd_dashboard(args) -> int:
         cat = (cache.get(key, {}).get("elig") or {}).get("category")
         v = ev.get(rid_)
         ok, why, evidence = (v["ok"], v["why"], v["evidence"]) if v else apply_decision(sp, st)
-        pt = v["pay"] if v else None
         by_id[rid_] = {
             "score": v["score"] if v else total_score(sp, cat, target),
-            "tier": v["tier"] if v else "", "payTier": pt["tier"] if pt else "", "payTierWhy": pt["detail"] if pt else "",
             "people": v["people"] if v else None,
             "parts": {**{k: sp.get(k, 0) for k in PART_MAX}, "location": LOGISTICS.get(cat, 7),
-                      "pay": pay_bonus(sp, target) + (tg.pay_points(pt) if pt and not (sp.get("pay_max") or sp.get("pay_min")) else 0),
-                      "fresh": fresh_bonus(sp)},
+                      "pay": pay_bonus(sp, target), "fresh": fresh_bonus(sp)},
             "pay": sp.get("pay_note", ""),
             "confidence": sp.get("confidence", "jd"), "level": sp.get("level", ""),
             "why": sp.get("why", ""), "apply": ok, "skipReason": why,
@@ -1577,7 +1523,6 @@ def cmd_status(args) -> int:
     p = pacing(args.home)
     queue = load(args.home, "queue.json", [])
     return emit({"by_status": counts,
-                 "queue_by_tier": dict(sorted(Counter(x.get("tier", "?") for x in queue).items())),
                  "queue_by_source": dict(Counter(x.get("source", "unknown") for x in queue).most_common()),
                  "applied_by_source": dict(Counter(e.get("source", "unknown") for e in ledger.values()
                                                    if e.get("status") == "applied").most_common()),
@@ -1588,92 +1533,6 @@ def cmd_status(args) -> int:
                  "pending_skills": len(b["skills"]["pending"]),
                  "applika_unregistered": sum(1 for e in ledger.values() if e.get("status") == "applied" and not e.get("applika")),
                  "pacing": {h: f'{v["used"]}/{v["budget"]}{" friction" if v["friction"] else ""}' for h, v in p["hosts"].items()}})
-
-
-# ------------------------------------------------------------- target tiers
-
-def cmd_company_queue(args) -> int:
-    """Company-type batches (references/company-type.md) for companies without a type: those of the last --batches
-    sweep dates, and with --backtest every company whose role posted pay (the pay estimate is checked on them)."""
-    roles = all_roles(args.home, args.batches)
-    keys = None
-    if args.backtest:
-        everything = all_roles(args.home, 400)
-        scores = load(args.home, "scores.json", {})
-        posted = {co.key_of(r["company"]) for r in everything
-                  if (scores.get(r["key"]) or {}).get("pay_max") or (scores.get(r["key"]) or {}).get("pay_min")}
-        roles = everything
-        keys = posted | {co.key_of(r["company"]) for r in all_roles(args.home, args.batches)}
-    entries = tg.company_type_entries(args.home, roles, keys)
-    out = work_dir(args.home)
-    stamp = NOW.strftime("%H%M")
-    batches = []
-    for i in range(0, len(entries), args.batch_size):
-        n = i // args.batch_size + 1
-        bf, of = out / f"company_batch_{stamp}_{n}.json", out / f"company_out_{stamp}_{n}.jsonl"
-        enrich.write_json(bf, entries[i:i + args.batch_size])
-        batches.append({"batch": enrich.host_path(bf), "out": enrich.host_path(of), "companies": len(entries[i:i + args.batch_size])})
-    return emit({"pending": len(entries), "known": len(tg.company_types(args.home)), "batches": batches})
-
-
-def cmd_company_ingest(args) -> int:
-    return emit(tg.ingest_company_types(args.home, sorted(work_dir(args.home).glob("company_out_*.jsonl"))))
-
-
-def cmd_paytier_backtest(args) -> int:
-    return emit(tg.backtest(args.home, all_roles(args.home, 400), settings(args.home)))
-
-
-def cmd_people_queue(args) -> int:
-    """People-check batches (job-source-sweep/references/people-check.md): companies of roles still worth applying
-    to. Order: pay at target (posted or likely) before the rest; inside each band the companies that post on
-    direct-hire sources (HN, YC, VC portfolios, their own boards, Wellfound: target.DIRECT_SOURCES) first, since
-    those are the roles the user wants in tier A; then the exact pay tier, then the best score. Middlemen never
-    get here: evaluate() already marks their roles not worth applying to."""
-    st = settings(args.home)
-    roles = all_roles(args.home, args.batches)
-    ev = evaluate(args.home, roles, st)
-    ledger = load(args.home, "ledger.json", {})
-    rank = {"posted_target": 0, "likely_target": 1, "unclear": 2, "posted_near": 3, "likely_below": 4, "posted_below": 9}
-    wanted = []
-    for r in roles:
-        v, e = ev[r["id"]], ledger.get(r["id"], {})
-        if e.get("status") in FINAL or not v["ok"] and v["why"] != "location_explicit":
-            continue
-        if v["pay"]["tier"] == "posted_below" or is_banned(r["company"], st):
-            continue
-        direct = tg.is_direct_source(r.get("sources"))
-        wanted.append({"company": r["company"], "why": f'{v["pay"]["tier"]}{" (direct source)" if direct else ""}: {r["title"]}',
-                       "_rank": (0 if v["pay"]["tier"] in tg.PAY_OK else 1, 0 if direct else 1,
-                                 rank.get(v["pay"]["tier"], 5), -(v["score"] or 0))})
-    wanted.sort(key=lambda w: w["_rank"])
-    limit = args.limit or (int(st["people_check_limit"]) if args.mode == "search" else 10)
-    res = co.people_queue(args.home, wanted, limit, work_dir(args.home), mode=args.mode, recheck=args.recheck)
-    if res.get("search"):
-        s_ = res["search"]
-        log(args.home, [{"step": "search", "role": "", "title": "", "company": "", "outcome": "stats",
-                         "reason": s_.get("halted") or "ok",
-                         "evidence": json.dumps({k: s_.get(k) for k in ("queries", "cache_hits", "by_engine", "empty", "errors",
-                                                                          "suspended", "halted", "canary")}),
-                         "by": "search layer"}])
-    return emit(res)
-
-
-def cmd_people_ingest(args) -> int:
-    files = sorted(work_dir(args.home).glob("people_out_*.jsonl"))
-    res = co.ingest_people(args.home, files)
-    cache = co.people_checks(args.home)
-    logged = []
-    for f in files:
-        for d in enrich.read_jsonl(f):
-            v = cache.get(d.get("key") or co.key_of(d.get("company", "")))
-            if v and v.get("checked") == TODAY and (v.get("level") or v.get("status")):
-                ev_ = (v.get("evidence") or [{}])[0]
-                logged.append(rec("people check", {"company": v.get("company", "")}, v.get("level") or v.get("status", ""), v.get("engine", ""),
-                                  " | ".join(x for x in [ev_.get("title", ""), ev_.get("location", ""), ev_.get("url", "")] if x)
-                                  or v.get("detail", ""), "people-check subagent"))
-    log(args.home, logged)
-    return emit(res)
 
 
 def cmd_run_report(args) -> int:
@@ -1718,16 +1577,6 @@ def main() -> int:
     sub.add_parser("ready").set_defaults(fn=cmd_ready)
     sub.add_parser("dashboard").set_defaults(fn=cmd_dashboard)
     sub.add_parser("status").set_defaults(fn=cmd_status)
-    p = sub.add_parser("company-queue"); p.add_argument("--batch-size", type=int, default=40)
-    p.add_argument("--batches", type=int, default=14); p.add_argument("--backtest", action="store_true")
-    p.set_defaults(fn=cmd_company_queue)
-    sub.add_parser("company-ingest").set_defaults(fn=cmd_company_ingest)
-    sub.add_parser("paytier-backtest").set_defaults(fn=cmd_paytier_backtest)
-    p = sub.add_parser("people-queue"); p.add_argument("--limit", type=int, default=0); p.add_argument("--batches", type=int, default=14)
-    p.add_argument("--mode", choices=["search", "chrome"], default="search")
-    p.add_argument("--recheck", action="store_true", help="also re-check verdicts made before the judged method")
-    p.set_defaults(fn=cmd_people_queue)
-    sub.add_parser("people-ingest").set_defaults(fn=cmd_people_ingest)
     p = sub.add_parser("run-report"); p.add_argument("--run"); p.add_argument("--batches", type=int, default=14)
     p.add_argument("--published-url"); p.set_defaults(fn=cmd_run_report)
     args = ap.parse_args()

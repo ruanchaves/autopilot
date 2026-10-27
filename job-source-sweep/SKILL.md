@@ -202,8 +202,8 @@ user's account fast.
 
 **When it runs:** when `sweep.country_check` is `always`, or when the user asks ("verify Brazil", "check which hire
 in my country"). With `never`, run it only if the user asks explicitly in this request. It adds a column; it isn't a
-filter. Inside /job-autopilot this step is skipped: the autopilot runs the same check on the companies that matter
-most for its target.
+filter. Inside /job-autopilot this step is skipped (the autopilot only reads the cached verdicts, for its location
+override).
 
 1. After the final merge, run `jobsweep verify-queue --profile <slug> --days <N> --limit <country_check_limit> [--all]`.
    - It fetches the search results for companies from **new** rows that have no fresh verdict, busiest first, and

@@ -80,7 +80,7 @@ details > summary { cursor: pointer; font-weight: 600; }
 
   <section>
     <h2>Selected roles</h2>
-    <p class="muted">Queued or worked on in this run, in queue order. Tier A: pay at target and engineers in your country or region. Tier B: one of the two proven. Tier C: neither.</p>
+    <p class="muted">Queued or worked on in this run, in queue order: best score first, dealt round-robin across the sources that found them.</p>
     <div class="scroll"><table id="selected"></table></div>
   </section>
 
@@ -90,8 +90,6 @@ details > summary { cursor: pointer; font-weight: 600; }
       <input id="q" type="search" placeholder="Search title, company, reason, evidence" aria-label="Search">
       <select id="f-sel" aria-label="Selected or rejected"><option value="">Selected and rejected</option><option value="1">Selected</option><option value="0">Rejected</option></select>
       <select id="f-reason" aria-label="Reason"></select>
-      <select id="f-tier" aria-label="Tier"></select>
-      <select id="f-pay" aria-label="Pay tier"></select>
       <select id="f-people" aria-label="People check"></select>
       <select id="f-source" aria-label="Source"></select>
       <select id="f-age" aria-label="Posting age"><option value="">Any age</option><option value="3">Up to 3 days</option><option value="7">Up to 7 days</option><option value="21">Up to 21 days</option><option value="99999">Older than 21 days</option><option value="-1">Age unknown</option></select>
@@ -107,19 +105,9 @@ details > summary { cursor: pointer; font-weight: 600; }
   </section>
 
   <section>
-    <h2>People checks this run</h2>
-    <div class="scroll"><table id="people"></table></div>
-  </section>
-
-  <section>
-    <h2>Search engines</h2>
-    <p class="muted">The people check's searches this run: queries per engine, cache hits, empty results, errors, engines suspended, and whether the run had to stop. Companies the search couldn't settle go to the Chrome fallback.</p>
-    <div class="scroll"><table id="search"></table></div>
-  </section>
-
-  <section>
-    <h2>Pay estimate, checked against posted pay</h2>
-    <div id="backtest"></div>
+    <h2>Outcomes by source lane</h2>
+    <p class="muted">Every application in the ledger, by the lane that found the role, with what became of it (<code>autopilot outcome</code>). This is what decides where the next sweep depth goes.</p>
+    <div class="scroll"><table id="outcomes"></table></div>
   </section>
 </main>
 
@@ -127,29 +115,29 @@ details > summary { cursor: pointer; font-weight: 600; }
 const D = __DATA__;
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
 const fmt = n => n == null || n === "" ? "" : Number(n).toLocaleString("en-US");
-const PAY = {posted_target: "posted ≥ target", likely_target: "likely ≥ target", unclear: "unclear", posted_near: "posted under target",
-             likely_below: "likely under target", posted_below: "posted under floor"};
 const PEOPLE = {brazil: `engineers in ${D.candidate.country}`, latam: `engineers in ${D.candidate.region}`, non_us: "only elsewhere outside the US",
-                none: "none found", unchecked: "not checked"};
+                worldwide: "JD says it hires worldwide", none: "none found", unchecked: "not checked"};
 const pill = (cls, text) => `<span class="pill ${cls}">${esc(text)}</span>`;
-const tierPill = t => pill("t-" + t, "Tier " + t);
-const payPill = p => pill(/target/.test(p) ? "ok" : /below|near/.test(p) ? "bad" : "neutral", PAY[p] || p);
-const peoplePill = p => pill(p === "brazil" || p === "latam" ? "ok" : p === "non_us" ? "warn" : p === "none" ? "bad" : "neutral", PEOPLE[p] || p);
+const payText = r => r.posted_pay || "no posted pay";
+const peoplePill = p => pill(p === "brazil" || p === "latam" || p === "worldwide" ? "ok" : p === "non_us" ? "warn" : p === "none" ? "bad" : "neutral", PEOPLE[p] || p);
 const ageText = a => a.days == null ? "unknown" : (a.minimum ? "≥ " : "") + a.days + "d";
 const roleLink = r => `<a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.title)}</a><div class="muted">${esc(r.company)}</div>`;
 
 document.getElementById("h1").textContent = "Autopilot run " + D.run;
 document.getElementById("sub").textContent = `started ${D.started.slice(0, 16).replace("T", " ")} UTC · built ${D.built}`;
-document.getElementById("lede").textContent = `Target: $${fmt(D.target)}/month, floor $${fmt(D.floor)}, at companies with engineers in ${D.candidate.country} or ${D.candidate.region}. Queue mode: ${D.target_mode}.`;
+document.getElementById("lede").textContent = `Target: $${fmt(D.target)}/month, floor $${fmt(D.floor)}. Best score first, balanced across sources.`;
 
 const sel = D.roles.filter(r => r.selected);
-const tiers = t => sel.filter(r => r.tier === t).length;
 const filled = D.roles.filter(r => r.step === "fill").length;
+const interviews = (D.outcomes || []).reduce((n, o) => n + (o.interview || 0) + (o.offer || 0), 0);
 document.getElementById("stats").innerHTML = [
   [D.roles.length, "roles considered"], [sel.length, "selected"], [D.roles.length - sel.length, "rejected or waiting"],
-  [tiers("A"), "selected in tier A"], [tiers("B"), "selected in tier B"], [filled, "forms worked on this run"],
-  [D.people_checks.length, "companies people-checked"], [D.sources.length, "sources and tasks"]
+  [filled, "forms worked on this run"], [interviews, "interviews and offers recorded"], [D.sources.length, "sources and tasks"]
 ].map(([n, l]) => `<div class="stat"><b>${fmt(n)}</b><span>${esc(l)}</span></div>`).join("");
+
+// outcomes by lane
+document.getElementById("outcomes").innerHTML = `<thead><tr><th>Source lane</th><th>Applied</th><th>Replied</th><th>Interview</th><th>Offer</th><th>Rejected</th><th>Ghosted</th></tr></thead><tbody>` +
+  (D.outcomes || []).map(o => `<tr><td>${esc(o.source)}</td>${["applied", "replied", "interview", "offer", "rejected", "ghosted"].map(k => `<td class="n">${fmt(o[k])}</td>`).join("")}</tr>`).join("") + "</tbody>";
 
 // search breakdown
 const st = s => /fail|block/.test(s) ? "bad" : /partial|not run/.test(s) ? "warn" : s ? "ok" : "neutral";
@@ -170,11 +158,11 @@ document.getElementById("funnel").innerHTML = `<thead><tr><th>Step</th><th>Outco
 
 // selected
 const selRows = sel.slice().sort((a, b) => (a.queuePos ?? 1e9) - (b.queuePos ?? 1e9));
-document.getElementById("selected").innerHTML = `<thead><tr><th>#</th><th>Tier</th><th>Role</th><th>Found by</th><th>Score</th><th>Pay</th>
+document.getElementById("selected").innerHTML = `<thead><tr><th>#</th><th>Role</th><th>Found by</th><th>Score</th><th>Posted pay</th>
   <th>Engineers outside the US</th><th>Age</th><th>Outcome</th></tr></thead><tbody>` +
-  selRows.map(r => `<tr><td class="n">${r.queuePos ?? ""}</td><td>${tierPill(r.tier)}</td><td>${roleLink(r)}</td>
+  selRows.map(r => `<tr><td class="n">${r.queuePos ?? ""}</td><td>${roleLink(r)}</td>
   <td class="q">${esc(r.sources.join(" · "))}</td><td class="n">${r.score ?? ""}</td>
-  <td>${payPill(r.pay)}<div class="muted">${esc(r.payWhy)}</div></td><td>${peoplePill(r.people)}</td>
+  <td>${esc(payText(r))}</td><td>${peoplePill(r.people)}</td>
   <td class="n" title="${esc(r.age.method)}">${ageText(r.age)}</td><td>${esc(r.outcome)}<div class="muted">${esc(r.evidence.slice(0, 140))}</div></td></tr>`).join("") + "</tbody>";
 
 // every role
@@ -184,29 +172,25 @@ const opts = (id, label, values, names) => {
 };
 const uniq = a => [...new Set(a)].filter(x => x !== "" && x != null).sort();
 opts("f-reason", "Any step or reason", uniq(D.roles.map(r => r.reasonLabel || r.outcome)));
-opts("f-tier", "Any tier", ["A", "B", "C"]);
-opts("f-pay", "Any pay tier", Object.keys(PAY), PAY);
 opts("f-people", "Any people check", Object.keys(PEOPLE), PEOPLE);
 opts("f-source", "Any source", uniq(D.roles.flatMap(r => r.sources)));
 let page = 0, open = new Set();
 const PER = 150;
 const val = id => document.getElementById(id).value;
 function filtered() {
-  const q = val("q").toLowerCase(), s = val("f-sel"), rs = val("f-reason"), t = val("f-tier"), p = val("f-pay"),
+  const q = val("q").toLowerCase(), s = val("f-sel"), rs = val("f-reason"),
         pe = val("f-people"), so = val("f-source"), ag = val("f-age");
-  return D.roles.filter(r => (!q || [r.title, r.company, r.reasonLabel, r.evidence, r.payWhy, r.why].join(" ").toLowerCase().includes(q))
-    && (!s || String(+r.selected) === s) && (!rs || (r.reasonLabel || r.outcome) === rs) && (!t || r.tier === t)
-    && (!p || r.pay === p) && (!pe || r.people === pe) && (!so || r.sources.includes(so))
+  return D.roles.filter(r => (!q || [r.title, r.company, r.reasonLabel, r.evidence, r.posted_pay, r.why].join(" ").toLowerCase().includes(q))
+    && (!s || String(+r.selected) === s) && (!rs || (r.reasonLabel || r.outcome) === rs)
+    && (!pe || r.people === pe) && (!so || r.sources.includes(so))
     && (!ag || (ag === "-1" ? r.age.days == null : ag === "99999" ? r.age.days > 21 : r.age.days != null && r.age.days <= +ag)));
 }
 function detail(r) {
-  const ev = r.peopleEv || {};
-  return `<tr class="detail"><td colspan="8"><div class="kv">
+  return `<tr class="detail"><td colspan="7"><div class="kv">
     <b>Decision</b><span>${esc(r.step)} → ${esc(r.outcome)}${r.reasonLabel ? " · " + esc(r.reasonLabel) : ""} · decided by ${esc(r.by)}</span>
     <b>Evidence</b><span>${esc(r.evidence) || "—"}</span>
-    <b>Tier</b><span>${esc(r.tierWhy)}</span>
-    <b>Pay</b><span>${esc(r.payWhy)}${r.paySource ? " (" + esc(r.paySource) + ")" : ""}</span>
-    <b>People check</b><span>${esc(PEOPLE[r.people] || r.people)}${r.peopleChecked ? " · checked " + esc(r.peopleChecked) : ""}${ev.url ? ` · <a href="${esc(ev.url)}" target="_blank" rel="noopener">${esc(ev.title || ev.url)}</a> ${esc(ev.location || "")}` : ""}</span>
+    <b>Posted pay</b><span>${esc(payText(r))}${r.gate ? " · " + esc(r.gate) : ""}</span>
+    <b>People check</b><span>${esc(PEOPLE[r.people] || r.people)}</span>
     <b>Score</b><span>${r.score ?? "not scored"} ${r.parts && r.parts.core != null ? `(core ${r.parts.core}, requirements ${r.parts.requirements}, seniority ${r.parts.seniority}, domain ${r.parts.domain})` : ""}${r.blockers.length ? " · blockers: " + esc(r.blockers.join(", ")) : ""}</span>
     <b>Scorer's note</b><span>${esc(r.why) || "—"}</span>
     <b>JD location</b><span>${esc(r.elig)} · ${esc(r.location)}</span>
@@ -220,11 +204,11 @@ function render() {
   page = Math.min(page, pages - 1);
   document.getElementById("count").textContent = `${fmt(rows.length)} roles match. Click a row for its decision trail.`;
   document.getElementById("page").textContent = `page ${page + 1} of ${pages}`;
-  document.getElementById("roles").innerHTML = `<thead><tr><th>Tier</th><th>Role</th><th>Decision</th><th>Pay</th><th>Engineers outside the US</th>
+  document.getElementById("roles").innerHTML = `<thead><tr><th>Role</th><th>Decision</th><th>Posted pay</th><th>Engineers outside the US</th>
     <th>Age</th><th>Score</th><th>Found by</th></tr></thead><tbody>` + rows.slice(page * PER, page * PER + PER).map(r =>
-    `<tr class="role" data-id="${esc(r.id)}" tabindex="0"><td>${tierPill(r.tier)}</td><td>${roleLink(r)}</td>
+    `<tr class="role" data-id="${esc(r.id)}" tabindex="0"><td>${roleLink(r)}</td>
     <td>${pill(r.selected ? "ok" : "neutral", r.selected ? "selected" : r.outcome)}<div class="muted">${esc(r.reasonLabel)}</div></td>
-    <td>${payPill(r.pay)}</td><td>${peoplePill(r.people)}</td><td class="n" title="${esc(r.age.method)}">${ageText(r.age)}</td>
+    <td>${esc(payText(r))}</td><td>${peoplePill(r.people)}</td><td class="n" title="${esc(r.age.method)}">${ageText(r.age)}</td>
     <td class="n">${r.score ?? ""}</td><td class="q">${esc(r.sources.join(" · "))}</td></tr>` + (open.has(r.id) ? detail(r) : "")).join("") + "</tbody>";
 }
 document.getElementById("roles").addEventListener("click", e => {
@@ -249,29 +233,7 @@ document.getElementById("changes").innerHTML = C.previous_run ? [
   `<p class="muted">Compared with run ${esc(C.previous_run)}.</p>`,
   list("New roles", C.new, x => `<li>${esc(x.title)} · ${esc(x.company)}</li>`),
   list("Gone since then", C.gone, x => `<li>${esc(x.title)} · ${esc(x.company)} <span class="muted">${esc(x.why)}</span></li>`),
-  list("Tier changed", C.tier_changed, x => `<li>${esc(x.title)} · ${esc(x.company)}: ${esc(x.from)} → ${esc(x.to)} <span class="muted">${esc(x.why)}</span></li>`),
   list("Decision changed", C.decision_changed, x => `<li>${esc(x.title)} · ${esc(x.company)}: ${esc(x.from)} → ${esc(x.to)}</li>`)
 ].join("") : '<p class="muted">This is the first run with a report, so there is nothing to compare with yet.</p>';
 
-// people checks
-document.getElementById("people").innerHTML = D.people_checks.length ? `<thead><tr><th>Company</th><th>Verdict</th><th>Engine</th><th>Evidence</th></tr></thead><tbody>` +
-  D.people_checks.map(p => `<tr><td>${esc(p.company)}</td><td>${peoplePill(p.outcome)}</td><td>${esc(p.reason)}</td><td class="q">${esc(p.evidence)}</td></tr>`).join("") + "</tbody>"
-  : '<tbody><tr><td class="muted">No people checks ran in this run.</td></tr></tbody>';
-
-// search engines
-const S = D.search || [];
-document.getElementById("search").innerHTML = S.length ? `<thead><tr><th>When</th><th>Queries</th><th>By engine</th><th>Cache hits</th><th>Empty</th><th>Errors</th><th>Canary</th><th>Suspended / stopped</th></tr></thead><tbody>` +
-  S.map(x => `<tr><td class="mono">${esc((x.at || "").slice(11, 16))}</td><td class="n">${fmt(x.queries)}</td>
-  <td>${esc(Object.entries(x.by_engine || {}).map(([k, v]) => k + " " + v).join(", "))}</td><td class="n">${fmt(x.cache_hits)}</td>
-  <td class="n">${fmt(x.empty)}</td><td class="n">${fmt(x.errors)}</td><td>${pill(x.canary === "ok" ? "ok" : x.canary ? "bad" : "neutral", x.canary || "not run")}</td>
-  <td>${esc([...(x.suspended || []), x.halted].filter(Boolean).join("; ")) || "—"}</td></tr>`).join("") + "</tbody>"
-  : '<tbody><tr><td class="muted">No searches ran in this run.</td></tr></tbody>';
-
-// backtest
-const B = D.backtest || {};
-const pct = x => x == null ? "—" : Math.round(100 * x) + "%";
-document.getElementById("backtest").innerHTML = B.roles_with_posted_pay ? `<p>On ${fmt(B.roles_with_posted_pay)} roles that posted pay (checked ${esc(B.date)}), ${pct(B.base_rate_target)} reached the target.
-  Hiding their pay, the estimate called ${fmt(B.likely_target.n)} "likely ≥ target", and ${pct(B.likely_target.truly_target)} of those really were;
-  it called ${fmt(B.likely_below.n)} "likely under target", and ${pct(B.likely_below.truly_under_target)} of those really were. It covered ${pct(B.coverage)} of the roles.
-  Verdict: <b>${esc(B.verdict)}</b>.</p><p class="muted">${esc(B.note)}</p>` : '<p class="muted">No backtest yet.</p>';
 </script>

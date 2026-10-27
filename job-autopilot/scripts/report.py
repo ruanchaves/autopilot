@@ -50,7 +50,6 @@ REASON_LABEL = {
     "waiting_answers": "Waiting for your answers",
     "load_retries": "Failed to load too many times",
     "too_old": "Posting too old for this run",
-    "tier_c": "Tier C (target_mode: only)",
     "not_scored": "Not scored yet",
 }
 
@@ -178,16 +177,8 @@ def build(home: str, run: str, batches: int = 14) -> dict:
     started = meta.get("started") or NOW.isoformat()
     decisions = enrich.read_jsonl(ap / "runs" / run / "decisions.jsonl") if (ap / "runs" / run / "decisions.jsonl").exists() else []
     trail: dict[str, list] = {}
-    people_log, search_log = [], []
     for d in decisions:
-        if d.get("step") == "people check":
-            people_log.append(d)
-        elif d.get("step") == "search":
-            try:
-                search_log.append({"at": d.get("at", ""), **json.loads(d.get("evidence") or "{}")})
-            except json.JSONDecodeError:
-                pass
-        elif d.get("role"):
+        if d.get("role"):
             trail.setdefault(d["role"], []).append({k: d.get(k, "") for k in ("at", "step", "outcome", "reason", "evidence", "by")})
 
     out_roles = []
@@ -211,10 +202,8 @@ def build(home: str, run: str, batches: int = 14) -> dict:
         out_roles.append({
             "id": r["id"], "title": r["title"], "company": r["company"], "url": r["url"], "location": r.get("location", ""),
             "sources": r.get("sources") or [], "batches": r.get("batches") or [],
-            "age": age, "tier": v["tier"], "tierWhy": v["tier_reason"],
-            "pay": v["pay"]["tier"], "payWhy": v["pay"]["detail"], "paySource": v["pay"].get("source", ""),
-            "posted_pay": sp.get("pay_note", ""),
-            "people": v["people"] or "unchecked", "peopleEv": v["people_evidence"], "peopleChecked": v["people_checked"],
+            "age": age, "posted_pay": sp.get("pay_note", ""), "gate": v["gate"],
+            "people": v["people"] or "unchecked",
             "score": v["score"], "parts": {k: sp.get(k) for k in ("core", "requirements", "seniority", "domain")} if sp else {},
             "blockers": sp.get("blockers") or [], "why": sp.get("why", ""), "level": sp.get("level", ""),
             "elig": {1: "open", 2: "not stated", 3: "restricted"}.get(v["elig"], "unclassified"),
@@ -237,7 +226,7 @@ def build(home: str, run: str, batches: int = 14) -> dict:
 
     # changes since the previous run's report
     prev_meta = next((r for r in reversed(runs) if r.get("id") < run and (ap / "runs" / r["id"] / "report.json").exists()), None)
-    changes = {"previous_run": prev_meta.get("id") if prev_meta else "", "new": [], "gone": [], "tier_changed": [], "decision_changed": []}
+    changes = {"previous_run": prev_meta.get("id") if prev_meta else "", "new": [], "gone": [], "decision_changed": []}
     if prev_meta:
         prev = {x["id"]: x for x in enrich.read_json(ap / "runs" / prev_meta["id"] / "report.json", {}).get("roles", [])}
         cur = {x["id"]: x for x in out_roles}
@@ -245,8 +234,6 @@ def build(home: str, run: str, batches: int = 14) -> dict:
         changes["gone"] = [{"id": k, "title": x["title"], "company": x["company"],
                             "why": "no longer in the sweep window (the posting closed, or no source listed it again)"}
                            for k, x in prev.items() if k not in cur][:300]
-        changes["tier_changed"] = [{"id": k, "title": x["title"], "company": x["company"], "from": prev[k]["tier"],
-                                    "to": x["tier"], "why": x["tierWhy"]} for k, x in cur.items() if k in prev and prev[k]["tier"] != x["tier"]][:300]
         changes["decision_changed"] = [{"id": k, "title": x["title"], "company": x["company"],
                                         "from": f'{prev[k]["outcome"]} ({prev[k]["reasonLabel"]})', "to": f'{x["outcome"]} ({x["reasonLabel"]})'}
                                        for k, x in cur.items() if k in prev and prev[k]["outcome"] != x["outcome"]][:300]
@@ -272,12 +259,9 @@ def build(home: str, run: str, batches: int = 14) -> dict:
         "run": run, "started": started, "built": NOW.strftime("%Y-%m-%d %H:%M UTC"),
         "outcomes": outcomes,
         "candidate": {"country": userconfig.country(), "region": userconfig.region()},
-        "target": st["pay_target_usd_month"], "floor": st.get("pay_skip_below_usd_month"), "target_mode": st.get("target_mode"),
+        "target": st["pay_target_usd_month"], "floor": st.get("pay_skip_below_usd_month"),
         "sources": source_rows(sweeps, role_stats),
         "funnel": [{"step": k[0], "outcome": k[1], "reason": k[2], "n": n} for k, n in funnel.most_common()],
-        "people_checks": [{k: d.get(k, "") for k in ("company", "outcome", "reason", "evidence")} for d in people_log],
-        "search": search_log,
-        "backtest": apm.load(home, "paytier_backtest.json", {}),
         "changes": changes,
         "roles": out_roles,
     }
@@ -289,6 +273,6 @@ def build(home: str, run: str, batches: int = 14) -> dict:
     (rd / "report.html").write_text(page, encoding="utf-8")
     sel = [x for x in out_roles if x["selected"]]
     return {"run": run, "roles": len(out_roles), "selected": len(sel), "rejected": len(out_roles) - len(sel),
-            "by_tier_selected": dict(Counter(x["tier"] for x in sel)), "sources": len(data["sources"]),
+            "sources": len(data["sources"]),
             "decisions_logged": len(decisions), "report": enrich.host_path(rd / "report.html"),
             "next": "publish report.html as a NEW artifact (one per run), then `autopilot run-report --published-url <url>`"}

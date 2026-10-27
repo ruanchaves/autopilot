@@ -1,3 +1,5 @@
+> **Superseded on 2026-10-27.** The pay estimate, the company-type pass, the autopilot's people check and the A/B/C tiers described here were removed at the user's request (too complex to trust; the floor is now USD 8k). Kept for the record: the engine tests, the search layer and the report design still apply.
+
 # Target tiers: why the autopilot works the way it does (2026-10-14)
 
 The user's goal: applications to roles paying **at least $10k/month** at companies that **really hire outside the

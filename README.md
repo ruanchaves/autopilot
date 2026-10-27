@@ -7,7 +7,7 @@ The skills are Markdown instructions (`SKILL.md`, plus `references/` for the sub
 | Skill | What it does | Sends anything? |
 |---|---|---|
 | `/job-source-sweep` | Sweeps feeds, APIs, VC portfolio boards, LinkedIn, Wellfound, Remote Rocketship and Google `site:` searches over 19 ATS platforms and 15 job boards. Fetches each job description, classifies location eligibility, rates resume fit, and publishes the **role explorer**, a filterable page where you accept or reject roles. | No |
-| `/job-autopilot` | Runs the sweep (with a daily mode for the two lanes that produce interviews: LinkedIn Jobs and the companies' own Lever/Greenhouse/Ashby boards), gives every role a 0-100 score, estimates pay when none is posted, checks whether each company has engineers in your country or region, and queues tier A roles (target pay plus engineers there) first. It tailors the resume per role and fills each application form completely in Chrome. **By default it stops in front of Submit** and leaves the tab open; you review, submit, and mark it submitted on the dashboard. Every run publishes a report explaining each decision. Optional `auto_submit`. | Only with `auto_submit: true` |
+| `/job-autopilot` | Runs the sweep (with a daily mode for the two lanes that produce interviews: LinkedIn Jobs and the companies' own Lever/Greenhouse/Ashby boards), gives every role a 0-100 score and queues them best score first, balanced across the sources that found them. It tailors the resume per role and fills each application form completely in Chrome. **By default it stops in front of Submit** and leaves the tab open; you review, submit, and mark it submitted on the dashboard. Every run publishes a report explaining each decision. Optional `auto_submit`. | Only with `auto_submit: true` |
 | `/recruiter-outreach` | Finds recruiters on LinkedIn who place people in your role from your region, scores each on four questions, and contacts the best ones: 20 new connection requests a day with a custom note, then InMails while credits last, plus a plain message to every recruiter who is already a 1st-degree connection (those never count toward the 20). Keeps prospecting with invented search phrasings until the day's budget is spent. | Yes, within the daily caps |
 | `/hiring-posts-outreach` | The quick lane: LinkedIn post searches for "<role> hiring" run inside LinkedIn search, the authors ranked by the pay their post states, then by explicit eligibility for your region, and, when the post states neither, by the poster's likely nationality guessed from their name (nearest to your country first), and contacted best-first within recruiter-outreach's caps and contact ledger. No profile visits: the post is the evidence. | Yes, within the same daily caps |
 
@@ -100,7 +100,7 @@ Claude links the three skill folders into `~/.claude/skills`, finds a Python 3.1
 | `banned_companies` | current employers and clients | never applied to, never contacted |
 | `tracker` | `enabled`, `company_cooldown_days`, `rejection_cooldown_days`, `rejection_neutral_feedback`, `rejection_ignore_companies` | applika registration, the one-application-per-company cooldown and rejection cooldowns |
 | `sweep` | `days`, `mode` (`quick`/`standard`/`full`), `explorer` (`full`/`table`/`off`), `max_new_roles`, `remote_only`, `report_rows`, `country_check`, `country_check_limit`, `skip_tasks`, `skip_sources`, `skip_hosts` | job-source-sweep |
-| `autopilot` | `channels`, `max_minutes`, `max_ready`, `auto_submit`, `cover_letter` (`required`/`always`/`target`/`never`), `target_mode` (`prefer`/`only`), `people_check_limit`, `max_load_retries`, `tailor`, `tailor_ahead`, `per_company_per_run` | job-autopilot |
+| `autopilot` | `channels`, `max_minutes`, `max_ready`, `auto_submit`, `cover_letter` (`required`/`always`/`never`), `max_load_retries`, `tailor`, `tailor_ahead`, `per_company_per_run` | job-autopilot |
 | `recruiter_outreach` | `connect_per_day`, `inmail_per_day`, `message_per_day`, `min_score`, `max_per_company`, `stale_days`, `gap_seconds`, `people_queries`, `post_queries`, `required_terms`, `cta_styles` | recruiter-outreach |
 
 Each skill has an interactive first-run setup that writes its section: the sweep asks about the role, resume, country, pay and sweep preferences and fills `candidate` from the resume; the autopilot asks about submitting, cover letters, channels, the tracker and caps; recruiter outreach asks for permission to send, the daily and per-company caps, strictness, and proposes the search phrasings. `job-source-sweep/scripts/userconfig.py` is the loader all three skills share. Set `AUTOPILOT_CONFIG` to point at a different file. The only state the scripts write back is `<home>/config.json` with the explorer's artifact URL; preferences are always edited in `config.yaml`.
@@ -175,7 +175,7 @@ The autopilot wraps the sweep, ranks what it found, and prepares applications fr
   - **Tier A:** pay at your target and engineers working there from your country or region.
   - **Tier B:** one of the two.
   - **Tier C:** neither.
-- **Pay without a posted number:** it is estimated from what the company quoted you, what it posts for its other engineering roles, and what kind of company it is. A backtest against roles that did post pay checks the estimate (`job-autopilot/references/target-tier-research.md`).
+- **Pay:** only the posted pay and the company's own quotes to you count (a highest quote under your floor holds its roles back). The pay estimate and target tiers of 2026-10-14 were removed on 2026-10-27 as too complex to trust.
 - **Run report:** every run publishes a report artifact with every source and query, why each role was selected or rejected and who decided, and each posting's estimated age. Chrome subagents fill forms in parallel, each in its own tab. The forms stay open in front of Submit; the dashboard shows every answer typed, with estimates flagged, so you can review and send.
 
 ```mermaid
@@ -382,7 +382,7 @@ wsl.exe -e python3 /mnt/d/dev/autopilot/job-source-sweep/scripts/jobsweep.py sta
 | Script | Commands |
 |---|---|
 | `job-source-sweep/scripts/jobsweep.py` | `config`, `plan`, `http`, `merge`, `test-match`, `verify-queue`, `jds`, `enrich-queue`, `explorer` |
-| `job-autopilot/scripts/autopilot.py` | `score-queue`, `score-ingest`, `queue`, `tailor-queue`, `pace-start`, `next`, `pace-check`, `record`, `answers`, `confirm`, `ready`, `applika-sync`, `dashboard`, `status` |
+| `job-autopilot/scripts/autopilot.py` | `score-queue`, `score-ingest`, `queue`, `tailor-queue`, `pace-start`, `next`, `pace-check`, `record`, `answers`, `confirm`, `outcome`, `ready`, `applika-sync`, `dashboard`, `status` |
 | `job-autopilot/scripts/cover_letter.py` | `--text FILE --out FILE.pdf [--name] [--contact]`: one-page PDF, no dependencies |
 | `recruiter-outreach/scripts/recruiters.py` | `discover-plan`, `ingest`, `score`, `plan`, `check`, `record`, `mark`, `import-contacts`, `companies`, `dashboard`, `status` |
 

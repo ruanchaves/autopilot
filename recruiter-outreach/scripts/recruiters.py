@@ -666,9 +666,8 @@ def company_targets(home: str, st: dict, runs: dict | None = None, for_plan: boo
         t["sources"] = sorted(set(t["sources"]) | {"funding:" + s for s in e.get("sources") or []})
         if ok and "registry" not in t["origin"]:
             t["origin"].append("registry")
-    # job-autopilot's tier A roles whose form couldn't be filled (account walls, load failures): the company pays the
-    # target and has engineers in the candidate's region (autopilot/target_roles.json), so reaching it directly is
-    # the next best thing to the application
+    # job-autopilot's well-scored roles (75+) whose form couldn't be filled (account walls, load failures;
+    # autopilot/target_roles.json): reaching the company directly is the next best thing to the application
     for x in enrich.read_json(hp / "autopilot" / "target_roles.json", {}).values():
         name = (x.get("company") or "").strip()
         k = company_key(name)
