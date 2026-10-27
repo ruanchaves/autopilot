@@ -124,14 +124,12 @@ DEFAULT_SETTINGS = {
     # companies the people check looks at per run, best first. Searches go through the search layer (ddgs,
     # companies.Searcher; job-source-sweep search.* settings cap the queries); Chrome is only the fallback.
     "people_check_limit": 100,
-    # company types (company_types.json, or the name) whose roles are never prepared: the staffing, nearshore
-    # and marketplace middlemen between the candidate and the company that pays. [] turns the rule off.
-    "skip_company_types": ["staff_aug", "marketplace"],
-    # Types skipped only while the posting's own pay stays under pay.target_usd_month: task platforms post the
-    # per-task rate they pay worldwide (Askable posted USD 12.8-16k and led to an interview, 2026-10-27), unlike
-    # staffing firms, whose posted ranges never reached this candidate. A type guessed from the company name alone
-    # never triggers either rule (Deel was once skipped as a "marketplace" by name); the role is scored instead.
-    "skip_company_types_unless_pay_at_target": ["task_platform"],
+    # company types (company_types.json) whose roles are never prepared, and types skipped only while the posting's
+    # own pay stays under pay.target_usd_month. Both off since 2026-10-27: the user wants no role skipped for its
+    # company type (Askable, a task platform, led to an interview). The type still feeds the pay estimate and the
+    # tiers, so middlemen rank lower rather than disappear. A type guessed from the company name alone never skips.
+    "skip_company_types": [],
+    "skip_company_types_unless_pay_at_target": [],
     # filled in from config.yaml by settings(): banned_companies (current employers/clients, never
     # applied to), pay_target_usd_month / pay_skip_below_usd_month (pay section), and the tracker
     # section (applika_enabled, rejection_cooldown_days, rejection_neutral_feedback,

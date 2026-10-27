@@ -36,7 +36,7 @@ This skill runs job-source-sweep, ranks everything it finds, and prepares applic
 | `autopilot.cover_letter` | `required`: write one when the form requires it or the posting asks for one. `always`: wherever a form accepts one. `target`: `always` for tier A roles, `required` for the rest. `never`. |
 | `autopilot.target_mode` | `prefer` (default): the queue takes tier A first, then B, then C. `only`: tier C roles are left out of the queue (they still show on the dashboard and in the run report). |
 | `autopilot.people_check_limit` | Companies the people check looks at per run (default 100, best candidates first). Their searches go through the search layer (`search:` in config.yaml: the ddgs library in its own virtualenv, `max_queries_per_run` 300). Only companies it can't settle go to Chrome. |
-| `autopilot.skip_company_types` | Company types whose roles are never prepared (default `staff_aug`, `marketplace`, `task_platform`): the staffing, nearshore and marketplace middlemen. `[]` turns the rule off. |
+| `autopilot.skip_company_types` | Company types whose roles are never prepared (empty since 2026-10-27, the user's rule; was `staff_aug`, `marketplace`, `task_platform`): the staffing, nearshore and marketplace middlemen. `[]` turns the rule off. |
 | `autopilot.max_load_retries` | Type-3 failures before a role is given up. |
 | `autopilot.tailor_ahead` | Tailored CVs kept ready ahead of the fill loop. |
 | `autopilot.tailor` | `true`: tailor the resume per role with the tailor-resume skill. `false`: skip tailoring and upload `resume.pdf` as-is (set by first-run setup when the skill isn't installed). |
@@ -190,16 +190,12 @@ The script also skips:
 - companies that rejected the user within `rejection_cooldown_days`;
 - roles whose posted pay tops out below `pay_skip_below_usd_month`;
 - roles at companies whose own quotes to the user top out below the floor (`pay_gate`);
-- **middlemen** (`autopilot.skip_company_types`, default staffing firms and talent marketplaces): roles whose
-  company the company-type subagent judged (confidence `jd` or `web`, never the name alone: Deel was once skipped as
-  a "marketplace" by name) as a staffing, nearshore or marketplace layer between the candidate and the company that
-  pays. They are shown as "not applying" with reason `middleman`. Every such quote to the user was under the floor
-  whatever the posting said (`references/target-tier-research.md`); the user asked on 2026-10-15 to skip them.
-  Consultancies stay in, since they employ their engineers directly. Since 2026-10-27 `task_platform` is in
-  `skip_company_types_unless_pay_at_target` instead: a task platform is skipped only while its posted pay stays
-  under `pay.target_usd_month`, because Askable, a task platform posting USD 12.8-16k, led to an interview, and
-  task platforms post the per-task rate they pay worldwide (staffing firms don't, so they stay in the hard list).
-  The dashboard "apply" override still forces one through.
+- **middlemen, only if configured** (`autopilot.skip_company_types`, and `skip_company_types_unless_pay_at_target`
+  for types skipped only while posted pay is under the target). **Both are empty since 2026-10-27: the user said
+  nothing should be skipped for its company type** (the 2026-10-15 rule skipped staffing firms, marketplaces and
+  task platforms; then Askable, a task platform, led to an interview). The company type still feeds the pay estimate
+  and the tiers (`target.py`), so middlemen rank lower rather than disappear. When a list is set, a type guessed from
+  the company name alone never skips (Deel was once skipped as a "marketplace" by name); those roles are scored.
 
 **A JD's "US-based only" exclusion is overridden** when the people check found engineers in the candidate's country
 or region: the role is queued, capped at tier B, and the report shows the override. Citizenship, clearance, export
