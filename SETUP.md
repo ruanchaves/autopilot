@@ -4,7 +4,7 @@ The user cloned this repo and asked you to install its skills. `<repo>` is the f
 
 ## 1. Link the skills
 
-Make `~/.claude/skills/<name>` point at `<repo>/<name>` for each of `job-source-sweep`, `job-autopilot` and `recruiter-outreach`. Create `~/.claude/skills` if it doesn't exist.
+Make `~/.claude/skills/<name>` point at `<repo>/<name>` for each of `job-source-sweep`, `job-autopilot`, `recruiter-outreach` and `hiring-posts-outreach`. Create `~/.claude/skills` if it doesn't exist.
 
 - Windows (PowerShell): `New-Item -ItemType Junction -Path "$HOME\.claude\skills\<name>" -Target "<repo>\<name>"`
 - macOS / Linux: `ln -s "<repo>/<name>" ~/.claude/skills/<name>`
@@ -31,9 +31,9 @@ Set `python:` in `<repo>/config.yaml` to `python3`, `python`, `py -3` or `wsl`. 
 
 Set `home:` in `config.yaml` to a folder outside the repo for per-user data, by default `~/jobsweep` (on Windows, its `C:/Users/<name>/jobsweep` form). Create it.
 
-## 4. Reset the personal settings
+## 4. Create config.yaml
 
-`config.yaml` still holds the repo author's values in `candidate`, `resume`, `role`, `pay`, `banned_companies`, `sweep` and the recruiter search phrasings. Don't edit them by hand: set `setup_done: []` so each skill runs its first-run questions and replaces them. Tell the user in one line that this is what the setup is about to do.
+`config.yaml` is git-ignored and does not exist in a fresh clone. Copy `<repo>/config.example.yaml` to `<repo>/config.yaml` before steps 2 and 3 edit it. The copy holds placeholder values in `candidate`, `resume`, `role`, `pay` and `banned_companies` and `setup_done: []`, so each skill runs its first-run questions and replaces them. Tell the user in one line that this is what the setup is about to do.
 
 ## 5. Verify
 
@@ -54,4 +54,4 @@ Don't wait for a restart: read `<repo>/job-source-sweep/SKILL.md`, go to its ste
 
 - Restart Claude Code so `/job-source-sweep`, `/job-autopilot` and `/recruiter-outreach` appear in the skill list.
 - `/job-autopilot` and `/recruiter-outreach` ask their own few questions the first time they run (submit policy, cover letters, channels and tracker; permission to send, daily and per-company caps, strictness and search phrasings).
-- Everything personal lives in `<repo>/config.yaml`; "reconfigure" or an empty `setup_done` reruns the questions. The repo now holds their details, so it should stay private or have `config.yaml` stripped before it is published.
+- Everything personal lives in `<repo>/config.yaml`; "reconfigure" or an empty `setup_done` reruns the questions. The file is git-ignored, so their details never reach a commit; `config.example.yaml` is the only copy in the repo.

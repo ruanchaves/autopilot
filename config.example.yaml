@@ -1,0 +1,259 @@
+# config.example.yaml - everything that is specific to you. Copy it to config.yaml (git-ignored) and edit; the skills and
+# their scripts read it (job-source-sweep/scripts/userconfig.py) and nothing personal is hardcoded
+# elsewhere. Paths may use either Windows (D:/dev/...) or POSIX form. Run `python3
+# job-source-sweep/scripts/jobsweep.py config` to see the merged result.
+
+# Where the skills keep their data: sweeps, caches, the application ledger, the answer bank, the
+# recruiter database. Not in the repo.
+home: ~/jobsweep
+
+# How Python is run: python3 | python | "py -3" | wsl  (wsl = Windows with Python only inside WSL)
+python: wsl
+
+# How many Chrome subagents may run at once. Each works in its own tab of the shared tab group
+# through the DOM tools (no screenshots), so read-only browser work (sweeps, discovery, country
+# checks, form filling) runs in parallel. Sending (recruiter messages) always stays single.
+browser_parallel: 3
+# The OS of the Chrome the extension must drive. Every skill and every Chrome subagent calls
+# list_connected_browsers first and select_browser on the browser with this osPlatform; it never attaches to a
+# Chrome on another OS (the user's macOS Chrome is not signed in anywhere; user rule 2026-10-15).
+browser_os: Windows
+setup_done: []   # skills whose first-run setup has run; a fresh copy starts empty so every skill asks its questions
+
+candidate:
+  full_name: Jane Doe
+  first_name: Jane
+  last_name: Doe
+  email: jane.doe@example.com
+  phone: "+55 11 90000-0000"
+  phone_country: Brazil (+55)
+  city: Your City
+  country: Brazil            # where you live; used for eligibility, the hiring check and logistics lines
+  region: LATAM              # the wider region job posts use for your location (LATAM, EMEA, APAC...)
+  region_aliases: [LATAM, Latin America, South America, Americas]
+  timezone: UTC-3
+  linkedin: https://www.linkedin.com/in/your-handle
+  github: https://github.com/your-handle
+  website: ""
+  languages: "English: full professional proficiency (pick the highest non-native level, e.g. Advanced/Fluent/C1). Portuguese: native. No other languages."
+  native_language: Portuguese
+  years_experience: 7
+  professional_since: 2019
+  level: senior individual contributor, mentors but no people management
+  headline: Senior AI Engineer
+  # Two lines recruiters and cover letters are built from. Only facts the resume supports.
+  pitch: >-
+    Senior AI engineer, seven years in, who builds LLM applications, RAG and agent systems (LangGraph)
+    and has shipped them at a bank with 30 million customers and at a fintech. Works from Brazil (UTC-3)
+    on US hours for North American clients; open to remote contractor or employer-of-record roles.
+  core_areas: [LLM applications, RAG and retrieval, agents, evaluation, NLP, applied ML]
+  domains: [fintech and banking, document automation, enterprise software, open-source NLP]
+  stack: [Python, FastAPI, GCP/Vertex, Azure, LangChain/LangGraph]
+  # Proof points the resume supports, for cover letters and messages. Pick the one the JD cares about.
+  stories:
+    - LLM and RAG work at a bank with 30 million customers
+    - fintech work
+    - document automation
+    - LangGraph agents
+    - open-source NLP research and competitions
+  # Why location is a strength, in your words (used instead of "based in <country>")
+  location_pitch: Based in Your City (UTC-3); has worked full US-Eastern hours for North American clients since 2022.
+  work_authorization: Not authorized to work in the US, EU or UK. Works remotely from Brazil.
+  sponsorship: "No sponsorship needed: works remotely from Brazil as a contractor or through an employer of record."
+  employment_types: Contractor / B2B (paid in USD) or full-time through an employer of record (Deel, Remote.com...). Not a Brazilian-entity CLT hire.
+  # Local contract types you won't take. Roles that explicitly require one are skipped.
+  excluded_contract_types: [CLT]
+  working_hours: Can work any hours, including full US Eastern or Pacific schedules.
+  availability: 2 weeks notice
+  relocation: Not open to relocation; remote only.
+
+resume:
+  base: ~/resumes/jane-doe-ai-engineer-cv.yaml             # RenderCV YAML, Markdown, text or PDF
+  tailored_dir: ~/resumes/tailored                         # one folder per tailored copy
+  file_prefix: jane-doe                                    # tailored files are <prefix>-<company>-<role>.yaml
+  pdf: ""                                                # only when autopilot.tailor is false: this PDF is uploaded as-is
+
+role:
+  title: AI Engineer         # the role the sweep looks for and recruiters are matched against
+  profile: ai-engineer       # job-source-sweep/profiles/<profile>.json (or <home>/profiles/)
+
+pay:
+  target_usd_month: 8000     # the goal; posted pay at or above it raises a role's rank
+  skip_below_usd_month: 7000 # roles whose *posted* pay tops out below this are skipped (no posted pay = never skipped); 7k since 2026-10-27
+  ask_usd_month: 8000        # when a form demands a number and the posting shows no range reaching the target
+  free_text_answer: Open / negotiable
+
+# Your current employers and clients: never applied to, never contacted, under any spelling.
+banned_companies: [Your Current Employer, Your Main Client]
+
+# applika, the command-line application tracker (run inside WSL). Set enabled: false if you don't use it.
+tracker:
+  enabled: true
+  company_cooldown_days: 180          # a company with ANY application in applika this recent is not applied to again (0 = off)
+  rejection_cooldown_days: 180        # a company that rejected you is not applied to again for this long
+  rejection_neutral_feedback: [Role closed, Position filled]   # these say nothing about you: no cooldown
+  rejection_ignore_companies: [Jobgether]                      # aggregators filed as the "company": no cooldown of either kind
+
+# job-source-sweep preferences (what its setup mode used to ask)
+sweep:
+  days: 2                    # how recent postings must be
+  mode: standard             # quick (feeds only) | standard (capped browser pass) | full
+  explorer: full             # full | table | off
+  max_new_roles: 20          # stop the browser lane after this many new roles (0 = no cap; autopilot ignores it)
+  remote_only: true
+  report_rows: 30
+  country_check: on_request  # Google check for engineers at the company in your country: never | on_request | always
+  country_check_limit: 20    # companies per sweep
+  skip_tasks: []             # browser tasks to skip: linkedin_jobs, linkedin_posts, rocketship, wellfound, yc_waas, google, ats_a...
+  skip_sources: [jobgether]  # HTTP source ids to skip
+  skip_hosts: []             # individual Google site: hosts to skip
+  # Browser-lane depth per mode. `jobsweep plan` stamps every task with its caps from here (and a `caps` field the
+  # subagent prompt copies), so the SKILL.md mode table is gone. keywords/queries: 1 = the profile's first phrasing,
+  # all = every phrasing. google_direct = the direct-hire shards (sources.json google_shards with direct: true: Lever,
+  # Greenhouse, Ashby, each alone), the Google lane that yields interviews (Jeeves, 2026-10-27); google_shard = the
+  # other ATS and job-board shards. linkedin_jobs pages in one slow tab (parallel paging pauses LinkedIn search), so it
+  # and google_direct carry a minutes budget of their own outside wall_clock_minutes. The Chrome-free ats_search HTTP
+  # source runs every phrasing on the same hosts, so the Google pass only needs the first few.
+  lane_caps:
+    standard:
+      wall_clock_minutes: 20
+      linkedin_jobs: {keywords: all, pages: 3, budget_minutes: 25}
+      linkedin_posts: {keywords: 1, posts: 30}
+      rocketship: {pages: 2}
+      wellfound: {pages: 3}
+      yc_waas: {queries: 1, batches: 3}
+      google_direct: {queries: 4, pages: 3, budget_minutes: 20}
+      google_shard: {queries: 1, pages: 2}
+    full:
+      wall_clock_minutes: 60
+      linkedin_jobs: {keywords: all, pages: 5, budget_minutes: 40}
+      linkedin_posts: {keywords: all, posts: 60}
+      rocketship: {pages: 3}
+      wellfound: {pages: 6}
+      yc_waas: {queries: all, batches: 12}
+      google_direct: {queries: 8, pages: 5, budget_minutes: 40}
+      google_shard: {queries: all, pages: 5}
+
+# job-autopilot
+autopilot:
+  channels: [ats, linkedin_easy_apply, email]   # never public "comment Interested" posts
+  max_minutes: 120           # wall-clock cap for the fill loop
+  max_ready: 15              # filled forms (open tabs) waiting for you; the loop pauses at this many
+  # false (default): fill every form completely and stop in front of Submit; you review, submit and
+  # mark it Submitted. true: the subagent clicks Submit itself after filling, and confirmed
+  # submissions are registered in applika without your confirmation.
+  auto_submit: true           # since 2026-10-27: submit after the full fill; a CAPTCHA, code or sign-up wall leaves the form open for the user
+  cover_letter: required     # required (when the form asks) | always | never
+  # The target tiers (a pay estimate from company type and HQ, a people check per run, an A/B/C rank) were removed
+  # on 2026-10-27: too complex to trust. The queue is best score first, balanced across sources; posted pay, the
+  # company's own quotes (pay gate) and cached people-check verdicts (location override) are the only pay and
+  # region evidence, and nothing is skipped for its company type.
+  max_load_retries: 3
+  tailor_ahead: 6
+  tailor: true               # false: skip the tailor-resume skill and upload resume.pdf as-is
+  per_company_per_run: 2
+
+# Search layer (job-source-sweep/scripts/companies.py, Searcher): the people check and the employer harvest search
+# LinkedIn profiles through ordinary search engines, never LinkedIn search. Queries run through the ddgs library
+# (github.com/deedy5/ddgs, MIT) in its own virtualenv, so the other scripts stay on the standard library. Setup, once:
+#   python3 -m venv --without-pip ~/.venvs/search && curl -sS https://bootstrap.pypa.io/get-pip.py | ~/.venvs/search/bin/python
+#   ~/.venvs/search/bin/python -m pip install ddgs==9.16.0 pyyaml
+# Tested 2026-10-14 from WSL: only ddgs's Yahoo engine (Bing's index) answers a script; Google, Brave, DuckDuckGo,
+# Mojeek and Startpage don't, and ddgs 9.16.0 has no "bing" or "yandex" text engine. Raw results are cached in
+# <home>/serp_cache/; engine suspensions in <home>/search_state.json.
+search:
+  python: ~/.venvs/search/bin/python   # the Python that has ddgs (inside WSL with python: wsl)
+  backends: [yahoo]                    # tried in order, each with its own circuit breaker (add more if a ddgs release revives them)
+  min_gap_seconds: 4                   # between queries, plus up to jitter_seconds of random wait
+  jitter_seconds: 2
+  max_queries_per_run: 300             # per command run; set from the 2026-10-14 ramp test
+  cache_days: 30                       # raw results with hits; empty results are kept 3 days
+  suspend_hours: 6                     # an engine that rate-limits or errors twice in a row rests this long
+
+# recruiter-outreach
+recruiter_outreach:
+  connect_per_day: 20        # NEW LinkedIn connection requests per day (hard limit); messages to 1st-degree connections never count toward it
+  inmail_per_day: 15         # second guard; the real bound is the credits LinkedIn shows
+  message_per_day: null      # plain messages to existing 1st-degree connections: null = no daily cap, 0 = none; separate from connect_per_day
+  min_score: 55              # leads below this are not contacted (55 keeps out staff-aug recruiters who score on region + role alone)
+  max_per_company: 3         # people ever contacted at one company or agency (recruiters/companies.json remembers)
+  stale_days: 60             # re-probe a lead's signals after this long
+  gap_seconds: {connect: 90, inmail: 120, message: 60}
+  required_terms: [nearshore] # every discovery pass runs at least one people and one post phrasing with each of these
+  cta_styles: [open, cv]     # how first messages close (references/message.md); rotated per lead, compared by `recruiters queries`
+  # Company lane (experiment from 2026-10-13): in-house recruiters and hiring managers at funded companies that
+  # posted the target role, found company-first from job-source-sweep's roles and from the funded-company registry
+  # (funding news, portfolios, batches; recruiter-outreach/references/funding.md). They share the pile and the caps,
+  # and are scored on their own rubric (whether the person owns the role) against their own contact line.
+  company_lane_share: 0.25   # share of the day's connection requests + InMails reserved for the lane (0 = off); unused slots go to recruiters
+  company_lane_batches: 14   # sweep batches the targets are read from
+  company_lane_per_round: 8  # companies handed to discovery per round
+  company_lane_cooldown_days: 30
+  company_lane_title_terms: [AI, ML, machine learning, LLM, GenAI, generative, NLP, applied scientist, research engineer,
+                             data scientist, agent, agents, agentic, RAG, deep learning, forward deployed]
+  company_lane_min_score: 55           # contact line for lane leads (company 40 + person 60)
+  company_lane_research_days: 7        # funding research is due again after this long (sooner when targets run short)
+  company_lane_research_per_round: 30  # companies one research pass checks
+  company_lane_funding_days: 180       # a round newer than this is "recent" (ranks first; the research window)
+  company_lane_min_round_usd: 3000000  # smaller announced rounds aren't worth a research slot
+  company_lane_board_refresh_hours: 20 # refresh-boards re-reads a company's ATS board after this long
+  # Phrasings are ordered best-first. The first block targets recruiters for funded product companies and boutique
+  # search firms, the segment that quoted >= $10k/month in the 2026-10-13 inbox study
+  # (recruiter-outreach/references/pay-tier-research.md). The phrasings retired then for reaching staff augmentation
+  # and hourly vendors are back since 2026-10-27 (the user's rule: no phrasing is retired; the floor is 8k). One
+  # nearshore phrasing per pass stays (required_terms, user rule 2026-10-12).
+  people_queries:            # LinkedIn people-search phrasings
+    - talent partner AI startups remote LATAM
+    - technical recruiter YC startups AI engineers
+    - founding engineer recruiter AI startups
+    - AI talent search firm LLM engineers
+    - talent partner venture capital portfolio AI engineers
+    - executive search AI engineers remote
+    - recruiter Series A AI startup remote engineers
+    - technical recruiter AI engineer LATAM
+    - AI ML recruiter Latin America remote
+    - talent partner machine learning engineers worldwide remote
+    - recruiter hiring LLM engineers remote anywhere
+    - nearshore recruiter senior AI engineer Brazil
+    - talent acquisition GenAI engineers remote LATAM
+    - nearshore talent partner AI ML engineers LATAM
+    - recrutador nearshore engenheiro de IA
+    - recrutador tech IA remoto internacional
+    - nearshore staffing recruiter LLM engineers
+    - recruiter contract AI engineer USD remote
+  post_queries:              # LinkedIn post-search phrasings (hiring posts by recruiters)
+    - hiring founding AI engineer LATAM
+    - 130k-180k remote AI engineer Latin America
+    - hiring senior AI engineer remote LATAM $150k
+    - Series A hiring LLM engineer remote anywhere
+    - YC startup hiring AI engineer remote LATAM
+    - applied research engineer LLM remote equity hiring
+    - founding engineer AI agents remote Brazil
+    - hiring AI engineer LATAM remote
+    - hiring senior AI engineer remote worldwide
+    - LLM engineer remote Latin America hiring
+    - AI engineer remote Brazil USD
+    - GenAI engineer nearshore hiring
+    - hiring nearshore AI engineer LATAM USD
+    - nearshore machine learning engineer remote hiring
+    - AI Engineer hiring                 # simple <role> + hiring phrasings (user rule 2026-10-12)
+    - LATAM AI Engineer hiring
+    - nearshore AI Engineer hiring
+    - LLM Engineer hiring
+    - Brazil AI Engineer hiring
+    - Machine Learning Engineer hiring
+    - machine learning engineer remote anywhere hiring contractor
+
+# hiring-posts-outreach: the quick lane. LinkedIn post searches "<role> <suffix>" run inside LinkedIn search, authors
+# ranked by the pay their post states, then by explicit eligibility for candidate.region, then (no pay, no region words)
+# by the poster's likely country guessed from their name, nearest to candidate.country first; contacted best-first within
+# recruiter_outreach's caps (same contacts.json, pacing.json and max_per_company; nobody is contacted twice).
+hiring_posts:
+  roles: [AI Engineer, Forward Deployed Engineer, LLM Engineer, Machine Learning Engineer, GenAI Engineer, Applied AI Engineer, AI Solutions Engineer, Agents Engineer, Founding AI Engineer]
+  suffixes: [hiring, LATAM hiring, remote hiring, Latin America hiring, Brazil hiring, hiring remote LATAM, contratando]
+  extra_queries: []          # whole phrasings added as they are
+  floor_usd_month: 7000      # posts whose highest stated pay is under this are dropped; no stated pay = tier 1, still contacted
+  max_post_age_days: 30
+  query_cooldown_days: 2     # results are sorted by date, so a phrasing is worth rerunning this often
+  scrolls_per_query: 4
+  fx_usd: {BRL: 0.18, EUR: 1.08, GBP: 1.27, CAD: 0.72, MXN: 0.05}

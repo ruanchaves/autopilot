@@ -1,6 +1,6 @@
 # autopilot
 
-Three [Claude Code](https://claude.com/claude-code) skills that run a remote job hunt end to end: sweep ~80 job sources every day, rate every role against your resume, fill the application forms up to the Submit button, and build a scored database of LinkedIn recruiters to contact within LinkedIn's daily limits. Everything personal lives in one file, `config.yaml`, so anyone can fork the repo, edit that file, and run the same pipelines for their own role, country and pay target.
+Three [Claude Code](https://claude.com/claude-code) skills that run a remote job hunt end to end: sweep ~80 job sources every day, rate every role against your resume, fill the application forms up to the Submit button, and build a scored database of LinkedIn recruiters to contact within LinkedIn's daily limits. Everything personal lives in one file, `config.yaml` (git-ignored; start from `config.example.yaml`), so anyone can fork the repo, fill in that file, and run the same pipelines for their own role, country and pay target.
 
 The skills are Markdown instructions (`SKILL.md`, plus `references/` for the subagents) around small Python scripts that keep the state. Claude Code reads the instructions, drives Chrome through the [Claude in Chrome](https://claude.com/chrome) extension, launches subagents in parallel, and calls the scripts for everything that must be exact: deduplication, scoring arithmetic, daily counters, ledgers.
 
@@ -89,6 +89,8 @@ Claude links the three skill folders into `~/.claude/skills`, finds a Python 3.1
 **Requirements:** Claude Code with the [Claude in Chrome](https://claude.com/chrome) extension connected to a Chrome profile logged in to LinkedIn; Python 3.11+ with PyYAML. For the people check, a second virtualenv with [ddgs](https://github.com/deedy5/ddgs) (the commands are in `config.yaml`, section `search`). Optional: [applika](https://github.com/ruanchaves/applika) for application tracking, and a `tailor-resume` skill in `~/.claude/skills` for per-role CVs (without it the autopilot uploads your resume PDF as-is).
 
 ## config.yaml
+
+`config.yaml` is git-ignored: copy `config.example.yaml` to `config.yaml` and fill it in (or let the first-run setup do it). The example holds placeholder contact details and working values for every tunable.
 
 | Section | Keys | Used by |
 |---|---|---|
@@ -396,4 +398,4 @@ wsl.exe -e python3 /mnt/d/dev/autopilot/job-source-sweep/scripts/jobsweep.py sta
 
 ## Privacy
 
-`config.yaml` carries your name, contact details, employers and pay targets, and the skills quote them in forms and messages. Keep a fork private, or strip the `candidate` section before publishing one. The data folder (`home`) is never inside the repo.
+`config.yaml` carries your name, contact details, employers and pay targets, and the skills quote them in forms and messages. It is git-ignored, so a fork never commits it; only `config.example.yaml`, with placeholders, is in the repo. The data folder (`home`) is never inside the repo.

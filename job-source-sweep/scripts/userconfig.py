@@ -31,7 +31,7 @@ def load() -> dict:
     except ImportError:
         sys.exit("PyYAML is needed to read config.yaml: pip install pyyaml")
     if not CONFIG_PATH.exists():
-        sys.exit(f"config.yaml not found at {CONFIG_PATH}: copy and edit the one in the repo")
+        sys.exit(f"config.yaml not found at {CONFIG_PATH}: copy config.example.yaml to config.yaml and edit it")
     cfg = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8")) or {}
     missing = [k for k in REQUIRED if not cfg.get(k)]
     if missing:
