@@ -778,7 +778,7 @@ def cmd_refresh_boards(args) -> int:
     def one(k: str):
         try:
             return k, board_roles(f, reg[k]["ats"]), ""
-        except js.SourceError as err:
+        except Exception as err:  # one bad board (e.g. a malformed slug) must not stop the refresh
             return k, None, str(err)[:160]
 
     from concurrent.futures import ThreadPoolExecutor

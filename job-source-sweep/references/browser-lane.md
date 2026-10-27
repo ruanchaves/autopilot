@@ -97,7 +97,7 @@ These are post search results. A row is a post that advertises an actual open ro
   - `author`: the poster's name
   - `posted`: the relative age shown on the post
   - `eligibility`: the post's exact geography wording
-- Don't open author profiles unless the user asked for poster locations. Never infer anyone's nationality from a name or photo.
+- Don't open author profiles unless the user asked for poster locations.
 
 ## rocketship
 

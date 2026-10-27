@@ -36,7 +36,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import quote_plus, urlsplit
+from urllib.parse import quote, quote_plus, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import jobsweep as js  # noqa: E402
@@ -209,7 +209,7 @@ def ats_from_url(url: str) -> dict | None:
 
 def board_roles(f, ats: dict) -> list:
     """Every open posting on a company's ATS board: title, url, location, remote flag, posted date, monthly USD pay."""
-    kind, slug = (ats.get("kind") or "").lower(), ats.get("slug") or ""
+    kind, slug = (ats.get("kind") or "").lower(), quote(ats.get("slug") or "", safe="")
     out = []
     if kind == "ashby":
         for j in f.json(f"https://api.ashbyhq.com/posting-api/job-board/{slug}?includeCompensation=true", interval=1).get("jobs") or []:
