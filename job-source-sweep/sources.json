@@ -538,8 +538,21 @@
   },
   "google_shards": [
     {
-      "id": "ats_a",
-      "label": "ATS: Greenhouse, Breezy, Teamtailor, Pinpoint, Gem, Oracle, Taleo",
+      "id": "ats_lever",
+      "label": "ATS: Lever",
+      "direct": true,
+      "hosts": [
+        {
+          "label": "Lever",
+          "site": "jobs.lever.co",
+          "host": "jobs.lever.co"
+        }
+      ]
+    },
+    {
+      "id": "ats_greenhouse",
+      "label": "ATS: Greenhouse",
+      "direct": true,
       "hosts": [
         {
           "label": "Greenhouse",
@@ -547,6 +560,30 @@
           "host": "greenhouse.io",
           "field": "datePublished"
         },
+        {
+          "label": "Greenhouse",
+          "site": "job-boards.greenhouse.io",
+          "host": "greenhouse.io",
+          "field": "datePublished"
+        }
+      ]
+    },
+    {
+      "id": "ats_ashby",
+      "label": "ATS: Ashby",
+      "direct": true,
+      "hosts": [
+        {
+          "label": "Ashby",
+          "site": "jobs.ashbyhq.com",
+          "host": "jobs.ashbyhq.com"
+        }
+      ]
+    },
+    {
+      "id": "ats_a",
+      "label": "ATS: Breezy, Teamtailor, Pinpoint, Gem, Oracle, Taleo",
+      "hosts": [
         {
           "label": "Breezy HR",
           "site": "breezy.hr",
@@ -581,18 +618,8 @@
     },
     {
       "id": "ats_b",
-      "label": "ATS: Ashby, Lever, Recruitee, BambooHR, Personio, SuccessFactors",
+      "label": "ATS: Recruitee, BambooHR, Personio, SuccessFactors",
       "hosts": [
-        {
-          "label": "Ashby",
-          "site": "jobs.ashbyhq.com",
-          "host": "jobs.ashbyhq.com"
-        },
-        {
-          "label": "Lever",
-          "site": "jobs.lever.co",
-          "host": "jobs.lever.co"
-        },
         {
           "label": "Recruitee",
           "site": "recruitee.com",
@@ -820,5 +847,6 @@
     "hiring.cafe": "403 for non-browser clients.",
     "jobs.greylock.com, speedrun-talent-network.com": "custom job sites without a JSON endpoint; Greylock's search ignores the query and its cards carry no data (2026-10-15).",
     "workatastartup.com (search)": "the signed-in search is client-rendered behind a free account; guests get 30 fixed cards. Browser task yc_waas; the HTTP source yc_jobs reads the public samples."
-  }
+  },
+  "_shards_note": "google_shards run in this order; the wall-clock cap cuts from the end. ats_lever, ats_greenhouse and ats_ashby (direct: true) are the boards funded startups post on themselves, each alone so Google's ten results a page go to one host; they run every profile query at the lane_caps google_direct depth (config.yaml sweep.lane_caps)."
 }
