@@ -8,7 +8,7 @@ description: Job hunting on autopilot, up to the Submit button. Runs the full /j
 This skill runs job-source-sweep, ranks everything it finds, and prepares applications from the best role down. **By default it never submits an application.** Each form is filled completely and left open in Chrome in front of the Submit button; the user reviews the answers on the dashboard, submits, and marks it submitted. A user who sets `autopilot.auto_submit: true` in `config.yaml` has chosen to let the subagent click Submit itself; then a confirmed submission is recorded as `applied` straight away. Failed attempts are recorded and shown, never hidden. Recruiter outreach is not part of this skill (see `recruiter-outreach`).
 
 **Paths**
-- **Skill:** `<repo>/job-autopilot` (`<ap>`), where `<repo>` is the autopilot repo (here `D:\dev\autopilot`)
+- **Skill:** `<repo>/job-autopilot` (`<ap>`), where `<repo>` is the autopilot repo
 - **Script:** `<ap>/scripts/autopilot.py`. It reuses job-source-sweep's modules, so it needs the sibling `job-source-sweep` skill folder. `<ap>/scripts/cover_letter.py` renders a cover letter to PDF.
 - **Data:** `<home>/autopilot/`, where `<home>` is `home` in `config.yaml`.
 
@@ -86,7 +86,7 @@ Invoke the **job-source-sweep** skill and follow it through step 8e: HTTP lane, 
 
 **The browser lane always runs.** The sweep's `max_new_roles` stop rule does not apply inside autopilot: the HTTP feeds alone (Himalayas above all) pass any cap within a minute, and stopping there leaves the queue full of one source. So ignore the role cap, run **every** browser task of the configured mode (LinkedIn Jobs, LinkedIn posts, Remote Rocketship, Wellfound, YC Work at a Startup and all Google shards) under the mode's page and wall-clock caps, and only record a browser task as a coverage gap for the reasons the sweep itself names: Chrome unavailable, a CAPTCHA or login wall, or the wall-clock cap. The user asked for this on 2026-10-02 after a run that applied only to Himalayas listings. A Work at a Startup login wall means the extension is on a browser that isn't signed in (the user's Windows Chrome is, since 2026-10-15; check `list_connected_browsers` and `select_browser`) or the session expired: say so in the report, since that account unlocks about 2,900 YC engineering jobs.
 
-**Two lanes get extra depth, because they produced the interviews (2026-10-27).** The Jeeves interview came from the Lever Google shard (posting 25 hours old at fill time) and the Askable one from LinkedIn Jobs (3 hours old). So `jobsweep plan` now runs LinkedIn Jobs with every keyword and the direct-hire shards (`ats_lever`, `ats_greenhouse`, `ats_ashby`) with the top phrasings, each lane with its own minutes budget (`config.yaml` `sweep.lane_caps`), and the HTTP lane's `ats_search` source repeats the direct-host searches without Chrome, with real posting dates. Copy each task's `caps` into its subagent prompt. The run report's **outcomes** table (per source lane: applied, replied, interview, offer, rejected) is what decides where the next depth goes; keep it fed with `autopilot outcome` (step 6).
+**Two lanes get extra depth, because they produced the interviews (2026-10-27).** One interview came from the Lever Google shard (posting 25 hours old at fill time) and the other from LinkedIn Jobs (3 hours old). So `jobsweep plan` now runs LinkedIn Jobs with every keyword and the direct-hire shards (`ats_lever`, `ats_greenhouse`, `ats_ashby`) with the top phrasings, each lane with its own minutes budget (`config.yaml` `sweep.lane_caps`), and the HTTP lane's `ats_search` source repeats the direct-host searches without Chrome, with real posting dates. Copy each task's `caps` into its subagent prompt. The run report's **outcomes** table (per source lane: applied, replied, interview, offer, rejected) is what decides where the next depth goes; keep it fed with `autopilot outcome` (step 6).
 
 **Skip the sweep's own country check (its step 7 and 8d).** The autopilot runs no people check of its own since 2026-10-27 (the tier system that needed it is gone); the cached verdicts in `people_checks.json`, written by the sweep's country check and by recruiter-outreach, still feed the location override in step 3. The HTTP lane already includes the `company_boards` source: companies' own Ashby, Greenhouse, Lever and Workable boards, read through their public APIs, with each posting's own date, location and pay.
 
@@ -133,7 +133,7 @@ The script also skips:
 - roles at companies whose own quotes to the user top out below the floor (`pay_gate`).
 
 **Nothing is skipped for its company type** (user rule 2026-10-27). The 2026-10-15 rule skipped staffing firms,
-marketplaces and task platforms; then Askable, a task platform, led to an interview, and the rule and the company
+marketplaces and task platforms; then a task platform led to an interview, and the rule and the company
 types behind it are gone.
 
 **A JD's "US-based only" exclusion is overridden** when a cached people-check verdict shows engineers in the
@@ -200,8 +200,8 @@ Nothing in this skill registers an application until that mark exists. On the ne
 step, so interviews come from the user's inbox: when the user mentions a reply or an interview, record it). The
 source lane stays on the entry, so the run report ranks lanes by interviews rather than rows. A company with an
 `interview` or `offer` outcome is exempt from `company_cooldown_days` and `per_company_per_run` for its other
-target-title roles: a company that interviews the user is worth its sibling postings (Jeeves's Forward Deployed
-Engineer roles for São Paulo and Mexico City were the first case).
+target-title roles: a company that interviews the user is worth its sibling postings (a fintech's Forward Deployed
+Engineer roles for two LATAM cities were the first case).
 
 ## 7. Register and publish
 

@@ -110,7 +110,7 @@ sweep:
   # Browser-lane depth per mode. `jobsweep plan` stamps every task with its caps from here (and a `caps` field the
   # subagent prompt copies), so the SKILL.md mode table is gone. keywords/queries: 1 = the profile's first phrasing,
   # all = every phrasing. google_direct = the direct-hire shards (sources.json google_shards with direct: true: Lever,
-  # Greenhouse, Ashby, each alone), the Google lane that yields interviews (Jeeves, 2026-10-27); google_shard = the
+  # Greenhouse, Ashby, each alone), the Google lane that has produced interviews; google_shard = the
   # other ATS and job-board shards. linkedin_jobs pages in one slow tab (parallel paging pauses LinkedIn search), so it
   # and google_direct carry a minutes budget of their own outside wall_clock_minutes. The Chrome-free ats_search HTTP
   # source runs every phrasing on the same hosts, so the Google pass only needs the first few.
@@ -142,7 +142,7 @@ autopilot:
   # false (default): fill every form completely and stop in front of Submit; you review, submit and
   # mark it Submitted. true: the subagent clicks Submit itself after filling, and confirmed
   # submissions are registered in applika without your confirmation.
-  auto_submit: true           # since 2026-10-27: submit after the full fill; a CAPTCHA, code or sign-up wall leaves the form open for the user
+  auto_submit: false         # true: submit after the full fill; a CAPTCHA, code or sign-up wall still leaves the form open for you
   cover_letter: required     # required (when the form asks) | always | never
   # The target tiers (a pay estimate from company type and HQ, a people check per run, an A/B/C rank) were removed
   # on 2026-10-27: too complex to trust. The queue is best score first, balanced across sources; posted pay, the

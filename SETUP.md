@@ -52,6 +52,6 @@ Don't wait for a restart: read `<repo>/job-source-sweep/SKILL.md`, go to its ste
 
 ## 8. What to tell the user at the end
 
-- Restart Claude Code so `/job-source-sweep`, `/job-autopilot` and `/recruiter-outreach` appear in the skill list.
+- Restart Claude Code so `/job-source-sweep`, `/job-autopilot`, `/recruiter-outreach` and `/hiring-posts-outreach` appear in the skill list.
 - `/job-autopilot` and `/recruiter-outreach` ask their own few questions the first time they run (submit policy, cover letters, channels and tracker; permission to send, daily and per-company caps, strictness and search phrasings).
 - Everything personal lives in `<repo>/config.yaml`; "reconfigure" or an empty `setup_done` reruns the questions. The file is git-ignored, so their details never reach a commit; `config.example.yaml` is the only copy in the repo.

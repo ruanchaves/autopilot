@@ -1,5 +1,5 @@
 """The user's config.yaml at the repo root: everything personal (candidate, resume, role, pay,
-banned companies, data folder) and every skill's tunables. The three skills' scripts import this
+banned companies, data folder) and every skill's tunables. The four skills' scripts import this
 module, so nothing personal lives in code or in the subagent references."""
 
 from __future__ import annotations

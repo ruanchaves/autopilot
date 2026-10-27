@@ -8,7 +8,7 @@ description: A simple LinkedIn outreach pipeline aimed at roles paying the targe
 The quick lane of recruiter outreach: search LinkedIn posts for "<role> hiring", rank the authors by what their post says, contact them best-first. No profile probing, no rubric, no company lane. Discovery sends nothing; contacting uses the same daily caps and the same contact ledger as recruiter-outreach, so nobody is contacted twice across the two skills.
 
 **Paths**
-- **Skill:** `<repo>/hiring-posts-outreach` (`<hp>`), where `<repo>` is the autopilot repo (here `D:\dev\autopilot`).
+- **Skill:** `<repo>/hiring-posts-outreach` (`<hp>`), where `<repo>` is the autopilot repo.
 - **Script:** `<hp>/scripts/hiringposts.py`. It imports recruiter-outreach's `recruiters.py` and job-source-sweep's helpers, so both sibling folders must be present. `<hp>/scripts/names.py` holds the country list and the distance table for the origin tie-break; the country itself is judged by a subagent following `<hp>/references/origin.md`.
 - **Data:** `<home>/hiring-posts/` (`leads.json`, `searches.json`, `work/<date>/`), with `<home>` from `config.yaml`. Contacts, daily counters and the per-company cap are recruiter-outreach's files in `<home>/recruiters/`.
 - **Candidate:** `candidate` in `config.yaml`, `<home>/fit-rubric.md`, `resume.base`.

@@ -1,5 +1,5 @@
 {
-  "_comment": "Role-agnostic source catalogue, derived from D:/dev/jobsearch/scripts/sources.yaml. Search terms and title filters live in profiles/, never here.",
+  "_comment": "Role-agnostic source catalogue, derived from an earlier private sweep catalogue. Search terms and title filters live in profiles/, never here.",
   "user_agent": "jobsweep/1.0 (personal job search)",
   "http": [
     {
