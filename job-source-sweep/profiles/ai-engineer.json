@@ -1,10 +1,18 @@
 {
   "role": "AI Engineer",
-  "_origin": "Ported from D:/dev/jobsearch/scripts/sources.yaml (match include/exclude, shard queries, Getro queries, LinkedIn and Rocketship URLs).",
+  "_origin": "Ported from D:/dev/jobsearch/scripts/sources.yaml (match include/exclude, shard queries, Getro queries, LinkedIn and Rocketship URLs). The ai-engineer-latam profile (LATAM Google queries, machine learning engineer keyword) was folded in on 2026-10-27, so one profile covers both.",
   "google_queries": [
     "ai engineer remote",
+    "senior ai engineer remote",
+    "llm engineer remote",
     "agentic engineer remote",
+    "forward deployed engineer remote",
     "machine learning engineer remote",
+    "ai engineer latam",
+    "ai engineer remote \"latin america\"",
+    "ai engineer remote brazil",
+    "machine learning engineer latam",
+    "agentic engineer latam",
     "principal engineer remote",
     "staff software engineer remote",
     "research engineer remote"
@@ -32,11 +40,15 @@
       "Argentina"
     ],
     "jobs_keywords": [
-      "ai engineer"
+      "ai engineer",
+      "machine learning engineer",
+      "llm engineer",
+      "forward deployed engineer"
     ],
     "posts_keywords": [
       "ai engineer remote hiring",
-      "ai engineer hiring \"latam\""
+      "ai engineer hiring \"latam\"",
+      "ai engineer hiring \"latin america\" remote"
     ]
   },
   "rocketship": {
