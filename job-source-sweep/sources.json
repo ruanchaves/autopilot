@@ -371,6 +371,22 @@
       "_seed_note": "Boards the sweep reads from the first run, before any role link points at them. These are the web3 employers with public Greenhouse/Lever/Ashby boards verified on 2026-10-15; sector tags the company for the autopilot's pay estimate. Chainlink, Polygon, Ledger and the foundations use private ATSs and are reached through the Getro crypto boards and web3.career instead."
     },
     {
+      "id": "ats_search",
+      "label": "ATS search (Lever, Greenhouse, Ashby)",
+      "kind": "ats_search",
+      "url": "site:jobs.lever.co | site:boards.greenhouse.io | site:jobs.ashbyhq.com <google_queries>",
+      "hosts": [
+        "jobs.lever.co",
+        "jobs.ashbyhq.com",
+        "boards.greenhouse.io"
+      ],
+      "pages": 1,
+      "max_queries": 40,
+      "window_days": 7,
+      "_note": "Chrome-free twin of the direct-hire Google shards (ats_lever, ats_greenhouse, ats_ashby): the same site: searches through the search layer (companies.Searcher, ddgs/Yahoo, paced and cached in <home>/serp_cache), every profile google_query, `pages` result pages per host and query, at most max_queries searches a run (Yahoo's engine rate-limited after about 50 searches on 2026-10-27 and the layer then suspends it for 6 hours, which the people check also needs; the Google shards cover the same hosts in Chrome). Each hit is resolved through the board's public API so the row has the posting's own date, location and pay (a search index date is not a posting date); closed and onsite postings are dropped. window_days 7: the dates are real and the companies hire the role directly. Boards found here enter boards.json via discover_boards on the next merge. timelimit: the engine's past-day/week/month filter (d/w/m); without it 1 hit in 34 was inside a week (2026-10-27 test). The first search probes the filter: no ATS hit with it, and the run continues unfiltered.",
+      "timelimit": "w"
+    },
+    {
       "id": "getro_generalcatalyst",
       "label": "General Catalyst portfolio",
       "kind": "getro",

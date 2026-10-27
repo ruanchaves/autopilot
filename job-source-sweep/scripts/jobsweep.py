@@ -82,6 +82,28 @@ CONFIG_DEFAULTS = {
     "skip_sources": [],
     "skip_hosts": [],
     "skip_tasks": [],
+    # Browser-lane depth per mode (SKILL.md step 5). cmd_plan stamps every task with its own caps from here, so the
+    # subagent prompts copy the task's `caps` instead of a mode table. keywords/queries: 1 = the profile's first
+    # phrasing, "all" = every phrasing. google_direct covers the shards flagged direct in sources.json (Lever,
+    # Greenhouse, Ashby: the boards funded startups post on themselves; that lane yields interviews, 2026-10-27).
+    # linkedin_jobs runs in one slow tab (LinkedIn pauses search when paged in parallel), so it has a minutes budget
+    # of its own outside wall_clock_minutes.
+    "lane_caps": {
+        "standard": {"wall_clock_minutes": 20,
+                     "linkedin_jobs": {"keywords": "all", "pages": 3, "budget_minutes": 25},
+                     "linkedin_posts": {"keywords": 1, "posts": 30},
+                     "rocketship": {"pages": 2}, "wellfound": {"pages": 3},
+                     "yc_waas": {"queries": 1, "batches": 3},
+                     "google_direct": {"queries": 4, "pages": 3, "budget_minutes": 20},
+                     "google_shard": {"queries": 1, "pages": 2}},
+        "full": {"wall_clock_minutes": 60,
+                 "linkedin_jobs": {"keywords": "all", "pages": 5, "budget_minutes": 40},
+                 "linkedin_posts": {"keywords": "all", "posts": 60},
+                 "rocketship": {"pages": 3}, "wellfound": {"pages": 6},
+                 "yc_waas": {"queries": "all", "batches": 12},
+                 "google_direct": {"queries": 8, "pages": 5, "budget_minutes": 40},
+                 "google_shard": {"queries": "all", "pages": 5}},
+    },
     "python": "",
     # Step 8 (enrich + explorer). explorer: full | table | off. resume: path to the YAML/PDF/MD resume
     # used for the fit rating ("" = no fit rating). explorer_url: the artifact the page is republished to.
@@ -711,9 +733,113 @@ def fetch_company_boards(f: Fetcher, src: dict, profile: dict, cat: dict) -> lis
     return out
 
 
+_POSTING_ID = re.compile(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\d{5,})", re.I)
+
+
+def posting_id(url: str) -> str:
+    """The posting's own id in an ATS URL (Lever/Ashby UUID, Greenhouse numeric id), so a search hit matches the
+    board's listing whatever the host alias (job-boards vs boards.greenhouse.io, /apply suffix, tracking params)."""
+    m = _POSTING_ID.search(urllib.parse.urlsplit(url or "").path)
+    return m[1].lower() if m else ""
+
+
+def fetch_ats_search(f: Fetcher, src: dict, profile: dict, cat: dict) -> list[dict]:
+    """Chrome-free sweep of the direct-hire ATS hosts (Lever, Greenhouse, Ashby) through the search layer
+    (companies.Searcher: ddgs, Yahoo's engine, paced, cached, budgeted): `site:<host> <query>` for every profile
+    google_query, `pages` result pages each. A search engine's index date is not a posting date, so each hit is
+    resolved through the board's public API (companies.board_roles, one read per board) and the row carries the
+    posting's own date, location and pay; hits the board no longer lists are dropped, as are onsite/hybrid ones.
+    Boards reached this way enter boards.json through discover_boards on the next merge, so company_boards keeps
+    reading them. Added 2026-10-27: the Google shards of these hosts are the lane that yields interviews, and this
+    runs the same searches daily without a CAPTCHA risk."""
+    import companies
+    home = profile.get("_home") or userconfig.home()
+    searcher = companies.Searcher(home, budget=int(src.get("max_queries", 90)))
+    hosts = src.get("hosts") or ["jobs.lever.co", "boards.greenhouse.io", "jobs.ashbyhq.com"]
+    remote = (profile.get("linkedin") or {}).get("remote", True)
+    queries = []
+    for q in profile.get("google_queries") or [f"{profile['role']} remote"]:
+        q = q if remote else re.sub(r"\s*\bremote\b", "", q).strip()
+        if q not in queries:
+            queries.append(q)
+    pages = int(src.get("pages", 1))
+    # The engine's own past-week filter (ddgs timelimit): without it 1 hit in 34 was inside a week (2026-10-27).
+    # Whether Yahoo's engine honours it could not be confirmed (it rate-limited mid-test), so the first search probes:
+    # if the filtered page brings no ATS hit, the run continues unfiltered and says so.
+    timelimit = src.get("timelimit", "w")
+    probed = False
+    deadline = profile.get("_deadline")
+    hits: dict[str, dict] = {}
+    stopped = ""
+    for host in hosts:
+        for q in queries:
+            for page in range(1, pages + 1):
+                if deadline and time.time() > deadline:
+                    stopped = "time budget"
+                    break
+                res = searcher.query(f"site:{host} {q}", page, timelimit=timelimit)
+                if res.get("error") and not res.get("results"):
+                    stopped = res["error"]
+                    break
+                kept = 0
+                for r in res.get("results") or []:
+                    u = r.get("href") or ""
+                    ats = companies.ats_from_url(u)
+                    if ats and host.split(".")[-2] in u.lower() and posting_id(u):
+                        hits.setdefault(u, {"ats": ats, "title": r.get("title", "")})
+                        kept += 1
+                if timelimit and not probed:
+                    probed = True
+                    if not kept:
+                        print(f"{src['id']}: no ATS hit with timelimit={timelimit}; continuing unfiltered", file=sys.stderr)
+                        timelimit = ""
+                        res = searcher.query(f"site:{host} {q}", page)
+                        for r in res.get("results") or []:
+                            u = r.get("href") or ""
+                            ats = companies.ats_from_url(u)
+                            if ats and host.split(".")[-2] in u.lower() and posting_id(u):
+                                hits.setdefault(u, {"ats": ats, "title": r.get("title", "")})
+                                kept += 1
+                if not kept:
+                    break  # nothing from this host on this page: deeper pages won't help
+            if stopped and stopped != "time budget" and "budget" not in stopped:
+                stopped = ""  # an engine error on one query: carry on with the next
+            if stopped:
+                break
+        if stopped:
+            break
+    if stopped:
+        PARTIAL.add(src["id"])
+        print(f"{src['id']}: stopped early ({stopped}); {len(hits)} hits so far", file=sys.stderr)
+    names = {(e["ats"]["kind"], (e["ats"]["slug"] or "").lower()): e.get("name", "")
+             for e in companies.boards(home).values() if e.get("ats")}
+    boards: dict[tuple, dict[str, dict]] = {}
+    out = []
+    for u, h in hits.items():
+        key = (h["ats"]["kind"], h["ats"]["slug"].lower())
+        if key not in boards:
+            try:
+                boards[key] = {posting_id(x.get("url", "")): x for x in companies.board_roles(f, h["ats"])}
+            except Exception as err:  # noqa: BLE001 - one broken board must not sink the source
+                print(f"{src['id']}: {key[0]}:{key[1]} board read failed: {err}", file=sys.stderr)
+                boards[key] = {}
+        x = boards[key].get(posting_id(u))
+        if not x or x.get("remote") is False:
+            continue
+        pay = x.get("pay_usd_month")
+        out.append(row(src, x.get("title") or h["title"], names.get(key) or h["ats"]["slug"], x.get("location", ""),
+                       x.get("posted", ""), x.get("url") or u,
+                       compensation=f"~USD {pay:,}/month (board)" if pay else "",
+                       board=f"{key[0]}:{key[1]}", query=f"site:{key[0]}"))
+    st = searcher.stats
+    print(f"{src['id']}: {st['queries']} searches, {st['cache_hits']} cached, {len(hits)} hits, "
+          f"{len(boards)} boards read, {len(out)} rows", file=sys.stderr)
+    return out
+
+
 ADAPTERS = {"json": fetch_json, "rss": fetch_rss, "getro": fetch_getro, "consider": fetch_consider,
             "hn": fetch_hn, "yc": fetch_yc, "a16z": fetch_a16z, "boards": fetch_company_boards,
-            "web3career": fetch_web3career}
+            "web3career": fetch_web3career, "ats_search": fetch_ats_search}
 
 
 def sweep(cat: dict, profile: dict, ids: list[str] | None):
@@ -873,33 +999,47 @@ def yc_waas_queries(profile: dict) -> list[str]:
     return (block or {}).get("queries") or (profile.get("api_queries") or [profile["role"]])[:2]
 
 
+def take(items: list, share) -> list:
+    """The first N of a profile's phrasings, or all of them ("all" / None), per lane_caps."""
+    return list(items) if share in (None, "all", "") else list(items)[:max(int(share), 0)]
+
+
 def cmd_plan(args) -> int:
     cat, profile = load_catalogue(), load_profile(args.profile, args.home)
+    config = load_config(args.home)
+    mode = args.mode or config.get("mode") or "standard"
+    if mode == "quick":
+        mode = "standard"  # quick skips the browser lane; the plan still describes the standard tasks
+    caps_all = {**CONFIG_DEFAULTS["lane_caps"], **(config.get("lane_caps") or {})}
+    caps = caps_all.get(mode) or caps_all["standard"]
+    cap = lambda kind: dict(caps.get(kind) or {})  # noqa: E731
     start, end = window(args.days)
     out_dir = run_dir(args, profile)
     li = profile.get("linkedin") or {}
     skip_hosts = set(profile.get("skip_hosts") or [])
     # skip_tasks holds browser task kinds (linkedin_jobs, ...), shard ids (ats_a, ...) or "google".
     skip_tasks = set(profile.get("skip_tasks") or [])
+    only = {x.strip() for x in (args.only or "").split(",") if x.strip()}  # task kinds / shard ids / "google_direct"
     remote = li.get("remote", True)
     tasks = []
-    for kw in li.get("jobs_keywords") or [profile["role"]]:
+    for kw in take(li.get("jobs_keywords") or [profile["role"]], cap("linkedin_jobs").get("keywords")):
         for where in linkedin_locations(profile):
             at = f" @ {where['location']}" if where["location"] else ""
             tasks.append({"task": "linkedin_jobs", "label": f"LinkedIn Jobs: {kw}{at}", "keyword": kw,
-                          "location": where["location"], "url": linkedin_jobs_url(profile, kw, args.days, where)})
-    for kw in li.get("posts_keywords") or [f"{profile['role']} hiring"]:
+                          "location": where["location"], "url": linkedin_jobs_url(profile, kw, args.days, where),
+                          "caps": cap("linkedin_jobs")})
+    for kw in take(li.get("posts_keywords") or [f"{profile['role']} hiring"], cap("linkedin_posts").get("keywords")):
         if not remote:
             kw = re.sub(r"\s*\bremote\b", "", kw).strip()
         tasks.append({"task": "linkedin_posts", "label": f"LinkedIn posts: {kw}",
-                      "url": linkedin_posts_url(kw, args.days)})
+                      "url": linkedin_posts_url(kw, args.days), "caps": cap("linkedin_posts")})
     rs = rocketship_url(profile)
     if rs:
-        tasks.append({"task": "rocketship", "label": "Remote Rocketship", "url": rs})
+        tasks.append({"task": "rocketship", "label": "Remote Rocketship", "url": rs, "caps": cap("rocketship")})
     for slug in wellfound_roles(profile):
         tasks.append({"task": "wellfound", "label": f"Wellfound: {slug}",
-                      "url": f"https://wellfound.com/role/{'r/' if remote else ''}{slug}"})
-    for query in yc_waas_queries(profile):
+                      "url": f"https://wellfound.com/role/{'r/' if remote else ''}{slug}", "caps": cap("wellfound")})
+    for query in take(yc_waas_queries(profile), cap("yc_waas").get("queries")):
         # Work at a Startup's real search needs the user's signed-in session; the public pages the HTTP source
         # `yc_jobs` reads embed only fixed samples. Tested signed in on 2026-10-15: the /companies list honours
         # the query and the visa filter and scrolls through every match (353 startups for "ai engineer"), while
@@ -909,21 +1049,31 @@ def cmd_plan(args) -> int:
                   "usVisaNotRequired": "true", "demographic": "any", "hasEquity": "any", "hasSalary": "any",
                   "industry": "any", "interviewProcess": "any", "tab": "any"}
         tasks.append({"task": "yc_waas", "label": f"YC Work at a Startup: {query}",
-                      "url": "https://www.workatastartup.com/companies?" + urllib.parse.urlencode(params)})
+                      "url": "https://www.workatastartup.com/companies?" + urllib.parse.urlencode(params),
+                      "caps": cap("yc_waas")})
     tasks = [t for t in tasks if t["task"] not in skip_tasks]
+    # Direct-hire shards (sources.json `direct`: Lever, Greenhouse, Ashby) run every query at google_direct depth and
+    # come first; the rest take the google_shard caps. sources.json order is the run order.
     for shard in cat["google_shards"]:
         hosts = [h for h in shard["hosts"] if h["site"] not in skip_hosts]
         if not hosts or skip_tasks & {"google", shard["id"]}:
             continue
-        for query in profile.get("google_queries") or [f"{profile['role']} remote"]:
+        kind = "google_direct" if shard.get("direct") else "google_shard"
+        for query in take(profile.get("google_queries") or [f"{profile['role']} remote"], cap(kind).get("queries")):
             if not remote:
                 query = re.sub(r"\s*\bremote\b", "", query).strip()
-            tasks.append({"task": "google_shard", "shard": shard["id"],
+            tasks.append({"task": "google_shard", "kind": kind, "shard": shard["id"], "direct": bool(shard.get("direct")),
                           "label": f"{shard['label']} :: {query}",
                           "url": google_url(query, hosts, start, end),
                           "hosts": [h["host"] for h in hosts],
-                          "date_fields": {h["host"]: h.get("field", "datePosted") for h in hosts}})
-    plan = {"profile": profile["slug"], "role": profile["role"],
+                          "date_fields": {h["host"]: h.get("field", "datePosted") for h in hosts},
+                          "caps": cap(kind)})
+    if only:
+        tasks = [t for t in tasks if only & {t["task"], t.get("shard", ""), t.get("kind", "")}]
+    # one minutes budget per lane that has its own (linkedin_jobs, google_direct), shared by that lane's tasks
+    budgets = {k: v["budget_minutes"] for k, v in caps.items() if isinstance(v, dict) and v.get("budget_minutes")}
+    plan = {"profile": profile["slug"], "role": profile["role"], "mode": mode,
+            "wall_clock_minutes": caps.get("wall_clock_minutes", 20), "lane_budgets_minutes": budgets,
             "window_start": start.strftime("%Y-%m-%dT%H:%MZ"),
             "window_end": end.strftime("%Y-%m-%dT%H:%MZ"),
             "run_dir": str(out_dir), "browser_rows_file": str(out_dir / "browser.jsonl"),
@@ -1205,6 +1355,9 @@ def main() -> int:
                            help="use only the first N api_queries for Getro (0 = all)")
             p.add_argument("--budget", type=float, default=0,
                            help="stop starting new Getro requests after this many seconds")
+        if name == "plan":
+            p.add_argument("--mode", choices=["standard", "full"], help="lane_caps mode (default: config.yaml sweep.mode)")
+            p.add_argument("--only", help="comma list of task kinds, shard ids or google_direct to keep (the daily mode)")
         if name == "verify-queue":
             p.add_argument("--limit", type=int, default=20, help="max companies to check this run")
             p.add_argument("--ttl", type=int, default=30, help="re-check verdicts older than N days")

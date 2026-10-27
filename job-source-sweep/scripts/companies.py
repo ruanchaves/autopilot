@@ -460,12 +460,13 @@ class Searcher:
             self.time.sleep(wait)
         self.last = self.time.time()
 
-    def _run(self, be: str, query: str, page: int) -> dict:
+    def _run(self, be: str, query: str, page: int, timelimit: str = "") -> dict:
         import subprocess
         self._pace()
         try:
             r = subprocess.run([self.python, str(HELPER), json.dumps({"query": query, "backend": be, "page": page,
-                                                                       "max_results": 10, "timeout": 10})],
+                                                                       "max_results": 10, "timeout": 10,
+                                                                       "timelimit": timelimit or None})],
                                capture_output=True, text=True, timeout=60)
             return json.loads(r.stdout.strip().splitlines()[-1]) if r.stdout.strip() else \
                 {"kind": "error", "error": (r.stderr or "no output")[-200:]}
@@ -473,22 +474,25 @@ class Searcher:
             return {"kind": "error", "error": f"{type(err).__name__}: {err}"[:200]}
 
     # -- cache
-    def _cache_file(self, query: str, page: int) -> Path:
+    def _cache_file(self, query: str, page: int, timelimit: str = "") -> Path:
         import hashlib
-        return self.cache_dir / (hashlib.sha1(f"{query}|{page}".encode()).hexdigest()[:20] + ".json")
+        key = f"{query}|{page}" + (f"|{timelimit}" if timelimit else "")
+        return self.cache_dir / (hashlib.sha1(key.encode()).hexdigest()[:20] + ".json")
 
-    def _cached(self, query: str, page: int) -> dict | None:
-        c = read_json(self._cache_file(query, page), None)
+    def _cached(self, query: str, page: int, timelimit: str = "") -> dict | None:
+        c = read_json(self._cache_file(query, page, timelimit), None)
         if not c:
             return None
         days = self.st["cache_days"] if c.get("results") else self.st["empty_cache_days"]
         return c if c.get("at", "") >= (datetime.now(timezone.utc) - timedelta(days=float(days))).isoformat() else None
 
     # -- the one entry point
-    def query(self, query: str, page: int = 1, use_cache: bool = True) -> dict:
-        """{"results": [...], "engine": str, "cached": bool, "error": str}. Never raises."""
+    def query(self, query: str, page: int = 1, use_cache: bool = True, timelimit: str = "") -> dict:
+        """{"results": [...], "engine": str, "cached": bool, "error": str}. Never raises. timelimit: d / w / m,
+        the engine's own recency filter (ats_search asks for the past week; a fresh-results cache entry is kept
+        apart from the unfiltered one)."""
         if use_cache:
-            c = self._cached(query, page)
+            c = self._cached(query, page, timelimit)
             if c:
                 self.stats["cache_hits"] += 1
                 return {**c, "cached": True}
@@ -504,7 +508,7 @@ class Searcher:
                 continue
             if len(empty_on) >= 2:
                 break  # two engines found nothing: it is a real empty (they share Bing's index)
-            res = self._run(be, query, page)
+            res = self._run(be, query, page, timelimit)
             self.used += 1
             self.stats["queries"] += 1
             self.stats["by_engine"][be] = self.stats["by_engine"].get(be, 0) + 1
@@ -515,8 +519,8 @@ class Searcher:
                 st = self.state["backends"].setdefault(be, {})
                 st["errors"] = 0
                 out = {"query": query, "page": page, "engine": be, "at": datetime.now(timezone.utc).isoformat(),
-                       "results": res.get("results") or []}
-                write_json(self._cache_file(query, page), out)
+                       "timelimit": timelimit, "results": res.get("results") or []}
+                write_json(self._cache_file(query, page, timelimit), out)
                 self._save()
                 return {**out, "cached": False, "error": ""}
             if kind == "empty":

@@ -4,7 +4,9 @@
 It runs in the search virtualenv (config.yaml search.python, default ~/.venvs/search/bin/python, ddgs pinned at
 DDGS_VERSION in companies.py), so the rest of the scripts stay on the standard library.
 
-    serp_helper.py '{"query": "...", "backend": "bing", "max_results": 10, "page": 1, "timeout": 10}'
+    serp_helper.py '{"query": "...", "backend": "bing", "max_results": 10, "page": 1, "timeout": 10, "timelimit": "w"}'
+
+timelimit (optional): d / w / m / y, the engine's own "past day/week/month/year" filter (ddgs passes it through).
 
 Prints one JSON object: {"kind": "ok", "results": [{title, href, body}]} or {"kind": "empty" | "ratelimit" | "timeout"
 | "error", "error": "..."}. "empty" is ddgs's "No results found", which is also what a quietly blocked engine returns;
@@ -35,7 +37,8 @@ def main() -> int:
         pass
     try:
         res = DDGS(timeout=args.get("timeout", 10)).text(args["query"], backend=args.get("backend", "bing"),
-                                                         max_results=args.get("max_results", 10), page=args.get("page", 1))
+                                                         max_results=args.get("max_results", 10), page=args.get("page", 1),
+                                                         timelimit=args.get("timelimit") or None)
         out = {"kind": "ok" if res else "empty",
                "results": [{"title": r.get("title", ""), "href": r.get("href", ""), "body": r.get("body", "")} for r in res or []]}
     except RatelimitException as err:

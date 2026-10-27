@@ -14,8 +14,8 @@ The browser lane is where a sweep loses its time and tokens. Every tool result s
 - **Stop early:**
   - When 2 consecutive pages or scrolls add no new in-window, on-role rows.
   - When a sorted list reaches an item older than the window.
-  - When the task's page cap is reached.
-  - When the task's time cap is reached (default 4 minutes per task).
+  - When the task's page cap is reached: it is `caps.pages` (or `caps.posts` / `caps.batches`) on the task in `plan.json`, set per mode in `config.yaml` `sweep.lane_caps`.
+  - When the task's time cap is reached (default 4 minutes per task). A lane with `caps.budget_minutes` (LinkedIn Jobs, the direct-hire Google shards) shares that budget across its tasks instead; stop starting new pages when it is spent and record the gap.
 - **Don't open individual postings**, except in deep mode. Everything needed is on the list or results page.
 - **Final message:** one line only, `<task label>: <rows written> rows, <pages> pages, complete|partial (<reason>)`. The rows are already in the file, so don't repeat them.
 
@@ -36,6 +36,8 @@ The browser lane is where a sweep loses its time and tokens. Every tool result s
 - Create your own tab with `tabs_create_mcp` and reuse it (one or two tabs at most, never all the results at once). Other subagents usually work in other tabs of the same group at the same time: use only your own `tabId`s, never touch theirs, and avoid screenshots and coordinate clicks, since a screenshot shows whichever tab is visible. Read pages with `get_page_text`, `read_page` and `find`; click by element `ref`.
 
 ## linkedin_jobs
+
+One LinkedIn tab for the whole lane, tasks one after another, never two LinkedIn searches at once: parallel paging paused the user's LinkedIn search three times (2026-10-12, 2026-10-25, 2026-10-26). The plan lists one task per keyword and location (`linkedin.jobs_keywords` x `linkedin.locations`); a posting found under two of them merges on its `/jobs/view/<id>/` URL, so don't skip a keyword because another one "probably covers it".
 
 The URL is already filtered to remote, the age window, newest first and the task's `location` (the profile runs one search per location: the United States plus one per country of the candidate's region, since a region name is not a reliable LinkedIn location). The location only picks which postings LinkedIn lists; it is not eligibility evidence, so don't copy it into `eligibility`. Cards are virtualised: only about 7 of 25 render at first, and cards scrolled off-screen are emptied.
 
@@ -202,7 +204,7 @@ The page lists **company cards**, each with up to 2 job rows (a "See all N jobs 
 
 ## google_shard
 
-Each task is one Google query across several ATS hosts or job boards, already restricted to the date window with `tbs=cdr`. Results from different hosts are interleaved, and each hosts about 10 organic results per page.
+Each task is one Google query across several ATS hosts or job boards, already restricted to the date window with `tbs=cdr`. Results from different hosts are interleaved, and each hosts about 10 organic results per page. Tasks with `direct: true` (`kind: google_direct`: Lever, Greenhouse, Ashby, one host each) are the lane that yields interviews: run them before the other shards, to their own `caps`, and never cut them for a job-board shard.
 
 ```js
 (() => {
