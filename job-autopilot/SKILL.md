@@ -87,6 +87,8 @@ Invoke the **job-source-sweep** skill and follow it through step 8e: HTTP lane, 
 
 **The browser lane always runs.** The sweep's `max_new_roles` stop rule does not apply inside autopilot: the HTTP feeds alone (Himalayas above all) pass any cap within a minute, and stopping there leaves the queue full of one source. So ignore the role cap, run **every** browser task of the configured mode (LinkedIn Jobs, LinkedIn posts, Remote Rocketship, Wellfound, YC Work at a Startup and all Google shards) under the mode's page and wall-clock caps, and only record a browser task as a coverage gap for the reasons the sweep itself names: Chrome unavailable, a CAPTCHA or login wall, or the wall-clock cap. The user asked for this on 2026-10-02 after a run that applied only to Himalayas listings. A Work at a Startup login wall means the extension is on a browser that isn't signed in (the user's Windows Chrome is, since 2026-10-15; check `list_connected_browsers` and `select_browser`) or the session expired: say so in the report, since that account unlocks about 2,900 YC engineering jobs.
 
+**Two lanes get extra depth, because they produced the interviews (2026-10-27).** The Jeeves interview came from the Lever Google shard (posting 25 hours old at fill time) and the Askable one from LinkedIn Jobs (3 hours old). So `jobsweep plan` now runs LinkedIn Jobs with every keyword and the direct-hire shards (`ats_lever`, `ats_greenhouse`, `ats_ashby`) with the top phrasings, each lane with its own minutes budget (`config.yaml` `sweep.lane_caps`), and the HTTP lane's `ats_search` source repeats the direct-host searches without Chrome, with real posting dates. Copy each task's `caps` into its subagent prompt. The run report's **outcomes** table (per source lane: applied, replied, interview, offer, rejected) is what decides where the next depth goes; keep it fed with `autopilot outcome` (step 6).
+
 **Skip the sweep's own country check (its step 7 and 8d).** The people check in step 3 replaces it inside the autopilot and runs on the companies that matter most for the target. The HTTP lane already includes the `company_boards` source: companies' own Ashby, Greenhouse, Lever and Workable boards, read through their public APIs, with each posting's own date, location and pay.
 
 ## 3. Score and rank
@@ -188,12 +190,16 @@ The script also skips:
 - companies that rejected the user within `rejection_cooldown_days`;
 - roles whose posted pay tops out below `pay_skip_below_usd_month`;
 - roles at companies whose own quotes to the user top out below the floor (`pay_gate`);
-- **middlemen** (`autopilot.skip_company_types`, default staffing firms, talent marketplaces and task platforms):
-  roles whose company the company-type subagent judged, or whose name gives away, as a staffing, nearshore or
-  marketplace layer between the candidate and the company that pays. They are shown as "not applying" with reason
-  `middleman`. Every such quote to the user was under the floor whatever the posting said
-  (`references/target-tier-research.md`); the user asked on 2026-10-15 to skip them. Consultancies stay in, since
-  they employ their engineers directly. The dashboard "apply" override still forces one through.
+- **middlemen** (`autopilot.skip_company_types`, default staffing firms and talent marketplaces): roles whose
+  company the company-type subagent judged (confidence `jd` or `web`, never the name alone: Deel was once skipped as
+  a "marketplace" by name) as a staffing, nearshore or marketplace layer between the candidate and the company that
+  pays. They are shown as "not applying" with reason `middleman`. Every such quote to the user was under the floor
+  whatever the posting said (`references/target-tier-research.md`); the user asked on 2026-10-15 to skip them.
+  Consultancies stay in, since they employ their engineers directly. Since 2026-10-27 `task_platform` is in
+  `skip_company_types_unless_pay_at_target` instead: a task platform is skipped only while its posted pay stays
+  under `pay.target_usd_month`, because Askable, a task platform posting USD 12.8-16k, led to an interview, and
+  task platforms post the per-task rate they pay worldwide (staffing firms don't, so they stay in the hard list).
+  The dashboard "apply" override still forces one through.
 
 **A JD's "US-based only" exclusion is overridden** when the people check found engineers in the candidate's country
 or region: the role is queued, capped at tier B, and the report shows the override. Citizenship, clearance, export
@@ -252,6 +258,15 @@ With `auto_submit` true, applications the subagent submitted are already `applie
 
 Nothing in this skill registers an application until that mark exists. On the next run, preflight imports the marks; in the same session, `autopilot confirm --id ... --submitted` does it immediately.
 
+**Outcomes (2026-10-27).** What became of an application is recorded on its ledger entry with
+`autopilot outcome --id <role id> --status replied|interview|offer|rejected|ghosted [--note ...]`, and
+`autopilot outcome --sync` copies applika's Denied/Offer steps onto entries that have none (applika has no interview
+step, so interviews come from the user's inbox: when the user mentions a reply or an interview, record it). The
+source lane stays on the entry, so the run report ranks lanes by interviews rather than rows. A company with an
+`interview` or `offer` outcome is exempt from `company_cooldown_days` and `per_company_per_run` for its other
+target-title roles: a company that interviews the user is worth its sibling postings (Jeeves's Forward Deployed
+Engineer roles for São Paulo and Mexico City were the first case).
+
 ## 7. Register and publish
 
 1. Run `autopilot applika-sync`. It registers every role marked submitted that applika doesn't already have with the same job URL, or the same company and title. It returns applika's own output for anything that failed (`errors`, or `list_failed`). Read that output. If it's a login or session problem, run `wsl.exe -e bash -lc 'applika login'` and sync again. For any other error, report it.
@@ -294,11 +309,23 @@ Then keep the chat reply short:
 - The dashboard link.
 - The queue by tier (`queue` → `by_tier`), the people checks run (verdicts, and which engines blocked), and the next few roles in the queue with their tiers.
 
+## Daily mode (2026-10-27)
+
+Both interviews came from postings under two days old, so between full runs the two productive lanes run daily, in
+about 30 minutes, when the user says "daily", "quick pass" or "today's roles":
+1. Preflight as usual (step 1).
+2. `jobsweep http --profile <slug> --days 1` with no source ids (the whole HTTP lane, `ats_search` included; its own
+   `window_days` keep HN, YC, the VC boards and company boards in).
+3. `jobsweep plan --profile <slug> --days 1 --only linkedin_jobs,google_direct`, then the browser lane on exactly
+   those tasks: LinkedIn Jobs in one tab, the three direct-hire shards in parallel tabs, each to its `caps`.
+4. Merge, JDs, eligibility and fit (sweep steps 6 and 8a-8d), then steps 3 to 8 of this skill as in a full run.
+`autopilot.daily_lanes` in `config.yaml` lists the browser tasks the daily mode keeps.
+
 ## Data it keeps
 
 All of this is in `<home>/autopilot/`:
 - `answer-bank.json`: the profile (a mirror of `candidate` in `config.yaml`), answered questions (the user's own, and estimated ones awaiting confirmation), pending questions, and confirmed, denied and pending skills. Dashboard answers are merged in at preflight, and a question answered once is reused on every later form with the same meaning.
-- `ledger.json`: every role's status, attempts, tailored CV, every answer typed into its form, free-text answers, cover letter, tab title and applika id.
+- `ledger.json`: every role's status, attempts, tailored CV, every answer typed into its form, free-text answers, cover letter, tab title, applika id and `outcome` (replied / interview / offer / rejected / ghosted, from `autopilot outcome`).
 - `scores.json`, `queue.json`, `pacing.json`, and `work/<date>/` with the batches and result files.
 - `company_types.json` (one type per company), `paytier_backtest.json`, `target_roles.json` (blocked tier A roles for recruiter-outreach).
 - `runs/<run_id>/decisions.jsonl` and `report.html`/`report.json`; `runs.json` lists every run with its report link.

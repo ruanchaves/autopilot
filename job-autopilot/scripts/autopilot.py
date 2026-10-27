@@ -126,7 +126,12 @@ DEFAULT_SETTINGS = {
     "people_check_limit": 100,
     # company types (company_types.json, or the name) whose roles are never prepared: the staffing, nearshore
     # and marketplace middlemen between the candidate and the company that pays. [] turns the rule off.
-    "skip_company_types": ["staff_aug", "marketplace", "task_platform"],
+    "skip_company_types": ["staff_aug", "marketplace"],
+    # Types skipped only while the posting's own pay stays under pay.target_usd_month: task platforms post the
+    # per-task rate they pay worldwide (Askable posted USD 12.8-16k and led to an interview, 2026-10-27), unlike
+    # staffing firms, whose posted ranges never reached this candidate. A type guessed from the company name alone
+    # never triggers either rule (Deel was once skipped as a "marketplace" by name); the role is scored instead.
+    "skip_company_types_unless_pay_at_target": ["task_platform"],
     # filled in from config.yaml by settings(): banned_companies (current employers/clients, never
     # applied to), pay_target_usd_month / pay_skip_below_usd_month (pay section), and the tracker
     # section (applika_enabled, rejection_cooldown_days, rejection_neutral_feedback,
@@ -158,7 +163,7 @@ def settings(home: str) -> dict:
              applika_enabled=t.get("enabled", True), rejection_cooldown_days=t.get("rejection_cooldown_days", 0),
              rejection_neutral_feedback=t.get("rejection_neutral_feedback") or [],
              rejection_ignore_companies=t.get("rejection_ignore_companies") or [],
-             company_cooldown_days=t.get("company_cooldown_days", 0))
+             company_cooldown_days=t.get("company_cooldown_days", 0), _home=home)
     return s
 
 
@@ -257,14 +262,18 @@ def apply_decision(parts: dict, st: dict, pt: dict | None = None, people: str | 
     quotes, and the middleman rule (`skip_company_types`: staffing, nearshore and marketplace companies, whatever
     they post). A "US-based only" kind of exclusion is overridden when the people check found engineers in the
     candidate's country or region (the role is then capped at tier B); legal requirements never are."""
-    if ctype and ctype.get("type") in (st.get("skip_company_types") or []):
-        return False, "middleman", f"company type {ctype.get('detail') or ctype['type']}: a staffing, nearshore or marketplace layer, not the company that pays"
+    hi = parts.get("pay_max") or parts.get("pay_min")
+    t = (ctype or {}).get("type")
+    at_target = bool(hi and hi >= (st.get("pay_target_usd_month") or 0))
+    if t and ctype.get("confidence") != "name" and (
+            t in (st.get("skip_company_types") or [])
+            or (t in (st.get("skip_company_types_unless_pay_at_target") or []) and not at_target)):
+        return False, "middleman", f"company type {ctype.get('detail') or t}: a staffing, nearshore or marketplace layer, not the company that pays"
     if parts.get("apply") is False:
         why, evidence = parts.get("skip_reason", ""), parts.get("skip_evidence", "")
         if why == "location_explicit" and people in tg.REGION_OK and not LEGAL.search(evidence):
             return True, "location_overridden", evidence
         return False, why, evidence
-    hi = parts.get("pay_max") or parts.get("pay_min")
     if hi and st.get("pay_skip_below_usd_month") and hi < st["pay_skip_below_usd_month"]:
         return False, "pay_below_target", (f'Posted pay: {parts["pay_note"]} (~USD {round(hi):,}/month)' if parts.get("pay_note")
                                            else f"Posted pay tops out at ~USD {round(hi):,}/month")
@@ -717,6 +726,7 @@ def cmd_queue(args) -> int:
     st = settings(args.home)
     rej = recent_rejections(existing, st)
     apps = recent_applications(existing, st)
+    inter = interviewing(ledger)  # a company that interviewed the user is worth its sibling roles (2026-10-27)
     q, skipped = [], {"rejected": 0, "final": 0, "banned": 0, "rejected_company": 0, "in_applika": 0,
                       "applied_company": 0, "not_worth_applying": 0, "middleman": 0, "needs_you": 0, "waiting_answers": 0,
                       "load_retries": 0, "too_old": 0, "tier_c_only_mode": 0}
@@ -753,7 +763,7 @@ def cmd_queue(args) -> int:
                 drop("in_applika", f'{m.get("role")} on {m.get("application_date")}', "applika")
                 continue
             ap = rejection_for(apps, r["company"])
-            if ap and untouched(e) and e.get("override") != "apply":
+            if ap and untouched(e) and e.get("override") != "apply" and not company_interviewing(inter, r["company"]):
                 ledger[r["id"]] = {**e, **base, "status": "skipped", "detail": application_detail(ap)}
                 skipped["applied_company"] += 1
                 drop("applied_company", application_detail(ap), "applika")
@@ -957,7 +967,8 @@ def check(p: dict, host: str, company: str, st: dict) -> dict:
         return {"allowed": False, "reason": f"{host} pushed back earlier in this run (captcha or block)"}
     if h["used"] >= h["budget"]:
         return {"allowed": False, "reason": f"{host} budget of {h['budget']} used for this run"}
-    if company and p["companies"].get(js.company_key(company), 0) >= st["per_company_per_run"]:
+    if company and p["companies"].get(js.company_key(company), 0) >= st["per_company_per_run"] \
+            and not company_interviewing(interviewing(load(st["_home"], "ledger.json", {})), company):
         return {"allowed": False, "reason": f"already {st['per_company_per_run']} applications to {company} this run"}
     gap = CLASSES[h["class"]][2]
     if h["last_submit"]:
@@ -1257,6 +1268,69 @@ def mark_confirmed(ledger: dict, rid: str, status: str, at: str = "") -> dict:
         e.update(status="discarded", failure_type=None, waiting_on=[], confirmed_at=NOW.isoformat(),
                  detail="Discarded by the user" + (f": {e.get('detail')}" if e.get("detail") else ""))
     return e
+
+
+OUTCOMES = ("replied", "interview", "offer", "rejected", "ghosted")
+
+
+def interviewing(ledger: dict) -> set[str]:
+    """Company keys with an interview or offer outcome on any application (`autopilot outcome`). applika has no
+    interview step (only Denied/Offer), so this is recorded by hand from the inbox."""
+    out = set()
+    for e in ledger.values():
+        if (e.get("outcome") or {}).get("status") in ("interview", "offer"):
+            k = js.company_key(e.get("company") or "")
+            if k:
+                out.add(k)
+                out.add("~" + squash(e.get("company") or ""))
+    return out
+
+
+def company_interviewing(inter: set[str], company: str) -> bool:
+    key = js.company_key(company or "")
+    return bool(key) and (key in inter or "~" + squash(company or "") in inter)
+
+
+def cmd_outcome(args) -> int:
+    """Record what became of an application: replied | interview | offer | rejected | ghosted, with the source lane
+    kept on the entry so the run report can rank lanes by replies and interviews, not rows. --sync copies applika's
+    Denied/Offer steps onto entries that have none."""
+    ledger = load(args.home, "ledger.json", {})
+    done, unknown = [], []
+    if args.sync:
+        existing, err = applika_list(args.home, refresh=True)
+        if existing is None:
+            return emit({"synced": 0, "list_failed": True, "output": err})
+        by_id = {str(x.get("id")): x for x in existing}
+        for e in ledger.values():
+            x = by_id.get(str((e.get("applika") or {}).get("id") or ""))
+            if not x and e.get("applika", {}).get("output"):
+                m = re.search(r"id=(\d+)", e["applika"]["output"])
+                x = by_id.get(m[1]) if m else None
+            if not x or e.get("outcome"):
+                continue
+            step = ((x.get("last_step") or {}).get("name") or "").lower()
+            fb = ((x.get("feedback") or {}).get("name") or "")
+            status = "offer" if step == "offer" else "ghosted" if fb.lower() == "ghost" else "rejected" if step == "denied" else ""
+            if status:
+                e["outcome"] = {"status": status, "at": (x.get("feedback") or {}).get("date") or TODAY, "note": fb, "by": "applika"}
+                done.append(f'{e.get("company")}: {status}' + (f" ({fb})" if fb else ""))
+    for rid in args.id or []:
+        e = ledger.get(rid)
+        if not e:
+            unknown.append(rid)
+            continue
+        e["outcome"] = {"status": args.status, "at": args.date or TODAY, "note": args.note or "", "by": "you"}
+        done.append(f'{e.get("company")}: {e.get("title")} -> {args.status}')
+        log(args.home, [rec("you", e, args.status, "outcome", args.note or "recorded in chat", "you")])
+    save(args.home, "ledger.json", ledger)
+    by = Counter()
+    for e in ledger.values():
+        o = (e.get("outcome") or {}).get("status")
+        if o:
+            by[(e.get("source") or source_group(e.get("sources") or []), o)] += 1
+    return emit({"recorded": done, "unknown_ids": unknown,
+                 "by_source": [{"source": k[0], "outcome": k[1], "n": n} for k, n in sorted(by.items())]})
 
 
 def cmd_confirm(args) -> int:
@@ -1640,6 +1714,9 @@ def main() -> int:
     p = sub.add_parser("confirm"); p.add_argument("--id", action="append", required=True)
     g = p.add_mutually_exclusive_group(); g.add_argument("--submitted", action="store_true"); g.add_argument("--discarded", action="store_true")
     p.set_defaults(fn=cmd_confirm)
+    p = sub.add_parser("outcome", help="record replied/interview/offer/rejected/ghosted on applications; --sync reads applika")
+    p.add_argument("--id", action="append"); p.add_argument("--status", choices=OUTCOMES)
+    p.add_argument("--note"); p.add_argument("--date"); p.add_argument("--sync", action="store_true"); p.set_defaults(fn=cmd_outcome)
     sub.add_parser("ready").set_defaults(fn=cmd_ready)
     sub.add_parser("dashboard").set_defaults(fn=cmd_dashboard)
     sub.add_parser("status").set_defaults(fn=cmd_status)

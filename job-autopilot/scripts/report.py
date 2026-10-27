@@ -254,8 +254,23 @@ def build(home: str, run: str, batches: int = 14) -> dict:
     funnel = Counter()
     for x in out_roles:
         funnel[(x["step"], x["outcome"], x["reasonLabel"])] += 1
+    # what each source lane produced over the whole ledger: applications and their recorded outcomes
+    # (`autopilot outcome`), so the next budget decision between lanes rests on interviews, not rows
+    lanes: dict[str, Counter] = {}
+    for e in ledger.values():
+        if e.get("status") != "applied":
+            continue
+        lane = e.get("source") or apm.source_group(e.get("sources") or [])
+        c = lanes.setdefault(lane, Counter())
+        c["applied"] += 1
+        o = (e.get("outcome") or {}).get("status")
+        if o:
+            c[o] += 1
+    outcomes = [{"source": k, **{o: c.get(o, 0) for o in ("applied", "replied", "interview", "offer", "rejected", "ghosted")}}
+                for k, c in sorted(lanes.items(), key=lambda kv: (-kv[1].get("interview", 0), -kv[1]["applied"]))]
     data = {
         "run": run, "started": started, "built": NOW.strftime("%Y-%m-%d %H:%M UTC"),
+        "outcomes": outcomes,
         "candidate": {"country": userconfig.country(), "region": userconfig.region()},
         "target": st["pay_target_usd_month"], "floor": st.get("pay_skip_below_usd_month"), "target_mode": st.get("target_mode"),
         "sources": source_rows(sweeps, role_stats),
