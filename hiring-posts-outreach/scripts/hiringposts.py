@@ -257,9 +257,12 @@ def refresh(lead: dict, st: dict) -> None:
     fresh = [p for p in posts if p.get("age_days") is None or p["age_days"] <= st["max_post_age_days"]]
     lead["stale"] = not fresh
     pool = fresh or posts
-    pays = [p["pay_usd_month"] for p in pool if p.get("pay_usd_month")]
+    # Pay counts only from posts the candidate may apply to: a recruiter's on-site US role must not lift the
+    # tier of their separate no-pay LATAM post (Ayaz Ali, 2026-10-28).
+    open_posts = [p for p in pool if p.get("eligibility") != "excluded"] or pool
+    pays = [p["pay_usd_month"] for p in open_posts if p.get("pay_usd_month")]
     lead["pay_usd_month"] = max(pays) if pays else None
-    lead["pay_basis"] = next((p.get("pay_basis", "") for p in pool if p.get("pay_usd_month") == lead["pay_usd_month"]), "")
+    lead["pay_basis"] = next((p.get("pay_basis", "") for p in open_posts if p.get("pay_usd_month") == lead["pay_usd_month"]), "")
     el = {p.get("eligibility", "unclear") for p in pool}
     lead["eligibility"] = next((x for x in ELIG if x in el), "unclear")  # ELIG is ordered best-first
     lead["age_days"] = min((p["age_days"] for p in pool if p.get("age_days") is not None), default=99)
