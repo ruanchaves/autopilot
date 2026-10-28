@@ -56,7 +56,9 @@ TODAY = NOW.strftime("%Y-%m-%d")
 DEFAULTS = {
     "roles": [],                   # role names searched; default: role.title from config.yaml
     "suffixes": ["hiring", "LATAM hiring", "remote hiring", "Latin America hiring", "Brazil hiring"],
-    "extra_queries": [],           # whole phrasings added as they are
+    "extra_queries": ["Agentic AI Engineer hiring", "Senior AI Engineer hiring remote LATAM",
+                      "AI Engineer hiring Americas", "AI Engineer contractor LATAM", "LLM Engineer hiring Argentina",
+                      "GenAI Engineer hiring Mexico", "AI Engineer hiring Colombia", "RAG Engineer hiring remote"],
     "floor_usd_month": 7000,       # posts whose highest stated pay is under this are dropped
     "max_post_age_days": 30,       # older posts are ignored
     "query_cooldown_days": 2,      # a phrasing is rerun after this long (results are sorted by date, so new posts appear)

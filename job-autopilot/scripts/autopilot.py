@@ -103,14 +103,14 @@ DEFAULT_SETTINGS = {
     # sweep first saw them. "balanced": the 2026-10-02 round-robin across sources with the 25-point gap guard.
     "queue_order": "fresh",
     "max_load_retries": 3,    # type-3 failures before a role is given up
-    "tailor_ahead": 6,        # tailored CVs kept ready ahead of the apply loop
+    "tailor_ahead": 9,        # tailored CVs kept ready ahead of the apply loop: three rounds of 3 parallel fills
     "tailor": True,           # False: skip /tailor-resume and upload config resume.pdf as-is
     "per_company_per_run": 2,
     # filled forms (tabs left open) waiting for the user; the apply loop stops at this many
     "max_ready": 15,
-    # False: fill and stop in front of Submit (the user submits and confirms). True: the apply
-    # subagent clicks Submit itself and records `applied` with the confirmation it saw.
-    "auto_submit": False,
+    # True (default since 2026-10-27): the apply subagent clicks Submit itself and records `applied` with the
+    # confirmation it saw. False: fill and stop in front of Submit (the user submits and confirms).
+    "auto_submit": True,
     # cover letters: "required" = draft one only when the form requires it or the posting asks for
     # one; "always" = draft one wherever a form accepts it; "never". ("target", from the removed tier
     # system, is read as "required".)

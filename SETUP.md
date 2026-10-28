@@ -19,7 +19,7 @@ Then set up the search virtualenv for the people check, with the same runner (in
 
 ```
 python3 -m venv --without-pip ~/.venvs/search && curl -sS https://bootstrap.pypa.io/get-pip.py | ~/.venvs/search/bin/python
-~/.venvs/search/bin/python -m pip install ddgs==9.16.0 pyyaml
+~/.venvs/search/bin/python -m pip install ddgs==9.16.1 pyyaml
 ```
 
 Check it with `jobsweep search 'site:br.linkedin.com/in engineer "Stripe"' --no-cache`. It should print LinkedIn

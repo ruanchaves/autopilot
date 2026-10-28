@@ -117,12 +117,12 @@ sweep:
   lane_caps:
     standard:
       wall_clock_minutes: 20
-      linkedin_jobs: {keywords: all, pages: 3, budget_minutes: 25}
+      linkedin_jobs: {keywords: all, pages: 5, budget_minutes: 40}   # full depth even in standard mode: this lane yields interviews (user rule 2026-10-27)
       linkedin_posts: {keywords: 1, posts: 30}
       rocketship: {pages: 2}
       wellfound: {pages: 3}
       yc_waas: {queries: 1, batches: 3}
-      google_direct: {queries: 4, pages: 3, budget_minutes: 20}
+      google_direct: {queries: 8, pages: 5, budget_minutes: 40}   # full depth even in standard mode (user rule 2026-10-27)
       google_shard: {queries: 1, pages: 2}
     full:
       wall_clock_minutes: 60
@@ -137,19 +137,22 @@ sweep:
 # job-autopilot
 autopilot:
   channels: [ats, linkedin_easy_apply, email]   # never public "comment Interested" posts
-  max_minutes: 120           # wall-clock cap for the fill loop
+  max_minutes: 0             # wall-clock cap for the fill loop; 0 = none: run the queue down (user rule 2026-10-27)
+  # fresh: newest posting first, score breaks ties (user rule 2026-10-27: the interviews came from LinkedIn Jobs and
+  # the direct ATS shards at roles hours to a day old). balanced: the 2026-10-02 round-robin across sources.
+  queue_order: fresh
   max_ready: 15              # filled forms (open tabs) waiting for you; the loop pauses at this many
   # false (default): fill every form completely and stop in front of Submit; you review, submit and
   # mark it Submitted. true: the subagent clicks Submit itself after filling, and confirmed
   # submissions are registered in applika without your confirmation.
-  auto_submit: false         # true: submit after the full fill; a CAPTCHA, code or sign-up wall still leaves the form open for you
+  auto_submit: true           # since 2026-10-27: submit after the full fill; a CAPTCHA, code or sign-up wall leaves the form open for the user
   cover_letter: required     # required (when the form asks) | always | never
   # The target tiers (a pay estimate from company type and HQ, a people check per run, an A/B/C rank) were removed
-  # on 2026-10-27: too complex to trust. The queue is best score first, balanced across sources; posted pay, the
+  # on 2026-10-27: too complex to trust. The queue is freshest posting first (queue_order above); posted pay, the
   # company's own quotes (pay gate) and cached people-check verdicts (location override) are the only pay and
   # region evidence, and nothing is skipped for its company type.
   max_load_retries: 3
-  tailor_ahead: 6
+  tailor_ahead: 9                # three rounds of 3 parallel fills, so an uncapped loop never waits on CVs (2026-10-27)
   tailor: true               # false: skip the tailor-resume skill and upload resume.pdf as-is
   per_company_per_run: 2
 
@@ -157,13 +160,14 @@ autopilot:
 # LinkedIn profiles through ordinary search engines, never LinkedIn search. Queries run through the ddgs library
 # (github.com/deedy5/ddgs, MIT) in its own virtualenv, so the other scripts stay on the standard library. Setup, once:
 #   python3 -m venv --without-pip ~/.venvs/search && curl -sS https://bootstrap.pypa.io/get-pip.py | ~/.venvs/search/bin/python
-#   ~/.venvs/search/bin/python -m pip install ddgs==9.16.0 pyyaml
-# Tested 2026-10-14 from WSL: only ddgs's Yahoo engine (Bing's index) answers a script; Google, Brave, DuckDuckGo,
-# Mojeek and Startpage don't, and ddgs 9.16.0 has no "bing" or "yandex" text engine. Raw results are cached in
-# <home>/serp_cache/; engine suspensions in <home>/search_state.json.
+#   ~/.venvs/search/bin/python -m pip install ddgs==9.16.1 pyyaml
+# Re-tested 2026-10-27 with ddgs 9.16.1: duckduckgo, yandex (shipped disabled, re-enabled by serp_helper) and yahoo
+# answer `site:` queries from a script; google (also shipped disabled) returns nothing, bing ignores site:,
+# brave/mojeek/startpage return nothing. No engine's past-week filter is confirmed, so queries run unfiltered and the
+# callers check posting dates. Raw results are cached in <home>/serp_cache/; suspensions in <home>/search_state.json.
 search:
   python: ~/.venvs/search/bin/python   # the Python that has ddgs (inside WSL with python: wsl)
-  backends: [yahoo]                    # tried in order, each with its own circuit breaker (add more if a ddgs release revives them)
+  backends: [duckduckgo, yandex, yahoo]   # tried in order, each with its own circuit breaker (three indexes)
   min_gap_seconds: 4                   # between queries, plus up to jitter_seconds of random wait
   jitter_seconds: 2
   max_queries_per_run: 300             # per command run; set from the 2026-10-14 ramp test
@@ -251,7 +255,7 @@ recruiter_outreach:
 hiring_posts:
   roles: [AI Engineer, Forward Deployed Engineer, LLM Engineer, Machine Learning Engineer, GenAI Engineer, Applied AI Engineer, AI Solutions Engineer, Agents Engineer, Founding AI Engineer]
   suffixes: [hiring, LATAM hiring, remote hiring, Latin America hiring, Brazil hiring, hiring remote LATAM, contratando]
-  extra_queries: []          # whole phrasings added as they are
+  extra_queries: [Agentic AI Engineer hiring, Senior AI Engineer hiring remote LATAM, AI Engineer hiring Americas, AI Engineer contractor LATAM, LLM Engineer hiring Argentina, GenAI Engineer hiring Mexico, AI Engineer hiring Colombia, RAG Engineer hiring remote]   # whole phrasings added as they are
   floor_usd_month: 7000      # posts whose highest stated pay is under this are dropped; no stated pay = tier 1, still contacted
   max_post_age_days: 30
   query_cooldown_days: 2     # results are sorted by date, so a phrasing is worth rerunning this often

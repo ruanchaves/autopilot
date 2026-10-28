@@ -90,11 +90,11 @@ CONFIG_DEFAULTS = {
     # of its own outside wall_clock_minutes.
     "lane_caps": {
         "standard": {"wall_clock_minutes": 20,
-                     "linkedin_jobs": {"keywords": "all", "pages": 3, "budget_minutes": 25},
+                     "linkedin_jobs": {"keywords": "all", "pages": 5, "budget_minutes": 40},  # full depth: yields interviews
                      "linkedin_posts": {"keywords": 1, "posts": 30},
                      "rocketship": {"pages": 2}, "wellfound": {"pages": 3},
                      "yc_waas": {"queries": 1, "batches": 3},
-                     "google_direct": {"queries": 4, "pages": 3, "budget_minutes": 20},
+                     "google_direct": {"queries": 8, "pages": 5, "budget_minutes": 40},  # full depth (2026-10-27)
                      "google_shard": {"queries": 1, "pages": 2}},
         "full": {"wall_clock_minutes": 60,
                  "linkedin_jobs": {"keywords": "all", "pages": 5, "budget_minutes": 40},
