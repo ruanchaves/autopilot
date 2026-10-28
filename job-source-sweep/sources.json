@@ -380,11 +380,24 @@
         "jobs.ashbyhq.com",
         "boards.greenhouse.io"
       ],
-      "pages": 1,
-      "max_queries": 40,
+      "pages": 2,
+      "max_queries": 90,
       "window_days": 7,
-      "_note": "Chrome-free twin of the direct-hire Google shards (ats_lever, ats_greenhouse, ats_ashby): the same site: searches through the search layer (companies.Searcher, ddgs/Yahoo, paced and cached in <home>/serp_cache), every profile google_query, `pages` result pages per host and query, at most max_queries searches a run (Yahoo's engine rate-limited after about 50 searches on 2026-10-27 and the layer then suspends it for 6 hours, which the people check also needs; the Google shards cover the same hosts in Chrome). Each hit is resolved through the board's public API so the row has the posting's own date, location and pay (a search index date is not a posting date); closed and onsite postings are dropped. window_days 7: the dates are real and the companies hire the role directly. Boards found here enter boards.json via discover_boards on the next merge. timelimit: the engine's past-day/week/month filter (d/w/m); without it 1 hit in 34 was inside a week (2026-10-27 test). The first search probes the filter: no ATS hit with it, and the run continues unfiltered.",
+      "_note": "Chrome-free twin of the direct-hire Google shards (ats_lever, ats_greenhouse, ats_ashby): the same site: searches through the search layer (companies.Searcher: ddgs 9.16.1 with duckduckgo, yandex and yahoo in turn, each with its own circuit breaker, paced and cached in <home>/serp_cache), every profile google_query, `pages` result pages per host and query, at most max_queries searches a run. Each hit is resolved through the board's public API so the row has the posting's own date, location and pay (a search index date is not a posting date); closed and onsite postings are dropped. window_days 7: the dates are real and the companies hire the role directly. Boards found here enter boards.json via discover_boards on the next merge. timelimit: the engine's past-week filter; no engine is confirmed to honour it through ddgs (2026-10-27), so the layer sends the queries unfiltered and the board dates do the filtering. Yahoo alone rate-limited after about 50 searches on 2026-10-27; three engines share the load now.",
       "timelimit": "w"
+    },
+    {
+      "id": "ats_directory",
+      "label": "ATS directory (web archives)",
+      "kind": "ats_directory",
+      "url": "index.commoncrawl.org + web.archive.org/cdx -> jobs.lever.co/* jobs.ashbyhq.com/* boards.greenhouse.io/* job-boards.greenhouse.io/*",
+      "crawls": 3,
+      "wayback_days": 60,
+      "max_boards": 150,
+      "recheck_days": 30,
+      "window_days": 21,
+      "_note": "The third route to the direct-hire boards, needing no search engine (2026-10-27): the tenant slugs of Lever, Ashby and Greenhouse enumerated from the web archives' URL indexes (Common Crawl, the newest `crawls` monthly indexes, each fetched once ever; the Wayback CDX API for the last `wayback_days`, once a day), cached in <home>/ats_tenants.json. None of the three vendors publishes a tenant directory or sitemap. Each run reads the boards of `max_boards` tenants not yet checked (newest archive entry first) through the ATS APIs; a board that lists the target role joins boards.json (found_via 'ats directory') so company_boards re-reads it every run, the rest are re-checked after recheck_days. Rows: the target postings on the boards read this run, remote or unstated, with the board's own date, location and pay. Roughly 1,700 Greenhouse and 700 Ashby tenants per crawl, so the first weeks of runs work through a backlog; the index server answers 504 under load and the fetch retries three times. archive_minutes caps the archive-list step per run (the lists are fetched page by page and whatever is left continues next run), so the board reads always get the rest of the source's time.",
+      "archive_minutes": 3
     },
     {
       "id": "getro_generalcatalyst",

@@ -837,9 +837,40 @@ def fetch_ats_search(f: Fetcher, src: dict, profile: dict, cat: dict) -> list[di
     return out
 
 
+def fetch_ats_directory(f: Fetcher, src: dict, profile: dict, cat: dict) -> list[dict]:
+    """Direct-hire boards found without any search engine: tenant slugs of jobs.lever.co, jobs.ashbyhq.com and the
+    Greenhouse board hosts enumerated from the web archives' URL indexes (Common Crawl, Wayback CDX; see
+    companies.directory_update), then each new tenant's board read through its public API (companies.directory_read,
+    `max_boards` a run, newest archive entry first). Rows are the target-role postings on boards read this run, with
+    the board's own date, location and pay; boards that list the role join boards.json for company_boards. Added
+    2026-10-27 as the third route to these hosts beside the Google/Bing/DuckDuckGo shards and ats_search."""
+    import companies
+    home = profile.get("_home") or userconfig.home()
+    deadline = profile.get("_deadline")
+    # the archive lists get their own slice (archive_minutes), so a slow index server never starves the board reads
+    arch_deadline = time.time() + 60 * float(src.get("archive_minutes", 3))
+    upd = companies.directory_update(home, int(src.get("crawls", 3)), int(src.get("wayback_days", 60)),
+                                     min(deadline, arch_deadline) if deadline else arch_deadline)
+    rd = companies.directory_read(home, int(src.get("max_boards", 150)), int(src.get("recheck_days", 30)), deadline)
+    out = []
+    for x in rd["rows"]:
+        pay = x.get("pay_usd_month")
+        out.append(row(src, x.get("title"), x.get("company"), x.get("location"), x.get("posted"), x.get("url"),
+                       compensation=f"~USD {pay:,}/month (board)" if pay else "", region_hint=x.get("region"),
+                       board=x.get("board")))
+    if upd["archive_errors"]:
+        print(f"{src['id']}: archive errors: " + " | ".join(upd["archive_errors"][:4]), file=sys.stderr)
+    if rd.get("deferred"):
+        PARTIAL.add(src["id"])
+    print(f"{src['id']}: {upd['archives_fetched']} archive lists fetched, {upd['new']} new tenants, "
+          f"{upd['tenants']} known; read {rd['read']} boards ({rd['errors']} errors, {rd['deferred']} deferred), "
+          f"{rd['with_target']} list the role, {len(out)} rows; {rd['unchecked']} tenants still unchecked", file=sys.stderr)
+    return out
+
+
 ADAPTERS = {"json": fetch_json, "rss": fetch_rss, "getro": fetch_getro, "consider": fetch_consider,
             "hn": fetch_hn, "yc": fetch_yc, "a16z": fetch_a16z, "boards": fetch_company_boards,
-            "web3career": fetch_web3career, "ats_search": fetch_ats_search}
+            "web3career": fetch_web3career, "ats_search": fetch_ats_search, "ats_directory": fetch_ats_directory}
 
 
 def sweep(cat: dict, profile: dict, ids: list[str] | None):
@@ -929,6 +960,19 @@ def google_url(query: str, hosts: list[dict], start: datetime, end: datetime) ->
     tbs = f"cdr:1,cd_min:{start:%m/%d/%Y},cd_max:{end:%m/%d/%Y}"
     return ("https://www.google.com/search?q=" + urllib.parse.quote_plus(f"{query} ({sites})")
             + "&tbs=" + urllib.parse.quote_plus(tbs))
+
+
+def fallback_urls(query: str, hosts: list[dict], start: datetime, end: datetime) -> dict[str, str]:
+    """The same shard search on Bing and DuckDuckGo, for the browser subagent to switch to when Google shows a
+    CAPTCHA or an "unusual traffic" page (user rule 2026-10-27: the shard lane must not end on one engine's block).
+    Bing's custom date range is `filters=ex1:"ez5_<from>_<to>"` in days since 1970-01-01; DuckDuckGo's is
+    `df=YYYY-MM-DD..YYYY-MM-DD`. Both engines honour `site:` and `OR` from a real browser."""
+    sites = " OR ".join(f"site:{h['site']}" for h in hosts)
+    q = urllib.parse.quote_plus(f"{query} ({sites})")
+    epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    d0, d1 = (start - epoch).days, (end - epoch).days
+    return {"bing": f"https://www.bing.com/search?q={q}&filters=" + urllib.parse.quote_plus(f'ex1:"ez5_{d0}_{d1}"'),
+            "duckduckgo": f"https://duckduckgo.com/?q={q}&df={start:%Y-%m-%d}..{end:%Y-%m-%d}&ia=web"}
 
 
 def linkedin_locations(profile: dict) -> list[dict]:
@@ -1065,6 +1109,7 @@ def cmd_plan(args) -> int:
             tasks.append({"task": "google_shard", "kind": kind, "shard": shard["id"], "direct": bool(shard.get("direct")),
                           "label": f"{shard['label']} :: {query}",
                           "url": google_url(query, hosts, start, end),
+                          "fallback_urls": fallback_urls(query, hosts, start, end),
                           "hosts": [h["host"] for h in hosts],
                           "date_fields": {h["host"]: h.get("field", "datePosted") for h in hosts},
                           "caps": cap(kind)})

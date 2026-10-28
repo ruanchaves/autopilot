@@ -397,14 +397,19 @@ def median(values: list) -> float | None:
 # Every people-check and harvest query goes through Searcher: the ddgs metasearch library (MIT, pinned at
 # DDGS_VERSION, run by serp_helper.py inside the search virtualenv), engines tried in config order with a circuit
 # breaker each, 4-6 s jittered gaps, a per-run query budget, a canary query that tells "no results" from "quietly
-# blocked", and a 30-day cache of raw results in <home>/serp_cache/. Tested 2026-10-14 from WSL: about 130 queries,
-# no block. Only ddgs's Yahoo engine (Bing's index) answers a script: Google, Brave, DuckDuckGo, Mojeek and Startpage
-# returned nothing, and in ddgs 9.16.0 "bing" and "yandex" are disabled (asking for them silently ran "auto"; the
-# helper now refuses them). One working engine, so Chrome stays the fallback (job-autopilot/references/
-# target-tier-research.md).
+# blocked", and a 30-day cache of raw results in <home>/serp_cache/. Tested 2026-10-14 from WSL: only Yahoo answered.
+# Re-tested 2026-10-27 with ddgs 9.16.1: duckduckgo (6 hits), yandex (6 hits, one page; ddgs ships it disabled and
+# serp_helper re-enables it) and yahoo (8 hits, Bing's index) answer `site:` queries; google is shipped disabled and
+# returns nothing re-enabled, bing ignores site:, brave/mojeek/startpage return nothing. Three indexes (DuckDuckGo,
+# Yandex, Bing via Yahoo) give the script lane engine diversity; Chrome's Google shards with Bing and DuckDuckGo
+# fallbacks are the other redundancy (job-autopilot/references/target-tier-research.md).
 
-DDGS_VERSION = "9.16.0"
-SEARCH_DEFAULTS = {"python": "~/.venvs/search/bin/python", "backends": ["yahoo"], "min_gap_seconds": 4,
+DDGS_VERSION = "9.16.1"
+# Engines whose past-day/week filter (ddgs timelimit) is confirmed to work: none yet. duckduckgo and yahoo break with
+# it, and yandex returned the same hits with and without it (2026-10-27). Callers check posting dates themselves.
+TIMELIMIT_ENGINES: set[str] = set()
+SEARCH_DEFAULTS = {"python": "~/.venvs/search/bin/python", "backends": ["duckduckgo", "yandex", "yahoo"],
+                   "min_gap_seconds": 4,
                    "jitter_seconds": 2, "max_queries_per_run": 300, "cache_days": 30, "empty_cache_days": 3,
                    "suspend_hours": 6, "errors_to_suspend": 2, "empty_streak_halt": 8,
                    "canary": 'site:br.linkedin.com/in engineer "Stripe"'}
@@ -507,8 +512,9 @@ class Searcher:
             if not self.available(be):
                 continue
             if len(empty_on) >= 2:
-                break  # two engines found nothing: it is a real empty (they share Bing's index)
-            res = self._run(be, query, page, timelimit)
+                break  # two engines (different indexes since 2026-10-27) found nothing: a real empty
+            # an engine that can't filter by date answers the unfiltered query; the caller re-checks dates itself
+            res = self._run(be, query, page, timelimit if be in TIMELIMIT_ENGINES else "")
             self.used += 1
             self.stats["queries"] += 1
             self.stats["by_engine"][be] = self.stats["by_engine"].get(be, 0) + 1
@@ -519,7 +525,7 @@ class Searcher:
                 st = self.state["backends"].setdefault(be, {})
                 st["errors"] = 0
                 out = {"query": query, "page": page, "engine": be, "at": datetime.now(timezone.utc).isoformat(),
-                       "timelimit": timelimit, "results": res.get("results") or []}
+                       "timelimit": timelimit if be in TIMELIMIT_ENGINES else "", "results": res.get("results") or []}
                 write_json(self._cache_file(query, page, timelimit), out)
                 self._save()
                 return {**out, "cached": False, "error": ""}
@@ -564,6 +570,239 @@ class Searcher:
                 if self.available(be):
                     self.suspend(be, "canary failed")
         return ok
+
+
+# ----------------------------------------------------------- ATS tenant directory
+# The third way to the direct-hire boards, beside the Chrome shards (Google, Bing, DuckDuckGo) and the script lane's
+# search engines (user rule 2026-10-27: keep every route, redundancy over elegance). Lever, Greenhouse and Ashby
+# publish no tenant directory or sitemap (all three checked 2026-10-27), but the web archives list every URL they
+# crawled under a host prefix: Common Crawl's index (one crawl a month, about 1,700 Greenhouse and 700 Ashby tenants
+# per crawl; Lever answers the crawler 403 but its URLs are still listed) and the Wayback Machine's CDX API. A URL's
+# path gives the tenant slug; the board's public API then gives the postings with their own dates, so the archive's
+# staleness does not matter. New tenants are read a batch per run (newest archive timestamp first), and a tenant whose
+# board lists the target role joins boards.json so company_boards keeps re-reading it.
+
+CC_INDEX = "https://index.commoncrawl.org"
+WAYBACK_CDX = "https://web.archive.org/cdx/search/cdx"
+DIRECTORY_HOSTS = {"lever": ["jobs.lever.co"], "ashby": ["jobs.ashbyhq.com"],
+                   "greenhouse": ["boards.greenhouse.io", "job-boards.greenhouse.io"]}
+_SLUG_RE = re.compile(r"^https?://[^/]+/([A-Za-z0-9_.-]{2,})")
+
+
+def tenants(home: str) -> dict:
+    d = read_json(js.fix_path(home) / "ats_tenants.json", {})
+    d.setdefault("archives", {})  # "<crawl>|<host>" -> {"fetched_at", "urls", "tenants"}
+    d.setdefault("tenants", {})   # "kind:slug" -> {"kind", "slug", "hosts", "seen", "via", "checked_at", "target", "error"}
+    return d
+
+
+def save_tenants(home: str, d: dict) -> None:
+    write_json(js.fix_path(home) / "ats_tenants.json", d)
+
+
+def _archive_get(url: str, timeout: float = 240) -> str:
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "*/*"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read().decode("utf-8", errors="replace")
+
+
+def cc_crawls(n: int = 3) -> list[str]:
+    """The ids of the newest Common Crawl indexes (collinfo.json), newest first."""
+    data = json.loads(_archive_get(f"{CC_INDEX}/collinfo.json", timeout=60))
+    return [c["id"] for c in data[:n]]
+
+
+def _cc_get(url: str, tries: int, what: str) -> str:
+    import time
+    last = ""
+    for i in range(tries):
+        try:
+            text = _archive_get(url, timeout=120)
+            if text.lstrip().startswith("<"):
+                raise js.SourceError("HTML instead of JSON (504 or block)")
+            return text
+        except Exception as err:  # noqa: BLE001
+            last = f"{type(err).__name__}: {err}"[:160]
+            time.sleep(3 * (i + 1))
+    raise js.SourceError(f"Common Crawl {what}: {last}")
+
+
+def cc_prefix(crawl: str, host: str, tries: int = 3, deadline: float | None = None) -> list[tuple[str, str]]:
+    """(url, timestamp) for every URL under host/ in one crawl, page by page (the index server answers 504 to big
+    single requests under load; a page is one index block, usually a few thousand lines). Stops at the deadline with
+    what it has; the caller records the fetch as partial and finishes it next run."""
+    import time
+    base = f"{CC_INDEX}/{crawl}-index?url={quote(host)}/*&output=json"
+    pages = int(json.loads(_cc_get(base + "&showNumPages=true", tries, f"{crawl} {host} page count")).get("pages") or 1)
+    out = []
+    for page in range(pages):
+        if deadline and time.time() > deadline:
+            raise js.SourceError(f"{crawl} {host}: time budget after {page}/{pages} pages")
+        text = _cc_get(base + f"&fl=url,timestamp&page={page}", tries, f"{crawl} {host} page {page}/{pages}")
+        for line in text.splitlines():
+            try:
+                o = json.loads(line)
+                out.append((o.get("url", ""), o.get("timestamp", "")))
+            except json.JSONDecodeError:
+                continue
+    return out
+
+
+def wayback_prefix(host: str, since: str) -> list[tuple[str, str]]:
+    """(url, timestamp) for every URL under host/ captured since YYYYMMDD, one per URL key. The archive is often
+    'temporarily offline'; the caller treats a failure as one source down, not as an empty directory."""
+    url = (f"{WAYBACK_CDX}?url={quote(host)}/*&collapse=urlkey&fl=original,timestamp&from={since}"
+           f"&filter=statuscode:200&output=json")
+    text = _archive_get(url)
+    if text.lstrip().startswith("<"):
+        raise js.SourceError("Wayback CDX answered HTML (offline or blocked)")
+    rows = json.loads(text) if text.strip() else []
+    return [(r[0], r[1]) for r in rows[1:] if len(r) >= 2]
+
+
+def directory_update(home: str, crawls: int = 3, wayback_days: int = 60, deadline: float | None = None) -> dict:
+    """Refresh the tenant list from the archives: each crawl/host pair is fetched once ever (cached in
+    ats_tenants.json), Wayback once a day per host. Returns {archives_fetched, archive_errors, tenants, new}."""
+    import time
+    d = tenants(home)
+    stats = {"archives_fetched": 0, "archive_errors": [], "tenants": len(d["tenants"]), "new": 0}
+
+    def absorb(kind: str, host: str, rows: list[tuple[str, str]], via: str) -> int:
+        n = 0
+        for url, ts in rows:
+            m = _SLUG_RE.match(url)
+            if not m:
+                continue
+            slug = m[1]
+            if slug.lower() in _BAD_SLUG or slug.lower() in ("robots.txt", "sitemap.xml", "favicon.ico"):
+                continue
+            key = f"{kind}:{slug.lower()}"
+            t = d["tenants"].get(key)
+            if not t:
+                d["tenants"][key] = t = {"kind": kind, "slug": slug, "hosts": [host], "seen": ts, "via": via}
+                n += 1
+            else:
+                if host not in t.get("hosts", []):
+                    t.setdefault("hosts", []).append(host)
+                if ts > (t.get("seen") or ""):
+                    t["seen"] = ts
+        return n
+
+    try:
+        ids = cc_crawls(crawls)
+    except Exception as err:  # noqa: BLE001
+        ids = []
+        stats["archive_errors"].append(f"collinfo: {type(err).__name__}: {err}"[:160])
+    for crawl in ids:
+        for kind, hosts in DIRECTORY_HOSTS.items():
+            for host in hosts:
+                k = f"{crawl}|{host}"
+                if k in d["archives"]:
+                    continue
+                if deadline and time.time() > deadline:
+                    stats["archive_errors"].append("time budget: remaining archives next run")
+                    save_tenants(home, d)
+                    stats.update(tenants=len(d["tenants"]))
+                    return stats
+                try:
+                    rows = cc_prefix(crawl, host, deadline=deadline)
+                except js.SourceError as err:
+                    stats["archive_errors"].append(str(err)[:160])
+                    continue
+                n = absorb(kind, host, rows, f"commoncrawl {crawl}")
+                d["archives"][k] = {"fetched_at": NOW.isoformat(), "urls": len(rows), "tenants": n}
+                stats["archives_fetched"] += 1
+                stats["new"] += n
+                save_tenants(home, d)
+    since = (NOW - timedelta(days=wayback_days)).strftime("%Y%m%d")
+    for kind, hosts in DIRECTORY_HOSTS.items():
+        for host in hosts:
+            k = f"wayback|{host}"
+            if (d["archives"].get(k) or {}).get("fetched_at", "") > (NOW - timedelta(hours=20)).isoformat():
+                continue
+            if deadline and time.time() > deadline:
+                break
+            try:
+                rows = wayback_prefix(host, since)
+            except Exception as err:  # noqa: BLE001
+                stats["archive_errors"].append(f"wayback {host}: {type(err).__name__}: {err}"[:160])
+                continue
+            n = absorb(kind, host, rows, "wayback")
+            d["archives"][k] = {"fetched_at": NOW.isoformat(), "urls": len(rows), "tenants": n}
+            stats["archives_fetched"] += 1
+            stats["new"] += n
+    save_tenants(home, d)
+    stats.update(tenants=len(d["tenants"]))
+    return stats
+
+
+def directory_read(home: str, max_boards: int = 150, recheck_days: int = 30, deadline: float | None = None,
+                   workers: int = 6) -> dict:
+    """Read the boards of tenants not yet checked (or checked more than recheck_days ago), newest archive timestamp
+    first, at most max_boards per run. A board that lists the target role joins boards.json (found_via "ats
+    directory"), so company_boards re-reads it from then on. Returns {read, errors, with_target, rows}: the rows are
+    that run's target postings (remote or unstated), with the board's own date, location and pay."""
+    import time
+    d = tenants(home)
+    reg = boards(home)
+    known = {((e.get("ats") or {}).get("kind", ""), ((e.get("ats") or {}).get("slug") or "").lower()) for e in reg.values()}
+    cutoff = (NOW - timedelta(days=recheck_days)).isoformat()
+    due = [t for k, t in d["tenants"].items()
+           if (t["kind"], t["slug"].lower()) not in known and (t.get("checked_at") or "") < cutoff]
+    due.sort(key=lambda t: t.get("seen") or "", reverse=True)
+    due = due[:max_boards]
+    cand = userconfig.snapshot()
+    pattern = title_re()
+    f = js.Fetcher(UA)
+
+    def one(t: dict):
+        if deadline and time.time() > deadline:
+            return t, None, "deferred"
+        try:
+            return t, board_roles(f, {"kind": t["kind"], "slug": t["slug"]}), ""
+        except js.SourceError as err:
+            return t, None, str(err)[:160]
+        except Exception as err:  # noqa: BLE001
+            return t, None, f"{type(err).__name__}: {err}"[:160]
+
+    with ThreadPoolExecutor(workers) as ex:
+        results = list(ex.map(one, due))
+    out = {"due": len(due), "read": 0, "errors": 0, "deferred": 0, "with_target": 0, "rows": []}
+    for t, roles, err in results:
+        if err == "deferred":
+            out["deferred"] += 1
+            continue
+        t["checked_at"] = NOW.isoformat()
+        if roles is None:
+            t["error"] = err
+            out["errors"] += 1
+            continue
+        t.pop("error", None)
+        out["read"] += 1
+        hits = [{**x, "region": region_of(x["location"], x["remote"], cand)} for x in roles
+                if target_title(x["title"], pattern) and x.get("remote") is not False]
+        t["target"] = len(hits)
+        t["open_roles_total"] = len(roles)
+        if hits:
+            out["with_target"] += 1
+            name = t["slug"]
+            k = key_of(name)
+            if k and k not in reg and not any((e.get("ats") or {}).get("slug", "").lower() == t["slug"].lower()
+                                              and (e.get("ats") or {}).get("kind") == t["kind"] for e in reg.values()):
+                reg[k] = {"name": name, "ats": {"kind": t["kind"], "slug": t["slug"]}, "found_via": "ats directory",
+                          "found_at": TODAY, "board_checked_at": NOW.isoformat(), "open_roles_total": len(roles),
+                          "roles": [{**x, "target": target_title(x["title"], pattern)}
+                                    for x in [{**r, "region": region_of(r["location"], r["remote"], cand)} for r in roles]
+                                    if engineering_title(x["title"])]}
+            for x in hits:
+                out["rows"].append({**x, "company": name, "board": f'{t["kind"]}:{t["slug"]}'})
+    save_tenants(home, d)
+    save_boards(home, reg)
+    out["tenants_total"] = len(d["tenants"])
+    out["unchecked"] = sum(1 for t in d["tenants"].values() if not t.get("checked_at")
+                           and (t["kind"], t["slug"].lower()) not in known)
+    return out
 
 
 # --------------------------------------------------------------- people check

@@ -11,7 +11,7 @@ the subagent clicks Submit itself and records `applied` with the confirmation it
 
     autopilot.py score-queue   [--batches 14] [--batch-size 20] [--decisions DIR]
     autopilot.py score-ingest
-    autopilot.py queue         [--batches 14] [--decisions DIR]   # best score first, round-robin across sources
+    autopilot.py queue         [--batches 14] [--decisions DIR]   # freshest posting first (queue_order), score breaks ties
     autopilot.py outcome       (--id ID --status S | --sync)       # replied/interview/offer/rejected/ghosted per application
     autopilot.py run-report    [--published-url URL]              # this run's report page (assets/run-report.html)
     autopilot.py tailor-queue  [--n 6]
@@ -98,7 +98,10 @@ def emit(obj) -> int:
 
 DEFAULT_SETTINGS = {
     "channels": ["ats", "linkedin_easy_apply", "email"],  # never public comments
-    "max_minutes": 120,       # wall-clock cap for the apply loop
+    "max_minutes": 0,         # wall-clock cap for the apply loop; 0 = none, the loop runs the queue down (user rule 2026-10-27)
+    # "fresh" (default since 2026-10-27): newest posting first, score breaks ties, undated roles by the day the
+    # sweep first saw them. "balanced": the 2026-10-02 round-robin across sources with the 25-point gap guard.
+    "queue_order": "fresh",
     "max_load_retries": 3,    # type-3 failures before a role is given up
     "tailor_ahead": 6,        # tailored CVs kept ready ahead of the apply loop
     "tailor": True,           # False: skip /tailor-resume and upload config resume.pdf as-is
@@ -614,10 +617,27 @@ def source_group(labels: list[str]) -> str:
     return label
 
 
+def fresh_queue(q: list[dict]) -> list[dict]:
+    """Newest posting first (user rule 2026-10-27: the interviews came from LinkedIn Jobs and the direct ATS
+    shards at roles a few hours to a day old); within a day, accepted roles first, then score, unscored last.
+    A role with no posting date is dated by the first sweep that saw it, never earlier than its posting."""
+    return sorted(q, key=lambda x: (not x.get("posted_day"), _latest_first(x.get("posted_day")),
+                                    x["score"] is None, not x["accepted"], -(x["score"] or 0)))
+
+
+def _latest_first(day: str | None) -> str:
+    """Ascending sort key that puts the latest YYYY-MM-DD first: every digit mirrored (9 - d)."""
+    return "".join(str(9 - int(c)) if c.isdigit() else c for c in (day or ""))
+
+
+def order_queue(q: list[dict], mode: str) -> list[dict]:
+    return balance_queue(q) if mode == "balanced" else fresh_queue(q)
+
+
 def balance_queue(q: list[dict]) -> list[dict]:
-    """Deal the queue out round-robin across sources, each source best score first, accepted roles
-    first within a source and unscored roles last. A score-only sort fills the run with whichever
-    feed is largest; this keeps every source in play from the first application on."""
+    """queue_order "balanced" (the 2026-10-02 rule): deal the queue out round-robin across sources, each source
+    best score first, accepted roles first within a source and unscored roles last, so one big feed can't take
+    the run over. Superseded as the default by fresh_queue on 2026-10-27."""
     groups: dict[str, list[dict]] = {}
     for x in q:
         groups.setdefault(x["source"], []).append(x)
@@ -667,6 +687,14 @@ def too_old(r: dict, max_age_days: int | None) -> bool:
     if parsed:
         return parsed < cutoff
     return max(r.get("batches") or [""]) < cutoff.strftime("%Y-%m-%d")
+
+
+def posted_day(r: dict) -> str:
+    """The role's posting day (YYYY-MM-DD), or the day the sweep first saw it when the posting is undated."""
+    parsed, _ = js.parse_date(r.get("posted_iso") or "")
+    if parsed:
+        return parsed.strftime("%Y-%m-%d")
+    return min(r.get("batches") or [""])
 
 
 def cmd_queue(args) -> int:
@@ -766,17 +794,21 @@ def cmd_queue(args) -> int:
             continue
         q.append({"id": r["id"], "key": r["key"], "title": r["title"], "company": r["company"], "url": r["url"],
                   "location": r["location"], "score": sc.get(r["id"]), "accepted": dec.get(r["id"]) == "accepted",
-                  "source": source_group(r.get("sources")), "people": v["people"]})
-    q = balance_queue(q)
+                  "source": source_group(r.get("sources")), "people": v["people"],
+                  "posted_day": posted_day(r), "posted_known": bool(r.get("posted_iso"))})
+    q = order_queue(q, st.get("queue_order", "fresh"))
     for i, x in enumerate(q, 1):
         sp = parts.get(x["key"]) or {}
         logged.append(rec("queue", x, "queued", "queued",
-                          f"position {i}; score {x['score']}; " + (f"posted pay: {sp['pay_note']}" if sp.get("pay_note") else "no posted pay")))
+                          f"position {i}; score {x['score']}; " + ("posted " if x["posted_known"] else "first seen ")
+                          + (x["posted_day"] or "?") + "; "
+                          + (f"posted pay: {sp['pay_note']}" if sp.get("pay_note") else "no posted pay")))
     log(args.home, logged)
     save(args.home, "queue.json", q)
     for r in q:  # keep the ledger's copy of each queued role current, so the dashboard can list it
         e = ledger.setdefault(r["id"], {"id": r["id"], "status": "queued", "attempts": []})
-        e.update({k: r[k] for k in ("key", "title", "company", "url", "location", "score", "source", "people")})
+        e.update({k: r[k] for k in ("key", "title", "company", "url", "location", "score", "source", "people",
+                                    "posted_day", "posted_known")})
         e.pop("tier", None), e.pop("pay_tier", None)
         if e.get("status") in (None, "failed_fill", "not_applying"):  # answers arrived / decision changed
             e["status"] = "queued"
@@ -847,8 +879,12 @@ def cmd_tailor_queue(args) -> int:
 ATS = re.compile(r"greenhouse|lever\.co|ashbyhq|workable|smartrecruiters|myworkdayjobs|workday|icims|jobvite|teamtailor|"
                  r"recruitee|breezy|bamboohr|personio|rippling|pinpoint|oraclecloud|taleo|successfactors|gem\.com|"
                  r"jazzhr|comeet|homerun|amplifyit|careers?\.")
-# class -> (starting budget per run, ceiling, minimum seconds between submissions)
-CLASSES = {"linkedin": (8, 25, 240), "email": (8, 20, 120), "ats": (6, 20, 60), "other": (3, 10, 90)}
+# Only LinkedIn is paced by count and gap: one account on one site that throttles bursts of Easy Apply submissions.
+# class -> (starting budget per run, ceiling, minimum seconds between submissions). ATS vendors, email and
+# companies' own sites have no count or gap (user rule 2026-10-27): a Greenhouse or Lever form is one company's
+# tenant, a vendor-wide count protected nothing, and per_company_per_run already bounds one company. Every host
+# still stops for the rest of the run on friction (a CAPTCHA or block).
+CLASSES = {"linkedin": (8, 25, 240)}
 
 
 def host_of(value: str) -> str:
@@ -880,7 +916,7 @@ def pacing(home: str) -> dict:
 
 def host_state(p: dict, host: str) -> dict:
     cls = host_class(host)
-    start, _, _ = CLASSES[cls]
+    start = CLASSES[cls][0] if cls in CLASSES else None  # None: no count for this host
     return p["hosts"].setdefault(host, {"class": cls, "budget": start, "used": 0, "friction": 0, "last_submit": ""})
 
 
@@ -888,12 +924,19 @@ def cmd_pace_start(args) -> int:
     p = pacing(args.home)
     changes = {}
     for host, h in p["hosts"].items():
-        _, ceiling, _ = CLASSES[h.get("class") or host_class(host)]
-        old = h["budget"]
-        if h.get("friction"):
-            h["budget"] = max(1, old // 2)
-        elif h.get("used", 0) >= old:
-            h["budget"] = min(ceiling, math.ceil(old * 1.5))
+        cls = h["class"] = host_class(host)
+        old = h.get("budget")
+        if cls not in CLASSES:
+            h["budget"] = None  # unpaced host: no count (the user dropped the ATS/email/other budgets on 2026-10-27)
+        else:
+            _, ceiling, _ = CLASSES[cls]
+            old = old or CLASSES[cls][0]
+            if h.get("friction"):
+                h["budget"] = max(1, old // 2)
+            elif h.get("used", 0) >= old:
+                h["budget"] = min(ceiling, math.ceil(old * 1.5))
+            else:
+                h["budget"] = old
         h["used"], h["friction"] = 0, 0
         if h["budget"] != old:
             changes[host] = f"{old}->{h['budget']}"
@@ -905,24 +948,26 @@ def cmd_pace_start(args) -> int:
     save(args.home, "runs.json", runs)
     run_dir(args.home, p["run"]["id"])
     return emit({"run": p["run"]["id"], "budget_changes": changes,
-                 "budgets": {h: v["budget"] for h, v in p["hosts"].items()}})
+                 "budgets": {h: v["budget"] for h, v in p["hosts"].items() if v.get("budget") is not None},
+                 "unpaced_hosts": sum(1 for v in p["hosts"].values() if v.get("budget") is None)})
 
 
 def check(p: dict, host: str, company: str, st: dict) -> dict:
     h = host_state(p, host)
     if h["friction"]:
         return {"allowed": False, "reason": f"{host} pushed back earlier in this run (captcha or block)"}
-    if h["used"] >= h["budget"]:
+    paced = h["class"] in CLASSES and h.get("budget") is not None
+    if paced and h["used"] >= h["budget"]:
         return {"allowed": False, "reason": f"{host} budget of {h['budget']} used for this run"}
     if company and p["companies"].get(js.company_key(company), 0) >= st["per_company_per_run"] \
             and not company_interviewing(interviewing(load(st["_home"], "ledger.json", {})), company):
         return {"allowed": False, "reason": f"already {st['per_company_per_run']} applications to {company} this run"}
-    gap = CLASSES[h["class"]][2]
-    if h["last_submit"]:
+    if paced and h["last_submit"]:
+        gap = CLASSES[h["class"]][2]
         wait = gap - (NOW - datetime.fromisoformat(h["last_submit"])).total_seconds()
         if wait > 0:
             return {"allowed": False, "reason": "minimum gap", "wait_seconds": math.ceil(wait)}
-    return {"allowed": True, "remaining": h["budget"] - h["used"]}
+    return {"allowed": True, "remaining": (h["budget"] - h["used"]) if paced else None}
 
 
 def cmd_pace_check(args) -> int:
@@ -938,7 +983,7 @@ def cmd_next(args) -> int:
     st = settings(args.home)
     ledger = load(args.home, "ledger.json", {})
     started = p["run"].get("started")
-    if started and (NOW - datetime.fromisoformat(started)).total_seconds() > st["max_minutes"] * 60:
+    if started and st.get("max_minutes") and (NOW - datetime.fromisoformat(started)).total_seconds() > st["max_minutes"] * 60:
         return emit({"done": True, "reason": f"time cap of {st['max_minutes']} min reached"})
     ready = sum(1 for e in ledger.values() if is_ready(e))
     if ready >= st["max_ready"]:
@@ -1012,7 +1057,7 @@ def cmd_next(args) -> int:
                      "wait_seconds": min(waiting) if waiting else 0})
     if waiting:
         return emit({"wait_seconds": min(waiting)})
-    return emit({"done": True, "reason": "queue empty or every host's budget is used"})
+    return emit({"done": True, "reason": "queue empty, or the LinkedIn budget is used and every other host pushed back"})
 
 
 def salary_answer(sp: dict | None, st: dict) -> dict | None:
@@ -1532,7 +1577,8 @@ def cmd_status(args) -> int:
                                                      if v.get("source") == "estimated" and not v.get("confirmed")),
                  "pending_skills": len(b["skills"]["pending"]),
                  "applika_unregistered": sum(1 for e in ledger.values() if e.get("status") == "applied" and not e.get("applika")),
-                 "pacing": {h: f'{v["used"]}/{v["budget"]}{" friction" if v["friction"] else ""}' for h, v in p["hosts"].items()}})
+                 "pacing": {h: f'{v["used"]}/{v["budget"] if v.get("budget") is not None else "no cap"}{" friction" if v["friction"] else ""}'
+                            for h, v in p["hosts"].items()}})
 
 
 def cmd_run_report(args) -> int:
