@@ -145,7 +145,7 @@ autopilot:
   # false (default): fill every form completely and stop in front of Submit; you review, submit and
   # mark it Submitted. true: the subagent clicks Submit itself after filling, and confirmed
   # submissions are registered in applika without your confirmation.
-  auto_submit: true           # since 2026-10-27: submit after the full fill; a CAPTCHA, code or sign-up wall leaves the form open for the user
+  auto_submit: true           # since 2026-10-27: submit after the full fill; emailed verification codes are read from Gmail (2026-10-28); a CAPTCHA, SMS code or sign-up wall leaves the form open for the user
   cover_letter: required     # required (when the form asks) | always | never
   # The target tiers (a pay estimate from company type and HQ, a people check per run, an A/B/C rank) were removed
   # on 2026-10-27: too complex to trust. The queue is freshest posting first (queue_order above); posted pay, the

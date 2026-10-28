@@ -189,7 +189,7 @@ Use your judgment on what the subagents report. A result that claims `filled` bu
 
 ## 6. The user submits, then confirms
 
-With `auto_submit` true, applications the subagent submitted are already `applied` and this step only covers the forms it had to leave open (a human-only step at submit). Otherwise, after the loop, the filled forms are open in Chrome and listed on the dashboard as "Ready for you to submit". The user:
+With `auto_submit` true, applications the subagent submitted are already `applied` and this step only covers the forms it had to leave open (a human-only step at submit: an SMS code, a CAPTCHA, an assessment or an account wall; an emailed verification code is not one of them since 2026-10-28: the subagent reads it from the user's Gmail through the Gmail connector tools and finishes the submission itself, see `references/apply.md`). Otherwise, after the loop, the filled forms are open in Chrome and listed on the dashboard as "Ready for you to submit". The user:
 1. opens each tab (or the form link), checks the answers against the dashboard, fixes anything, and clicks Submit themselves;
 2. marks the form **Submitted** on the dashboard (or **Discard** if they dropped it), or tells you in chat.
 
