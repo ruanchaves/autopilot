@@ -906,9 +906,23 @@ def cmd_http(args) -> int:
     target = out_dir / "http.jsonl"
     stamp = NOW.strftime("%Y-%m-%dT%H:%MZ")
     total = 0
+    # A run on a subset of sources (`http himalayas ats_search`, a retry) must not wipe the rows the whole lane
+    # wrote earlier the same day (2026-10-28: a Himalayas retry emptied http.jsonl). Keep every line of the
+    # other sources and rewrite only the selected ones.
+    keep: list[str] = []
+    if args.sources and target.exists():
+        chosen = set(args.sources)
+        for line in target.read_text(encoding="utf-8").splitlines():
+            try:
+                if json.loads(line).get("source") not in chosen:
+                    keep.append(line)
+            except ValueError:
+                continue
     print(f"{'source':<22} {'kept':>5} {'offered':>8} {'title-ok':>9}  note")
     print("-" * 70)
     with target.open("w", encoding="utf-8") as fh:
+        for line in keep:
+            fh.write(line + "\n")
         for src, rows, error in sweep(cat, profile, args.sources):
             # one funnel line per source: what it offered and what each filter removed (read by merge and by
             # job-autopilot's run report)
