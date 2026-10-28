@@ -38,7 +38,7 @@ This skill runs job-source-sweep, ranks everything it finds, and prepares applic
 | `autopilot.skip_company_types` | Company types whose roles are never prepared (empty since 2026-10-27, the user's rule; was `staff_aug`, `marketplace`, `task_platform`): the staffing, nearshore and marketplace middlemen. `[]` turns the rule off. |
 | `autopilot.max_load_retries` | Type-3 failures before a role is given up. |
 | `autopilot.tailor_ahead` | Tailored CVs kept ready ahead of the fill loop. |
-| `autopilot.tailor` | `true`: tailor the resume per role with the tailor-resume skill. `false`: skip tailoring and upload `resume.pdf` as-is (set by first-run setup when the skill isn't installed). |
+| `autopilot.tailor` | `true`: tailor the resume per role with the repo's tailor-resume skill (needs a RenderCV YAML resume and `uvx`). `false`: skip tailoring and upload `resume.pdf` as-is (set by first-run setup when the skill isn't installed). |
 | `autopilot.per_company_per_run` | Most forms prepared for one company in a run. |
 
 Change them by editing `config.yaml` when the user asks.
@@ -48,7 +48,7 @@ Change them by editing `config.yaml` when the user asks.
 Run `jobsweep config` (the sweep's script) and read `setup_done`. Run this section when `job-autopilot` is not in it, or when the user asks to "set up" or "reconfigure" the autopilot. Otherwise skip to step 1.
 
 1. If `job-source-sweep` is not in `setup_done` either, run the sweep's setup first: read `<repo>/job-source-sweep/SKILL.md` step 1 and follow it to the end. It settles the runner, the data folder, the candidate (filled from the resume), the role, the pay target and the banned companies, and adds `job-source-sweep` to `setup_done`.
-2. Check the optional tools without asking: `wsl.exe -e bash -lc 'applika whoami'` (or `applika whoami` with a native runner) says whether the tracker is installed; `~/.claude/skills/tailor-resume/SKILL.md` says whether tailoring is available. For whatever is missing, set `tracker.enabled: false` or `autopilot.tailor: false` and tell the user in one line what that means (no application tracking or rejection cooldowns; the base resume PDF uploaded as-is).
+2. Check the optional tools without asking: `wsl.exe -e bash -lc 'applika whoami'` (or `applika whoami` with a native runner) says whether the tracker is installed; tailoring is available when `resume.base` is a RenderCV YAML and `uvx` exists with the runner (`wsl.exe -e bash -lc 'uvx --version'`, or `uvx --version` natively); the tailor-resume skill itself ships in this repo. For whatever is missing, set `tracker.enabled: false` or `autopilot.tailor: false` and tell the user in one line what that means (no application tracking or rejection cooldowns; the base resume PDF uploaded as-is).
 3. Say in one line that this is the autopilot's first-run setup, that it never submits an application unless they choose that here, and that `/job-autopilot reconfigure` or editing `config.yaml` changes it later. Then call **AskUserQuestion**, up to 4 questions per call. Skip any question the request already answers; when rerunning, put the current value first marked "(current)".
 
 **Call 1**
@@ -149,7 +149,7 @@ control and work-authorization requirements are legal, not labels, and still ski
 
 Skip this step when `autopilot.tailor` is false: `tailor-queue` returns no jobs and `next` hands the fill subagent `resume.pdf` as-is. Otherwise keep about `tailor_ahead` tailored CVs ready:
 1. Run `autopilot tailor-queue --n <k>`.
-2. For each job, launch a parallel subagent (`general-purpose`, `model: "sonnet"`) with this prompt: "Read `~/.claude/skills/tailor-resume/SKILL.md` and follow its **Automatic mode** section. Job: `<job JSON>`. confirmed_skills: `<list>`. denied_skills: `<list>`. previous_tailored: `<list>`."
+2. For each job, launch a parallel subagent (`general-purpose`, `model: "sonnet"`) with this prompt: "Read `<repo>/tailor-resume/SKILL.md` and follow its **Automatic mode** section. Job: `<job JSON>`. confirmed_skills: `<list>`. denied_skills: `<list>`. previous_tailored: `<list>`."
 3. When each finishes, run `autopilot record --result <job.result>`.
 
 Top up tailoring in the background while the apply loop runs.

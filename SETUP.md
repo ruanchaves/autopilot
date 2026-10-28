@@ -4,7 +4,7 @@ The user cloned this repo and asked you to install its skills. `<repo>` is the f
 
 ## 1. Link the skills
 
-Make `~/.claude/skills/<name>` point at `<repo>/<name>` for each of `job-source-sweep`, `job-autopilot`, `recruiter-outreach` and `hiring-posts-outreach`. Create `~/.claude/skills` if it doesn't exist.
+Make `~/.claude/skills/<name>` point at `<repo>/<name>` for each of `job-source-sweep`, `job-autopilot`, `tailor-resume`, `recruiter-outreach` and `hiring-posts-outreach`. Create `~/.claude/skills` if it doesn't exist.
 
 - Windows (PowerShell): `New-Item -ItemType Junction -Path "$HOME\.claude\skills\<name>" -Target "<repo>\<name>"`
 - macOS / Linux: `ln -s "<repo>/<name>" ~/.claude/skills/<name>`
@@ -43,7 +43,7 @@ Run `<python> <repo>/job-source-sweep/scripts/jobsweep.py config`. It must print
 
 Check, without asking, whether these exist, and tell the user in one line each what is missing and what that means:
 - `applika whoami` (the application tracker; without it `tracker.enabled` will be set to false by the autopilot's setup, so no tracking and no rejection cooldowns)
-- `~/.claude/skills/tailor-resume/SKILL.md` (per-role CV tailoring; without it the autopilot uploads the resume PDF as-is)
+- `uvx --version` with the same runner (inside WSL when it is `wsl`): [uv](https://docs.astral.sh/uv/) runs RenderCV for the tailor-resume skill. Without it, or when the resume in `config.yaml` is not a RenderCV YAML, the autopilot's setup sets `autopilot.tailor: false` and uploads the resume PDF as-is
 - the Claude in Chrome extension, connected and logged in to LinkedIn (needed by the sweep's browser lane, the form filling and recruiter outreach)
 
 ## 7. Start the first-run setup now
@@ -52,6 +52,6 @@ Don't wait for a restart: read `<repo>/job-source-sweep/SKILL.md`, go to its ste
 
 ## 8. What to tell the user at the end
 
-- Restart Claude Code so `/job-source-sweep`, `/job-autopilot`, `/recruiter-outreach` and `/hiring-posts-outreach` appear in the skill list.
+- Restart Claude Code so `/job-source-sweep`, `/job-autopilot`, `/tailor-resume`, `/recruiter-outreach` and `/hiring-posts-outreach` appear in the skill list.
 - `/job-autopilot` and `/recruiter-outreach` ask their own few questions the first time they run (submit policy, cover letters, channels and tracker; permission to send, daily and per-company caps, strictness and search phrasings).
 - Everything personal lives in `<repo>/config.yaml`; "reconfigure" or an empty `setup_done` reruns the questions. The file is git-ignored, so their details never reach a commit; `config.example.yaml` is the only copy in the repo.
