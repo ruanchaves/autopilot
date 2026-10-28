@@ -1312,16 +1312,21 @@ def cmd_record(args) -> int:
         entry = {**{k: c.get(k, "") for k in ("name", "headline", "company", "profile_url", "channel", "subject",
                                               "message", "status", "detail", "cta")},
                  "source": lead_source(lead), "purpose": lead_type(lead or c), "at": NOW.isoformat()}
-        if cts.get(who, {}).get("status") == "sent" and entry["status"] != "sent":
+        prev = cts.get(who, {})
+        if prev.get("status") == "sent" and entry["status"] != "sent":
             continue
+        already = prev.get("status") == "sent" and prev.get("message") == entry["message"]  # same result recorded twice
+        if already:
+            entry["at"] = prev.get("at") or entry["at"]
         cts[who] = entry
         if entry["status"] == "sent":
             sent += 1
             if CALL_ASK.search(entry["message"] or ""):
                 call_asks.append(entry["name"] or who)
             kind = entry["channel"] if entry["channel"] in ("connect", "inmail", "message") else "message"
-            p[kind] = p.get(kind, 0) + 1
-            p["last"][kind] = NOW.isoformat()
+            if not already:  # re-running record on the same file must not spend the day's quota again (2026-10-28)
+                p[kind] = p.get(kind, 0) + 1
+                p["last"][kind] = NOW.isoformat()
             if lead:
                 lead.update(status="contacted", contact={"at": entry["at"], "channel": kind, "subject": entry["subject"],
                                                          "message": entry["message"], "cta": entry["cta"]})
