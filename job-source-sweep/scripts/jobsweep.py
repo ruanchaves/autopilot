@@ -1138,7 +1138,25 @@ def cmd_plan(args) -> int:
             "run_dir": str(out_dir), "browser_rows_file": str(out_dir / "browser.jsonl"),
             "tasks": tasks}
     (out_dir / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
-    print(json.dumps(plan, indent=2))
+    # One file per task, so a browser subagent reads only its own entries instead of the whole plan
+    # (41 KB on 2026-10-28), and --brief keeps the URLs out of the main conversation altogether.
+    task_dir = out_dir / "tasks"
+    task_dir.mkdir(exist_ok=True)
+    for n, t in enumerate(tasks):
+        t["file"] = str(task_dir / f"{n:02d}.json")
+        (task_dir / f"{n:02d}.json").write_text(json.dumps({**t, "browser_rows_file": plan["browser_rows_file"],
+                                                            "window_start": plan["window_start"],
+                                                            "window_end": plan["window_end"]}, indent=1),
+                                                encoding="utf-8")
+    (out_dir / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
+    if args.brief:
+        brief = {k: plan[k] for k in ("profile", "role", "mode", "wall_clock_minutes", "lane_budgets_minutes",
+                                      "window_start", "browser_rows_file")}
+        brief["plan_file"] = str(out_dir / "plan.json")
+        brief["tasks"] = [{k: t[k] for k in ("label", "task", "kind", "shard", "caps", "file") if k in t} for t in tasks]
+        print(json.dumps(brief, indent=1))
+    else:
+        print(json.dumps(plan, indent=2))
     return 0
 
 
@@ -1417,6 +1435,8 @@ def main() -> int:
         if name == "plan":
             p.add_argument("--mode", choices=["standard", "full"], help="lane_caps mode (default: config.yaml sweep.mode)")
             p.add_argument("--only", help="comma list of task kinds, shard ids or google_direct to keep (the daily mode)")
+            p.add_argument("--brief", action="store_true",
+                           help="print labels, caps and per-task file paths only (no URLs); the files hold the rest")
         if name == "verify-queue":
             p.add_argument("--limit", type=int, default=20, help="max companies to check this run")
             p.add_argument("--ttl", type=int, default=30, help="re-check verdicts older than N days")

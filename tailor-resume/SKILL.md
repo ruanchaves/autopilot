@@ -110,17 +110,19 @@ Tell the user:
 
 ## Automatic mode (called by job-autopilot)
 
-The `job-autopilot` skill runs this skill without a person in the loop. Its `tailor-queue` command passes a job entry (`id`, `title`, `company`, `url`, `jd_file`, `base_resume`, `folder`, `file_name`, `result`; the last three already apply `resume.tailored_dir` and `resume.file_prefix`) plus the answer bank's `confirmed_skills` and `denied_skills` and the list of `previous_tailored` folders. In this mode, the workflow above changes as follows. Everything else, including every hard rule, still applies.
+The `job-autopilot` skill runs this skill without a person in the loop. Its `tailor-queue` command writes one **packet** file per job (`tailor_job_<id>.json`), and your prompt names it. Read it once; it holds `job` (`id`, `title`, `company`, `url`, `jd_file`, `base_resume`, `folder`, `file_name`, `result`; the last three already apply `resume.tailored_dir` and `resume.file_prefix`), the answer bank's `confirmed_skills` and `denied_skills`, and `previous_summaries` (the last few tailored summaries, inline, with their company and title). In this mode, the workflow above changes as follows. Everything else, including every hard rule, still applies.
+
+**Token discipline.** Read the base YAML and the JD once each. Don't open other tailored folders. Pipe the renderer's output through `tail -5` (its download and progress lines are the largest thing in a tailoring session) and look at the page-1 PNG only when a check fails.
 
 - **JD.** Read `jd_file`. If it is empty or shorter than about 400 characters, fetch `url` with WebFetch and use the page's job description. If that also fails, stop and write a result with `"status": "no_jd"`.
 - **Step 3, missing skills.** Don't ask. A missing JD skill goes into the resume only if it is in `confirmed_skills`. Skills in `denied_skills` are left out. Every other missing skill that the JD lists as required or preferred is left out and reported in `skills_pending`, so the user can answer it once on the dashboard. Never mention a pending or denied skill in the summary.
 - **Step 5, summary.** Don't ask for approval. Write the summary for *this* JD. Before moving on, review it critically against the JD, as a recruiter for this role would read it:
   - Could it be pasted onto a different job in the same field unchanged? If so, it is generic. Rewrite it around what this JD actually asks for: its main responsibilities, its named tools and methods, its domain, and the company.
   - Do the proof points you chose answer this JD's top requirements, or are they just the resume's usual highlights? Pick the ones that answer the JD.
-  - Read the summaries in `previous_tailored` (each folder's YAML). If yours reads like a light rewording of one of them, rewrite it.
+  - Compare it with `previous_summaries` in the packet. If yours reads like a light rewording of one of them, rewrite it.
 
   Keep revising until the answer to all three is clearly no. Hard rules 2 and 3 still apply: no invented facts, and at most 4 rendered lines.
-- **Steps 6 and 7.** Unchanged: `check_tailored.py`, render, the 4-line check, and the page count. Look at the page-1 PNG only when a check fails. If a check fails 3 times, write a result with `"status": "failed"` and the check output as `detail`.
+- **Steps 6 and 7.** Unchanged: `check_tailored.py`, render (append `2>&1 | tail -5` to the render command), the 4-line check, and the page count. Look at the page-1 PNG only when a check fails. If a check fails 3 times, write a result with `"status": "failed"` and the check output as `detail`.
 - **Step 8, report.** Instead of a message to the user, write the `result` file as JSON:
 
   ```json
@@ -129,4 +131,4 @@ The `job-autopilot` skill runs this skill without a person in the loop. Its `tai
    "skills_added": ["confirmed skills used"], "skills_pending": ["missing JD skills not yet confirmed or denied"], "detail": ""}
   ```
 
-  If you fetched the JD yourself, save its text next to the YAML as `jd.txt` and point `jd_file` at it. Reply with one line: `tailored <id>: ok|no_jd|failed, <n> pending skills`.
+  If you fetched the JD yourself, save its text next to the YAML as `jd.txt` and point `jd_file` at it. Then **record the result yourself** with the command the prompt gives (`<autopilot_cmd> record --result <result>`; with `python: wsl` that is `wsl.exe -e python3 /mnt/<repo>/job-autopilot/scripts/autopilot.py record --result <result>`). Reply with one line only: `tailored <id> <company>: ok|no_jd|failed, <n> pending skills, recorded`.

@@ -152,12 +152,14 @@ Then run `merge` straight away and show the user the first table (step 6 format)
 
 ## 5. Browser lane
 
-1. Run `jobsweep plan --profile <slug> --days <N>` (add `--mode full` to override `sweep.mode`, or `--only linkedin_jobs,google_direct` for the autopilot's daily mode). Its `tasks` are already the mode's subset, each with its `caps`.
+1. Run `jobsweep plan --profile <slug> --days <N> --brief` (add `--mode full` to override `sweep.mode`, or `--only linkedin_jobs,google_direct` for the autopilot's daily mode). Its `tasks` are already the mode's subset, each with its `caps` and a `file` (`tasks/NN.json`) holding the full entry (URL, hosts, fallback URLs, rows file, window). `--brief` keeps the URLs out of this conversation; the subagents read their task files.
 **Which Chrome.** Before launching any Chrome subagent, load `mcp__claude-in-chrome__list_connected_browsers` and `mcp__claude-in-chrome__select_browser`, list the browsers, and select the one whose `osPlatform` is `browser_os` in `config.yaml` (Windows). Never select or keep the macOS Chrome (user rule 2026-10-15); if no browser on that OS is connected, treat Chrome as unavailable and say so. Every subagent repeats the check itself (its reference says how), because the extension can reconnect to the other Chrome mid-run.
 2. **Delegate: never drive the browser in the main conversation.** A long browser session in the main context re-sends every earlier page read on every step, which makes it slow and costly. Instead, run the tasks as subagents (Agent tool, `general-purpose`, `model: "sonnet"`), up to `browser_parallel` of them **at once** (config.yaml, default 3), launched in one message. Chrome is not a serial resource: each subagent creates its own tab in the shared tab group and works through the DOM tools, so tasks only compete for the sites' own rate limits (keep LinkedIn tasks to one subagent at a time; Google shards and the other boards can run side by side). Give each subagent one task or at most 3 Google shards, with a prompt containing:
    - the path to `references/browser-lane.md`, with an instruction to read it first, to load the `claude-in-chrome` tools through a single ToolSearch call, and to use only its own tab (no screenshots, since other subagents share the window)
-   - the task entries copied from `plan.json` (label, url, hosts, date_fields), `browser_rows_file`, `window_start`, the page cap and a 4-minute-per-task cap
+   - the task `file` paths from the brief plan (one per task), and each task's `caps` in one line; the files hold the URLs, hosts, rows file and window
    - an instruction to reply with only the one-line summary per task
+
+   The prompt is therefore three lines; never paste task JSON into it.
 3. After each subagent finishes, run `merge` and tell the user one line, for example: "LinkedIn Jobs: +7 new (23 total)". Then check the stop conditions. Don't paste the table again until the end.
 4. If `browser_rows_file` already has a `complete:true` coverage line for a task from today, skip that task. A rerun then resumes rather than repeating work.
 5. If a subagent reports a CAPTCHA or "unusual traffic" page on Google, the remaining shard tasks run on Bing, then DuckDuckGo (each task's `fallback_urls`; `references/browser-lane.md`, google_shard): tell the next shard subagents to start on the fallback engine instead of Google. A shard is a coverage gap only when all three engines refused it. If it reports a login wall on LinkedIn, skip the remaining LinkedIn tasks. If LinkedIn posts returns 0 rows because the page exposes no post permalinks (a known DOM limitation), skip the remaining posts tasks and record the gap.
@@ -250,7 +252,7 @@ With `explorer: table`, skip straight to 8e.
 - `signup` means a sign-up wall that shows only a teaser (DailyRemote). Those count as failures, not JDs.
 - Don't retry failures in Chrome unless the user asks.
 
-**8b. Classify location eligibility.** Run `jobsweep enrich-queue --stage eligibility`. It prints `batches`, each with a `batch` file and an `out` file, plus `context` (the candidate's `country`, `region` and `region_aliases` from `config.yaml`). Launch one subagent per batch **in parallel** (Agent tool, `general-purpose`, `model: "sonnet"`; no browser needed), with this prompt:
+**8b. Classify location eligibility.** Run `jobsweep enrich-queue --stage eligibility`. It prints `batches`, each with a `batch` file and an `out` file, plus `context` (the candidate's `country`, `region` and `region_aliases` from `config.yaml`). Launch one subagent per batch **in parallel** (Agent tool, `general-purpose`, `model: "haiku"`; no browser needed). The task is rubric-bound classification with a verbatim quote as evidence, which Haiku does at a twentieth of Sonnet's price (changed 2026-10-28); the autopilot's score pass, which decides what gets applied to, stays on Sonnet. Prompt:
 
 > Read `<skill>/references/jd-eligibility.md` first and follow it exactly. country: `<context.country>`, region: `<context.region>`, region_aliases: `<context.region_aliases>`. Batch file: `<batch>`. Output file: `<out>`. Reply with only the final message the reference specifies.
 
@@ -259,7 +261,7 @@ If a subagent stalls, stop it and rerun `enrich-queue`. Finished lines are kept,
 **8c. Rate resume fit.** Do this only when `resume` is set.
 1. Run `jobsweep enrich-queue --stage fit`.
 2. If it prints `rubric_needed: true`, write the rubric following part A of `references/resume-fit.md`, then run the command again.
-3. Launch one parallel subagent per batch. Use the same prompt shape, pointing at `references/resume-fit.md` part B.
+3. Launch one parallel subagent per batch (`model: "haiku"`, as in 8b; the fit column only feeds the explorer, the autopilot's queue uses its own score). Use the same prompt shape, pointing at `references/resume-fit.md` part B.
 
 Only roles classified 1 (open) or 2 (nothing stated) are rated. When the resume file changes, its hash changes, and every role is re-rated against a new rubric.
 

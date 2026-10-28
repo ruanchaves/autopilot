@@ -14,9 +14,9 @@ the subagent clicks Submit itself and records `applied` with the confirmation it
     autopilot.py queue         [--batches 14] [--decisions DIR]   # freshest posting first (queue_order), score breaks ties
     autopilot.py outcome       (--id ID --status S | --sync)       # replied/interview/offer/rejected/ghosted per application
     autopilot.py run-report    [--published-url URL]              # this run's report page (assets/run-report.html)
-    autopilot.py tailor-queue  [--n 6]
+    autopilot.py tailor-queue  [--n 6] [--previous 8]   packets with the last tailored summaries inline
     autopilot.py pace-start
-    autopilot.py next
+    autopilot.py next          [--n 1] [--full]        claims roles, writes work/<date>/next_<id>.json packets
     autopilot.py pace-check    --host HOST [--company NAME]
     autopilot.py record        --result FILE
     autopilot.py answers       (--import DIR_OR_FILE | --pending)   # dashboard answers, overrides, submitted marks
@@ -842,8 +842,11 @@ def cmd_tailor_queue(args) -> int:
     rc = userconfig.load().get("resume") or {}
     tailored_root = js.fix_path(rc["tailored_dir"]) if rc.get("tailored_dir") else base.parent / "tailored"
     prefix = rc.get("file_prefix") or base.stem
-    others = sorted({str(Path(x["tailored"]["yaml_wsl"]).parent) for x in ledger.values()
-                     if (x.get("tailored") or {}).get("yaml_wsl")})
+    # The last few tailored summaries, inline, so the tailoring subagent can check its draft for template
+    # reuse without opening earlier YAMLs (the full folder list reached 331 paths on 2026-10-28, 26 KB per
+    # prompt, and the instruction to read them was unbounded).
+    previous = [{"company": x.get("company"), "title": x.get("title"), "summary": x["tailored"]["summary"]}
+                for x in ledger.values() if (x.get("tailored") or {}).get("summary")][-args.previous:]
     jobs = []
     for r in load(args.home, "queue.json", []):
         if len(jobs) >= args.n:
@@ -862,16 +865,19 @@ def cmd_tailor_queue(args) -> int:
         folder.mkdir(parents=True, exist_ok=True)
         (folder / ".role_id").write_text(r["id"])
         jd = index.get(r["key"], {})
-        jobs.append({"id": r["id"], "title": r["title"], "company": r["company"], "url": r["url"],
-                     "jd_file": enrich.host_path(home / "jds" / jd["file"]) if jd.get("status") == "ok" else "",
-                     "base_resume": enrich.host_path(base), "folder": enrich.host_path(folder),
-                     "file_name": f"{prefix}-{folder.name}.yaml",
-                     "result": enrich.host_path(out / f"tailor_result_{r['id']}.json")})
+        job = {"id": r["id"], "title": r["title"], "company": r["company"], "url": r["url"],
+               "jd_file": enrich.host_path(home / "jds" / jd["file"]) if jd.get("status") == "ok" else "",
+               "base_resume": enrich.host_path(base), "folder": enrich.host_path(folder),
+               "file_name": f"{prefix}-{folder.name}.yaml",
+               "result": enrich.host_path(out / f"tailor_result_{r['id']}.json")}
+        packet = out / f"tailor_job_{r['id']}.json"
+        enrich.write_json(packet, {"job": job, "confirmed_skills": b["skills"]["confirmed"],
+                                   "denied_skills": b["skills"]["denied"], "previous_summaries": previous})
+        jobs.append({**job, "packet": enrich.host_path(packet)})
         e["tailor_started"] = NOW.isoformat()
     save(args.home, "ledger.json", ledger)
-    return emit({"jobs": jobs, "answer_bank": enrich.host_path(ap_dir(args.home) / "answer-bank.json"),
-                 "confirmed_skills": b["skills"]["confirmed"], "denied_skills": b["skills"]["denied"],
-                 "previous_tailored": [enrich.host_path(Path(o)) for o in others]})
+    return emit({"jobs": [{k: j[k] for k in ("id", "title", "company", "packet", "result")} for j in jobs],
+                 "previous_summaries": len(previous)})
 
 
 # -------------------------------------------------------------------- pacing
@@ -977,24 +983,80 @@ def cmd_pace_check(args) -> int:
     return emit({"host": host_of(args.host), **res})
 
 
+def compact_bank(home: str) -> str:
+    """The answer bank as the fill subagent reads it: the profile, every answered question as a
+    question/answer pair (no history, no role lists, no pending questions) and the confirmed and denied
+    skills. The full bank (186 KB on 2026-10-28, half of it a pending-skills list the form filler never
+    needs) was being truncated by the subagent's Read, which cost tokens and lost answers."""
+    b = bank(home)
+    qs = [{"q": v.get("question"), "a": v.get("answer"), "source": v.get("source", "bank"),
+           **({"type": v["type"]} if v.get("type") and v["type"] != "text" else {}),
+           **({"options": v["options"]} if v.get("options") else {})}
+          for v in b["questions"].values() if v.get("answer") not in (None, "")]
+    path = ap_dir(home) / "answers-compact.json"
+    enrich.write_json(path, {"profile": b["profile"], "questions": qs,
+                             "skills": {"confirmed": b["skills"]["confirmed"], "denied": b["skills"]["denied"]}})
+    return enrich.host_path(path)
+
+
 def cmd_next(args) -> int:
+    """Claim up to --n queued roles that are tailored and whose known host allows a submission now. Each
+    claim is written as a packet file the fill subagent reads (the main conversation only relays its path),
+    so the launch prompt stays one line and the role, candidate and policy JSON never enter the main
+    context."""
+    roles, last = [], None
+    for _ in range(max(1, args.n)):
+        res = claim_one(args)
+        if "role" not in res:
+            last = res
+            break
+        roles.append(res)
+    if not roles:
+        return emit(last)
+    answers = compact_bank(args.home)
+    out_dir = work_dir(args.home)
+    st = settings(args.home)
+    here = Path(__file__).resolve()
+    in_wsl = os.name != "nt" and "microsoft" in Path("/proc/version").read_text(errors="ignore").lower()
+    runner = f"wsl.exe -e python3 {here}" if in_wsl else f"{userconfig.load().get('python') or 'python3'} {here}"
+    listed = []
+    for res in roles:
+        r = res["role"]
+        res["answer_bank"] = answers
+        res["allowed_channels"] = st["channels"]
+        res["autopilot_cmd"] = runner  # "<runner> pace-check ..." runs this script the way the main conversation does
+        res["cover_letter_py"] = runner.replace("autopilot.py", "cover_letter.py")
+        res["result_file"] = enrich.host_path(out_dir / f"apply_result_{r['id']}.json")
+        path = out_dir / f"next_{r['id']}.json"
+        enrich.write_json(path, res)
+        listed.append({"id": r["id"], "company": r.get("company"), "title": r.get("title"), "score": r.get("score"),
+                       "url": r.get("url"), "packet": enrich.host_path(path), "result_file": res["result_file"]})
+    if args.full:
+        return emit(roles[0] if len(roles) == 1 else {"roles": roles})
+    return emit({"roles": listed, "untailored_in_queue": roles[-1].get("untailored_in_queue", 0),
+                 "ready_waiting": roles[-1].get("ready_waiting", 0),
+                 **({"then": last} if last and not last.get("done") else {}),
+                 **({"done_after": last.get("reason")} if last and last.get("done") else {})})
+
+
+def claim_one(args) -> dict:
     """The best queued role that is tailored and whose known host allows a submission now."""
     p = pacing(args.home)
     st = settings(args.home)
     ledger = load(args.home, "ledger.json", {})
     started = p["run"].get("started")
     if started and st.get("max_minutes") and (NOW - datetime.fromisoformat(started)).total_seconds() > st["max_minutes"] * 60:
-        return emit({"done": True, "reason": f"time cap of {st['max_minutes']} min reached"})
+        return ({"done": True, "reason": f"time cap of {st['max_minutes']} min reached"})
     ready = sum(1 for e in ledger.values() if is_ready(e))
     if ready >= st["max_ready"]:
-        return emit({"done": True, "ready": ready,
+        return ({"done": True, "ready": ready,
                      "reason": f"{ready} filled forms are waiting for you to submit (max_ready {st['max_ready']}); "
                                "submit or discard some, then run the apply loop again"})
     waiting, untailored = [], 0
     tailor = bool(st.get("tailor", True))
     base_pdf = (userconfig.load().get("resume") or {}).get("pdf") or ""
     if not tailor and not base_pdf:
-        return emit({"done": True, "reason": "autopilot.tailor is false but resume.pdf is not set in config.yaml"})
+        return ({"done": True, "reason": "autopilot.tailor is false but resume.pdf is not set in config.yaml"})
     index = {} if tailor else enrich.read_json(js.fix_path(args.home) / "jds" / "index.json", {})
     apps = recent_applications(applika_list(args.home)[0], st)
     for r in load(args.home, "queue.json", []):
@@ -1041,7 +1103,7 @@ def cmd_next(args) -> int:
         if policy == "target":  # the tier system is gone (2026-10-27); the old setting means "when the form asks"
             policy = "required"
         log(args.home, [rec("fill", r, "started", f"score {r.get('score', '?')}", f"cover letter policy: {policy}")])
-        return emit({"banned_companies": st["banned_companies"], "cover_letter_policy": policy,
+        return ({"banned_companies": st["banned_companies"], "cover_letter_policy": policy,
                      "auto_submit": bool(st.get("auto_submit")), "candidate": userconfig.profile(),
                      "role": {**r, "tailored_pdf": t["pdf"], "tailored_summary": t.get("summary", ""),
                               "tailored_folder": str(Path(t["pdf"]).parent.parent) if t.get("pdf") and tailor else "",
@@ -1053,11 +1115,11 @@ def cmd_next(args) -> int:
                               if e.get("attempts") else None},
                      "host_guess": host, "untailored_in_queue": untailored, "ready_waiting": ready})
     if untailored:
-        return emit({"need_tailor": True, "untailored_in_queue": untailored,
+        return ({"need_tailor": True, "untailored_in_queue": untailored,
                      "wait_seconds": min(waiting) if waiting else 0})
     if waiting:
-        return emit({"wait_seconds": min(waiting)})
-    return emit({"done": True, "reason": "queue empty, or the LinkedIn budget is used and every other host pushed back"})
+        return ({"wait_seconds": min(waiting)})
+    return ({"done": True, "reason": "queue empty, or the LinkedIn budget is used and every other host pushed back"})
 
 
 def salary_answer(sp: dict | None, st: dict) -> dict | None:
@@ -1604,9 +1666,13 @@ def main() -> int:
     p = sub.add_parser("queue"); p.add_argument("--batches", type=int, default=14); p.add_argument("--decisions")
     p.add_argument("--max-age-days", type=int, help="leave out postings older than this (this run only)")
     p.set_defaults(fn=cmd_queue)
-    p = sub.add_parser("tailor-queue"); p.add_argument("--n", type=int, default=6); p.set_defaults(fn=cmd_tailor_queue)
+    p = sub.add_parser("tailor-queue"); p.add_argument("--n", type=int, default=6)
+    p.add_argument("--previous", type=int, default=8, help="earlier tailored summaries to put in each packet")
+    p.set_defaults(fn=cmd_tailor_queue)
     sub.add_parser("pace-start").set_defaults(fn=cmd_pace_start)
-    sub.add_parser("next").set_defaults(fn=cmd_next)
+    p = sub.add_parser("next"); p.add_argument("--n", type=int, default=1, help="roles to claim (one fill subagent each)")
+    p.add_argument("--full", action="store_true", help="print the whole packet(s) instead of their paths")
+    p.set_defaults(fn=cmd_next)
     p = sub.add_parser("pace-check"); p.add_argument("--host", required=True); p.add_argument("--company")
     p.set_defaults(fn=cmd_pace_check)
     p = sub.add_parser("record"); p.add_argument("--result", required=True); p.set_defaults(fn=cmd_record)

@@ -337,6 +337,15 @@ Chrome is not a serial resource. Every Claude in Chrome tool takes a `tabId`, so
 
 The main conversation never drives the browser itself. Long browser sessions in the main context re-send every earlier page on every step; subagents keep that cost out of the conversation and return a one-line summary.
 
+### Token cost
+
+A full autopilot run was measured on 2026-10-28 at about $330 at list prices, with the main conversation (plumbing only: run a command, launch an agent, relay one line) costing more than all 185 subagents together. The skills are written to keep that down:
+
+- **Packets, not pasted JSON.** `autopilot next --n 3`, `autopilot tailor-queue` and `jobsweep plan --brief` write one file per role or task and print only its path; the subagent reads the file, so the role, candidate, answers and URLs never enter the main context.
+- **Subagents record their own results** (`autopilot record`) and reply with one line, which halves the main conversation's turns.
+- **Model per task.** Form filling, scoring and tailoring stay on Sonnet (they decide what is said and sent). Eligibility and fit classification run on Haiku. The main conversation is the place for a cheaper model: run `/model sonnet` before a full run.
+- **Browser subagents** read lists through JS snippets installed once per page, wait inside JavaScript instead of taking screenshots, read the compact answer file (`answers-compact.json`) rather than the full bank, and batch form steps with `browser_batch`.
+
 ## Guard rails
 
 | Rule | Where it is enforced |

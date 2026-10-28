@@ -1,6 +1,6 @@
 # Browser lane
 
-Everything here runs in the user's signed-in Chrome through the `claude-in-chrome` tools. Load them in one ToolSearch call that includes `mcp__claude-in-chrome__list_connected_browsers` and `mcp__claude-in-chrome__select_browser`. Every URL comes from `plan.json`. Never write these URLs by hand, because the plan already encodes the role and the date window.
+Everything here runs in the user's signed-in Chrome through the `claude-in-chrome` tools. Load them in one ToolSearch call that includes `mcp__claude-in-chrome__list_connected_browsers` and `mcp__claude-in-chrome__select_browser`. Your prompt names one task file per task (`runs/<date>-<profile>/tasks/NN.json`, written by `jobsweep plan`); read each once. It holds the task's `label`, `url`, `caps`, `hosts`, `date_fields`, `fallback_urls`, plus `browser_rows_file` and `window_start`. Never write these URLs by hand, because the plan already encodes the role and the date window, and don't read `plan.json` itself.
 
 **Browser selection, before anything else.** The user's job-hunt Chrome is the one on `browser_os` in `config.yaml` (Windows). Right after loading the tools, call `list_connected_browsers`; if more than one browser is connected, or the one `inUse` is not on that OS, call `select_browser` with the deviceId whose `osPlatform` is that OS before opening any tab. **Never work in, or let the session attach to, the macOS Chrome** (user rule 2026-10-15): if no browser on the configured OS is connected, stop and report `browser unavailable` instead of using another one. Re-check after any tool error that says the tab or browser is gone, because the extension can reconnect to the other Chrome mid-run.
 
@@ -9,6 +9,8 @@ Everything here runs in the user's signed-in Chrome through the `claude-in-chrom
 The browser lane is where a sweep loses its time and tokens. Every tool result stays in context and is re-read on every later step, so a noisy task gets more expensive with each call.
 
 - **Read pages only with the JS snippets below.** Don't take screenshots, and don't call `read_page` or `get_page_text` on result lists. Take a screenshot only to diagnose a snippet that returns 0 when the page clearly has results, and take just one.
+- **Install each snippet once per page, then call it by name.** Every snippet defines `window.__jw` and ends with `__jw()`. Send the whole snippet in the first `javascript_tool` call after a navigation; after each scroll send only `__jw()`. A snippet re-sent 30 times a task was a fifth of the lane's output tokens (2026-10-28). Navigation clears the page's `window`, so re-send the snippet after each `navigate`.
+- **Wait inside JavaScript, never with the `computer` tool's `wait`** (it returns a screenshot every time). The tool supports top-level `await`, so one call does the wait and the read: `await new Promise(r => setTimeout(r, 5000)); __jw()`.
 - **The snippets return deltas.** They remember what they already reported in `window.__jwSeen`, so re-running one after a scroll returns only new cards. Navigating to a new page clears it. Don't change the snippets to return everything each time.
 - **Filter before you write.** Drop off-role titles and out-of-window ages yourself. Don't list rejected items in your reasoning or output.
 - **Stop early:**
@@ -18,6 +20,7 @@ The browser lane is where a sweep loses its time and tokens. Every tool result s
   - When the task's time cap is reached (default 4 minutes per task). A lane with `caps.budget_minutes` (LinkedIn Jobs, the direct-hire Google shards) shares that budget across its tasks instead; stop starting new pages when it is spent and record the gap.
 - **Don't open individual postings**, except in deep mode. Everything needed is on the list or results page.
 - **Final message:** one line only, `<task label>: <rows written> rows, <pages> pages, complete|partial (<reason>)`. The rows are already in the file, so don't repeat them.
+- **Write rows once, in bulk.** Collect a task's rows as you go and append them with a single heredoc at the end of the task (or every few pages on a long task), not one `cat >>` per page.
 
 ## Rules for every task
 
@@ -41,10 +44,10 @@ One LinkedIn tab for the whole lane, tasks one after another, never two LinkedIn
 
 The URL is already filtered to remote, the age window, newest first and the task's `location` (the profile runs one search per location: the United States plus one per country of the candidate's region, since a region name is not a reliable LinkedIn location). The location only picks which postings LinkedIn lists; it is not eligibility evidence, so don't copy it into `eligibility`. Cards are virtualised: only about 7 of 25 render at first, and cards scrolled off-screen are emptied.
 
-For each page: wait about 5 seconds, run the snippet, scroll the left list one wheel step, wait about 2 seconds, and run it again. Repeat until the `cards` count stops rising. Deduplicate on `job_id`.
+For each page: one `javascript_tool` call that waits about 5 seconds and installs and runs the snippet (`await new Promise(r => setTimeout(r, 5000)); window.__jw = ...; __jw()`), then scroll the left list one wheel step, then one call `await new Promise(r => setTimeout(r, 2000)); __jw()`. Repeat until the `cards` count stops rising. Deduplicate on `job_id`.
 
 ```js
-(() => {
+window.__jw = () => {
   const cards = document.querySelectorAll('li[data-occludable-job-id]');
   const rows = [];
   cards.forEach((li) => {
@@ -61,7 +64,8 @@ For each page: wait about 5 seconds, run the snippet, scroll the left list one w
   const fresh = rows.filter(r => r.title && !seen.has(r.job_id));
   fresh.forEach(r => seen.add(r.job_id));
   return JSON.stringify({ cards: cards.length, total_seen: seen.size, new: fresh });
-})();
+};
+__jw();
 ```
 
 - Set `url` to `https://www.linkedin.com/jobs/view/<job_id>/`. If the Leapfrog extension pill is present (`Hires Overseas`, `Hires in Brazil` or `US Only`), store it as `signal`. It lives in a shadow root, which is why the snippet goes through `plasmo-csui`.
@@ -72,7 +76,7 @@ For each page: wait about 5 seconds, run the snippet, scroll the left list one w
 These are post search results. A row is a post that advertises an actual open role. Skip commentary, job-seeker posts, courses and reposts. If you can't tell, skip it.
 
 ```js
-(() => {
+window.__jw = () => {
   const seen = new Map();
   document.querySelectorAll('[data-urn*="activity"], [data-id*="activity"], div.feed-shared-update-v2, li.artdeco-card').forEach((n) => {
     const m = (n.getAttribute('data-urn') || n.getAttribute('data-id') || '').match(/urn:li:activity:(\d+)/);
@@ -87,7 +91,8 @@ These are post search results. A row is a post that advertises an actual open ro
   const fresh = [...seen.values()].filter(p => !done.has(p.id));
   fresh.forEach(p => done.add(p.id));
   return JSON.stringify({ count: done.size, new: fresh });
-})();
+};
+__jw();
 ```
 
 - Judge each new batch before scrolling again. Stop when two scrolls in a row add no new job posts, or when every post in a batch is older than `window_start` (results are sorted by date).
@@ -106,7 +111,7 @@ These are post search results. A row is a post that advertises an actual open ro
 Only runs when the profile has a `rocketship` block. Cards are server-rendered with 39 per page, sorted newest first. Paginate with `page=N`.
 
 ```js
-(() => {
+window.__jw = () => {
   const rows = [...document.querySelectorAll('div.list-none')].map((c) => {
     const t = (s) => { const e = c.querySelector(s); return e ? e.textContent.replace(/\s+/g,' ').trim() : ''; };
     const strip = (s) => s.replace(/^[^\w]+/, '').trim();
@@ -115,7 +120,8 @@ Only runs when the profile has a `rocketship` block. Cards are server-rendered w
              posted: strip(t('p.notranslate')), path: a ? a.getAttribute('href') : '' };
   });
   return JSON.stringify({ cards: rows.length, rows });
-})();
+};
+__jw();
 ```
 
 Set `url` to `https://www.remoterocketship.com` + `path`. Ages read like `10 minutes ago` or `3 days ago`. Stop at the first card older than the window, because the sort order guarantees everything after it is older too.
@@ -127,7 +133,7 @@ Wellfound's job search is rendered client-side behind a sign-in, so Google never
 The page is a list of **company cards** (about 20 per page), each holding one or more job rows. Cards are server-rendered, so no scrolling is needed. Wait about 4 seconds after navigation, then run:
 
 ```js
-(() => {
+window.__jw = () => {
   const rows = [];
   document.querySelectorAll('div.mb-6.w-full.rounded.border').forEach((card) => {
     const h2 = card.querySelector('h2');
@@ -150,7 +156,8 @@ The page is a list of **company cards** (about 20 per page), each holding one or
   const fresh = rows.filter((r) => r.title && !seen.has(r.path));
   fresh.forEach((r) => seen.add(r.path));
   return JSON.stringify({ cards: rows.length, total_seen: seen.size, new: fresh });
-})();
+};
+__jw();
 ```
 
 - Row fields: `source` `wellfound`, `source_label` `Wellfound`, `url` = `https://wellfound.com` + `path`, `company`, `location` (the `location` text, with `mode` prepended when it is not plain "Remote", for example `Onsite or remote • New York City`), `posted` = `age` as shown, `compensation` = `pay`.
@@ -165,7 +172,7 @@ Y Combinator's Work at a Startup search is client-rendered behind a free account
 The page lists **company cards**, each with up to 2 job rows (a "See all N jobs ›" link covers the rest). Wait about 5 seconds after navigation, then run:
 
 ```js
-(() => {
+window.__jw = () => {
   const cl = (s) => (s || '').replace(/[^\/a-zA-Z0-9_-].*$/, '');
   const isCo = (a) => /^\/companies\//.test(a.getAttribute('href') || '') && !/\/website/.test(a.getAttribute('href')) && /\([A-Z]\d{2}\)/.test(a.innerText);
   const rows = [];
@@ -194,7 +201,8 @@ The page lists **company cards**, each with up to 2 job rows (a "See all N jobs 
   const fresh = rows.filter((r) => r.title && !seen.has(r.path));
   fresh.forEach((r) => seen.add(r.path));
   return JSON.stringify({ cards: rows.length, total_seen: seen.size, new: fresh });
-})();
+};
+__jw();
 ```
 
 - Row fields: `source` `yc_waas`, `source_label` `YC Work at a Startup`, `url` = `https://www.workatastartup.com` + `path`, `company` = the company name without its batch suffix (`Zudo (W23)` → `Zudo`), `signal` = `YC <batch>` from that suffix, `location` (with `jobtype` prepended when it isn't `fulltime`, for example `contract · Remote (US)`), `compensation` = `pay` (keep the currency code), `eligibility` = `visa` when present. The list shows no posting date: leave `posted` empty, and `merge` keeps rows with no date. The list is only roughly newest-first (job ids descend), so don't stop at an old-looking row.
@@ -207,7 +215,7 @@ The page lists **company cards**, each with up to 2 job rows (a "See all N jobs 
 Each task is one Google query across several ATS hosts or job boards, already restricted to the date window with `tbs=cdr`. Results from different hosts are interleaved, and each hosts about 10 organic results per page. Tasks with `direct: true` (`kind: google_direct`: Lever, Greenhouse, Ashby, one host each) are the lane that yields interviews: run them before the other shards, to their own `caps`, and never cut them for a job-board shard.
 
 ```js
-(() => {
+window.__jw = () => {
   const HOSTS = /* paste task.hosts as a JSON array */ [];
   const rows = [...document.querySelectorAll('#search a:has(h3)')].map((a) => {
     let u; try { u = new URL(a.href); } catch (e) { return null; }
@@ -218,7 +226,8 @@ Each task is one Google query across several ATS hosts or job boards, already re
              snippet: block ? block.innerText.replace(/\s+/g,' ').slice(0, 140) : '' };
   }).filter(Boolean);
   return JSON.stringify({ kept: rows.length, rows, next: !!document.querySelector('a#pnnext') });
-})();
+};
+__jw();
 ```
 
 - `div.g` no longer matches anything, so use `#search a:has(h3)`. The hostname check filters out ads. Rebuild each URL as `https://` + host + path. Paginate with `&start=10`, `&start=20` and so on. Stop when `next` is false or the page budget is reached, and don't rely on the localised "Next" text.
