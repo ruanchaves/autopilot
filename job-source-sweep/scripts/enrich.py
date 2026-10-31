@@ -82,7 +82,11 @@ def read_json(path: Path, default):
 
 
 def write_json(path: Path, data, indent=1) -> None:
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=indent), encoding="utf-8")
+    # Write to a private temp file and rename it over the target: parallel `record` calls from the fill subagents
+    # otherwise interleave their writes and leave a tail of the longer file behind ("Extra data" on the next read).
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=indent), encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def read_jsonl(path: Path) -> list[dict]:

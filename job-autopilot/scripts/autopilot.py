@@ -102,8 +102,11 @@ DEFAULT_SETTINGS = {
     # "fresh" (default since 2026-10-27): newest posting first, score breaks ties, undated roles by the day the
     # sweep first saw them. "balanced": the 2026-10-02 round-robin across sources with the 25-point gap guard.
     "queue_order": "fresh",
+    # Freshness window (user rule 2026-10-30: roles posted more than 48 hours ago rarely answer). Older roles are
+    # not scored, tailored or filled; 0 turns the window off. See stale().
+    "max_age_hours": 48,
     "max_load_retries": 3,    # type-3 failures before a role is given up
-    "tailor_ahead": 9,        # tailored CVs kept ready ahead of the apply loop: three rounds of 3 parallel fills
+    "tailor_ahead": 9,       # tailored CVs kept ready ahead of the apply loop: three rounds of 3 parallel fills
     "tailor": True,           # False: skip /tailor-resume and upload config resume.pdf as-is
     "per_company_per_run": 2,
     # filled forms (tabs left open) waiting for the user; the apply loop stops at this many
@@ -338,7 +341,8 @@ def cmd_score_queue(args) -> int:
     rubric = enrich.current_rubric_sha(home)
     if not rubric:
         sys.exit("no fit-rubric.md for the current resume - run job-source-sweep step 8c first")
-    rejected = {k for k, v in load_decisions(args.decisions).items() if v == "rejected"}
+    decisions = load_decisions(args.decisions)
+    rejected = {k for k, v in decisions.items() if v == "rejected"}
     ledger = load(args.home, "ledger.json", {})
     st = settings(args.home)
     # applika is checked before any role is considered: roles already in it, and companies applied
@@ -346,11 +350,16 @@ def cmd_score_queue(args) -> int:
     existing, applika_err = applika_list(args.home, refresh=True)
     rej = recent_rejections(existing, st)
     apps = recent_applications(existing, st)
-    rejected_company = applied_company = in_applika = 0
+    rejected_company = applied_company = in_applika = stale_n = 0
     entries, logged = [], []
     for r in roles:
         e = ledger.get(r["id"], {})
         if r["id"] in rejected or e.get("status") in FINAL:
+            continue
+        # outside the freshness window: not scored (the queue leaves it out too), unless the user chose it
+        if (not args.include_stale and stale(r, st) and e.get("override") != "apply"
+                and decisions.get(r["id"]) != "accepted" and e.get("status") not in ("filled", "failed_fill", "failed_submit")):
+            stale_n += 1
             continue
         base = {**e, "id": r["id"], "key": r["key"], "title": r["title"], "company": r["company"],
                 "url": r["url"], "location": r["location"], "attempts": e.get("attempts", [])}
@@ -396,7 +405,8 @@ def cmd_score_queue(args) -> int:
     if rejected_company or applied_company or in_applika:
         save(args.home, "ledger.json", ledger)
     log(args.home, logged)
-    return emit({"pending": len(entries), "skipped_rejected_company": rejected_company,
+    return emit({"pending": len(entries), "skipped_stale": stale_n, "max_age_hours": st.get("max_age_hours"),
+                 "skipped_rejected_company": rejected_company,
                  "skipped_applied_company": applied_company, "skipped_in_applika": in_applika,
                  "rejection_cooldown_days": st["rejection_cooldown_days"],
                  "company_cooldown_days": st["company_cooldown_days"], "applika_error": applika_err,
@@ -697,6 +707,17 @@ def posted_day(r: dict) -> str:
     return min(r.get("batches") or [""])
 
 
+def stale(r: dict, st: dict) -> bool:
+    """True when the role falls outside the freshness window (`max_age_hours`, 48 by default). Compared by
+    calendar day, so a posting from the first day of the window is kept whole; an undated role counts as
+    posted on the day a sweep first saw it. The user's own choices (an "apply" override or an Accepted mark
+    in the explorer) are checked by the callers."""
+    hours = st.get("max_age_hours")
+    if not hours:
+        return False
+    return posted_day(r) < (NOW - timedelta(hours=hours)).strftime("%Y-%m-%d")
+
+
 def cmd_queue(args) -> int:
     roles = all_roles(args.home, args.batches)
     ev = evaluate(args.home, roles)
@@ -712,7 +733,7 @@ def cmd_queue(args) -> int:
     inter = interviewing(ledger)  # a company that interviewed the user is worth its sibling roles (2026-10-27)
     q, skipped = [], {"rejected": 0, "final": 0, "banned": 0, "rejected_company": 0, "in_applika": 0,
                       "applied_company": 0, "not_worth_applying": 0, "needs_you": 0, "waiting_answers": 0,
-                      "load_retries": 0, "too_old": 0}
+                      "load_retries": 0, "too_old": 0, "stale": 0}
     logged = []
     for r in roles:
         e = ledger.get(r["id"], {})
@@ -791,6 +812,11 @@ def cmd_queue(args) -> int:
         if too_old(r, args.max_age_days):
             skipped["too_old"] += 1
             drop("too_old", f'posted {r.get("posted_iso") or "?"}, older than {args.max_age_days} days')
+            continue
+        if (not args.include_stale and not args.max_age_days and stale(r, st) and e.get("override") != "apply"
+                and dec.get(r["id"]) != "accepted"):
+            skipped["stale"] += 1
+            drop("stale", f'posted {posted_day(r)}, outside the {st["max_age_hours"]}-hour window')
             continue
         q.append({"id": r["id"], "key": r["key"], "title": r["title"], "company": r["company"], "url": r["url"],
                   "location": r["location"], "score": sc.get(r["id"]), "accepted": dec.get(r["id"]) == "accepted",
@@ -1661,10 +1687,13 @@ def main() -> int:
     ap.add_argument("--home", default=os.environ.get("JOBSWEEP_HOME") or userconfig.home())
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("score-queue"); p.add_argument("--batches", type=int, default=14)
-    p.add_argument("--batch-size", type=int, default=20); p.add_argument("--decisions"); p.set_defaults(fn=cmd_score_queue)
+    p.add_argument("--batch-size", type=int, default=20); p.add_argument("--decisions")
+    p.add_argument("--include-stale", action="store_true", help="also score roles outside the max_age_hours window")
+    p.set_defaults(fn=cmd_score_queue)
     sub.add_parser("score-ingest").set_defaults(fn=cmd_score_ingest)
     p = sub.add_parser("queue"); p.add_argument("--batches", type=int, default=14); p.add_argument("--decisions")
-    p.add_argument("--max-age-days", type=int, help="leave out postings older than this (this run only)")
+    p.add_argument("--max-age-days", type=int, help="leave out postings older than this (this run only; replaces max_age_hours)")
+    p.add_argument("--include-stale", action="store_true", help="also queue roles outside the max_age_hours window")
     p.set_defaults(fn=cmd_queue)
     p = sub.add_parser("tailor-queue"); p.add_argument("--n", type=int, default=6)
     p.add_argument("--previous", type=int, default=8, help="earlier tailored summaries to put in each packet")

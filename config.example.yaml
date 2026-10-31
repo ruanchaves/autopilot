@@ -37,6 +37,7 @@ candidate:
   website: ""
   languages: "English: full professional proficiency (pick the highest non-native level, e.g. Advanced/Fluent/C1). Portuguese: native. No other languages."
   native_language: Portuguese
+  gender: ""                 # answers demographic questions that have no "decline to answer" option
   years_experience: 7
   professional_since: 2019
   level: senior individual contributor, mentors but no people management
@@ -142,6 +143,10 @@ autopilot:
   # the direct ATS shards at roles hours to a day old). balanced: the 2026-10-02 round-robin across sources.
   queue_order: fresh
   max_ready: 15              # filled forms (open tabs) waiting for you; the loop pauses at this many
+  # Freshness window: roles posted more than this many hours ago are not scored, tailored or filled (calendar-day
+  # comparison; an undated role counts from the day a sweep first saw it). Accepted/"apply"-overridden roles are kept.
+  # 0 = no window.
+  max_age_hours: 48
   # false (default): fill every form completely and stop in front of Submit; you review, submit and
   # mark it Submitted. true: the subagent clicks Submit itself after filling, and confirmed
   # submissions are registered in applika without your confirmation.
